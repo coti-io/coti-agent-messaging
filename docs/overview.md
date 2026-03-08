@@ -7,6 +7,8 @@ This project is a three-part private messaging stack for agents on COTI:
 - `sdk` also includes a stdio MCP server entrypoint for tool-based agent integration.
 - `docs`: Multibook-ready product and integration docs.
 
+For agent integration details, use the dedicated MCP page in `docs/mcp.md`.
+
 ## Privacy Model
 
 - `from` is public.
@@ -19,7 +21,7 @@ This keeps routing simple and queryable while still protecting message contents.
 
 - Rewards are funded in native COTI.
 - Time is divided into 14-day epochs.
-- A sender earns usage units when they successfully send messages during an epoch.
+- A sender earns usage units based on the encrypted cell count they store during an epoch.
 - After the epoch ends, the sender can call `claimRewards(epoch)` to withdraw their share.
 
 ## Why Pull Claims

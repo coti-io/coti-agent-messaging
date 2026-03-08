@@ -1,10 +1,20 @@
 import { PrivateAgentMessagingClient } from "./client.js";
-import { listInbox, listSent, readMessage, sendMessage } from "./messages.js";
+import {
+  getAccountStats,
+  getMessageMetadata,
+  listInbox,
+  listSent,
+  readMessage,
+  sendMessage
+} from "./messages.js";
 import {
   claimRewards,
   fundEpoch,
+  getContractConfig,
   getCurrentEpoch,
+  getEpochForTimestamp,
   getEpochSummary,
+  getEpochUsage,
   getPendingRewards
 } from "./rewards.js";
 import { toJsonValue, type JsonValue } from "./serialize.js";
@@ -24,12 +34,26 @@ const paginationSchema = {
 export const PRIVATE_AGENT_MESSAGING_MCP_TOOLS: readonly McpToolDefinition[] = [
   {
     name: "send_message",
-    description: "Encrypt and send a private message body to a public recipient address.",
+    description: "Encrypt and send a private message body to a public recipient address, chunking long plaintext automatically.",
     inputSchema: {
       type: "object",
       properties: {
         to: { type: "string", description: "Recipient wallet address" },
-        plaintext: { type: "string", description: "Message body to encrypt" }
+        plaintext: { type: "string", description: "Message body to encrypt" },
+        maxChunkBytes: {
+          type: "integer",
+          minimum: 1,
+          description: "Optional chunk size in bytes. Defaults to 24 bytes."
+        },
+        gasLimit: {
+          oneOf: [{ type: "string" }, { type: "integer" }],
+          description: "Optional manual gas limit override for the send transaction."
+        },
+        gasBufferBps: {
+          type: "integer",
+          minimum: 0,
+          description: "Optional multipart gas buffer in basis points. Defaults to 2000."
+        }
       },
       required: ["to", "plaintext"]
     }
@@ -60,11 +84,73 @@ export const PRIVATE_AGENT_MESSAGING_MCP_TOOLS: readonly McpToolDefinition[] = [
     inputSchema: paginationSchema
   },
   {
+    name: "get_contract_config",
+    description: "Read contract ownership, epoch timing, and chunk-limit configuration.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "get_account_stats",
+    description: "Read inbox and sent-message counts for an account.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Wallet address to inspect" }
+      },
+      required: ["account"]
+    }
+  },
+  {
+    name: "get_message_metadata",
+    description: "Read public routing and timestamp metadata for a message without decrypting it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        messageId: {
+          oneOf: [{ type: "string" }, { type: "integer" }],
+          description: "Message identifier"
+        }
+      },
+      required: ["messageId"]
+    }
+  },
+  {
     name: "get_current_epoch",
     description: "Read the current 14-day reward epoch.",
     inputSchema: {
       type: "object",
       properties: {}
+    }
+  },
+  {
+    name: "get_epoch_for_timestamp",
+    description: "Resolve which reward epoch contains a given Unix timestamp.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        timestamp: {
+          oneOf: [{ type: "string" }, { type: "integer" }],
+          description: "Unix timestamp in seconds"
+        }
+      },
+      required: ["timestamp"]
+    }
+  },
+  {
+    name: "get_epoch_usage",
+    description: "Read an agent's encrypted-cell usage, claim status, and pending rewards for an epoch.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        epoch: {
+          oneOf: [{ type: "string" }, { type: "integer" }],
+          description: "Epoch identifier"
+        },
+        agent: { type: "string", description: "Agent wallet address" }
+      },
+      required: ["epoch", "agent"]
     }
   },
   {
@@ -84,7 +170,7 @@ export const PRIVATE_AGENT_MESSAGING_MCP_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: "get_epoch_summary",
-    description: "Read message-count and reward-pool totals for an epoch.",
+    description: "Read usage-unit and reward-pool totals for an epoch.",
     inputSchema: {
       type: "object",
       properties: {
@@ -178,7 +264,17 @@ export async function invokePrivateAgentMessagingTool(
       return toJsonValue(
         await sendMessage(client, {
           to: asString(input.to, "to"),
-          plaintext: asString(input.plaintext, "plaintext")
+          plaintext: asString(input.plaintext, "plaintext"),
+          maxChunkBytes:
+            input.maxChunkBytes === undefined
+              ? undefined
+              : asNumber(input.maxChunkBytes, 24),
+          gasLimit:
+            input.gasLimit === undefined ? undefined : asIdLike(input.gasLimit, "gasLimit"),
+          gasBufferBps:
+            input.gasBufferBps === undefined
+              ? undefined
+              : asNumber(input.gasBufferBps, 2000)
         })
       );
     case "read_message":
@@ -206,10 +302,31 @@ export async function invokePrivateAgentMessagingTool(
           decrypt: asBoolean(input.decrypt, true)
         })
       );
+    case "get_contract_config":
+      return toJsonValue(await getContractConfig(client));
+    case "get_account_stats":
+      return toJsonValue(await getAccountStats(client, asString(input.account, "account")));
+    case "get_message_metadata":
+      return toJsonValue(
+        await getMessageMetadata(client, asIdLike(input.messageId, "messageId"))
+      );
     case "get_current_epoch":
       return toJsonValue({
         epoch: await getCurrentEpoch(client)
       });
+    case "get_epoch_for_timestamp":
+      return toJsonValue({
+        timestamp: asIdLike(input.timestamp, "timestamp"),
+        epoch: await getEpochForTimestamp(client, asIdLike(input.timestamp, "timestamp"))
+      });
+    case "get_epoch_usage":
+      return toJsonValue(
+        await getEpochUsage(
+          client,
+          asIdLike(input.epoch, "epoch"),
+          asString(input.agent, "agent")
+        )
+      );
     case "get_pending_rewards":
       return toJsonValue({
         epoch: asIdLike(input.epoch, "epoch"),

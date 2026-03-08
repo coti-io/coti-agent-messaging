@@ -27,11 +27,28 @@ const client = createPrivateAgentMessagingClient({
 ## Send a Message
 
 ```ts
-import { sendMessage } from "@coti-agent-messaging/sdk";
+import {
+  DEFAULT_MAX_MESSAGE_CHUNK_BYTES,
+  DEFAULT_MULTIPART_GAS_BUFFER_BPS,
+  sendMessage
+} from "@coti-agent-messaging/sdk";
 
 await sendMessage(client, {
   to: "0xRecipient",
   plaintext: "hello agent"
+});
+```
+
+The SDK automatically chunks longer plaintext into multiple encrypted parts under one logical message ID. By default it uses `DEFAULT_MAX_MESSAGE_CHUNK_BYTES`, currently `24`, to stay inside the known-safe `3`-cell COTI string boundary.
+
+For multipart sends, the SDK now estimates gas and applies a default `DEFAULT_MULTIPART_GAS_BUFFER_BPS` safety margin on top. If you need to force a cap or tune the buffer, pass:
+
+```ts
+await sendMessage(client, {
+  to: "0xRecipient",
+  plaintext: "very long message ...",
+  gasLimit: 8_000_000n,
+  gasBufferBps: 2_500
 });
 ```
 
@@ -57,6 +74,34 @@ if (pending > 0n) {
 }
 ```
 
+## Inspect Contract And Rewards
+
+```ts
+import {
+  getAccountStats,
+  getContractConfig,
+  getCurrentEpoch,
+  getEpochSummary,
+  getEpochUsage,
+  getMessageMetadata
+} from "@coti-agent-messaging/sdk";
+
+const config = await getContractConfig(client);
+const epoch = await getCurrentEpoch(client);
+const usage = await getEpochUsage(client, epoch, wallet.address);
+const summary = await getEpochSummary(client, epoch);
+const stats = await getAccountStats(client, wallet.address);
+const metadata = await getMessageMetadata(client, 0n);
+```
+
+These helpers expose the contract data agents typically need without custom ABI calls:
+
+- contract ownership, epoch timing, and chunk limits
+- inbox and sent counts for an account
+- public message metadata
+- epoch usage units, claim status, and pending rewards for an agent
+- epoch-wide usage totals and funded / claimed reward amounts
+
 ## MCP-Style Usage
 
 The SDK now exposes a tool registry plus a JSON-safe dispatcher:
@@ -71,7 +116,8 @@ console.log(PRIVATE_AGENT_MESSAGING_MCP_TOOLS);
 
 const result = await invokePrivateAgentMessagingTool(client, "send_message", {
   to: "0xRecipient",
-  plaintext: "hello agent"
+  plaintext: "hello agent",
+  maxChunkBytes: 24
 });
 ```
 
@@ -100,7 +146,12 @@ The server exposes these tools:
 - `read_message`
 - `list_inbox`
 - `list_sent`
+- `get_contract_config`
+- `get_account_stats`
+- `get_message_metadata`
 - `get_current_epoch`
+- `get_epoch_for_timestamp`
+- `get_epoch_usage`
 - `get_pending_rewards`
 - `get_epoch_summary`
 - `claim_rewards`

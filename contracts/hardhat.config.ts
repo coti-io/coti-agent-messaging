@@ -1,6 +1,16 @@
-import "dotenv/config";
 import "@nomicfoundation/hardhat-toolbox";
+import dotenv from "dotenv";
 import { HardhatUserConfig } from "hardhat/config";
+import path from "node:path";
+
+dotenv.config({
+  path: path.resolve(__dirname, "..", ".env")
+});
+
+dotenv.config({
+  path: path.resolve(__dirname, ".env"),
+  override: true
+});
 
 const privateKey = process.env.PRIVATE_KEY;
 

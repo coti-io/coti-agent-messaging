@@ -32,10 +32,14 @@ describe("PrivateAgentMessaging", () => {
     const senderView = await contract.connect(alice).getMessage(0);
     expect(senderView.from).to.equal(alice.address);
     expect(senderView.to).to.equal(bob.address);
+    expect(senderView.chunkCount).to.equal(1n);
     expect(senderView.ciphertext.value).to.deep.equal([21n, 22n]);
 
     const recipientView = await contract.connect(bob).getMessage(0);
     expect(recipientView.ciphertext.value).to.deep.equal([31n, 32n]);
+    expect((await contract.getSenderCiphertext(0)).value).to.deep.equal([21n, 22n]);
+    expect((await contract.getRecipientCiphertext(0)).value).to.deep.equal([31n, 32n]);
+    expect((await contract.getNetworkCiphertext(0)).value).to.deep.equal([11n, 12n]);
 
     await expect(contract.connect(carol).getMessage(0)).to.be.revertedWithCustomError(
       contract,
@@ -43,53 +47,81 @@ describe("PrivateAgentMessaging", () => {
     );
   });
 
-  it("splits epoch rewards by message usage and gives final dust to the last claimant", async () => {
+  it("stores multipart messages and returns chunked ciphertexts", async () => {
+    const { contract, alice, bob, carol, ct } = await loadFixture(deployFixture);
+
+    await contract.recordSyntheticMultipartMessage(
+      alice.address,
+      bob.address,
+      [ct([11n]), ct([12n])],
+      [ct([21n]), ct([22n])],
+      [ct([31n]), ct([32n])]
+    );
+
+    const initialView = await contract.connect(alice).getMessage(0);
+    expect(initialView.chunkCount).to.equal(2n);
+    expect(initialView.ciphertext.value).to.deep.equal([21n]);
+
+    const secondChunk = await contract.connect(alice).getMessageChunk(0, 1);
+    expect(secondChunk.value).to.deep.equal([22n]);
+
+    const recipientSecondChunk = await contract.getRecipientChunkCiphertext(0, 1);
+    expect(recipientSecondChunk.value).to.deep.equal([32n]);
+
+    await expect(contract.connect(carol).getMessageChunk(0, 1)).to.be.revertedWithCustomError(
+      contract,
+      "UnauthorizedViewer"
+    );
+
+    await expect(contract.connect(alice).getMessageChunk(0, 2)).to.be.revertedWithCustomError(
+      contract,
+      "ChunkOutOfBounds"
+    );
+  });
+
+  it("splits epoch rewards by encrypted cell usage and gives final dust to the last claimant", async () => {
     const { contract, alice, bob, ct } = await loadFixture(deployFixture);
 
-    await contract.fundEpoch(0, { value: 10n });
+    await contract.fundEpoch(0, { value: 11n });
 
-    await contract.recordSyntheticMessage(
+    await contract.recordSyntheticMultipartMessage(
       alice.address,
       bob.address,
-      ct([1n]),
-      ct([101n]),
-      ct([201n])
-    );
-    await contract.recordSyntheticMessage(
-      alice.address,
-      bob.address,
-      ct([2n]),
-      ct([102n]),
-      ct([202n])
+      [ct([1n]), ct([2n, 3n])],
+      [ct([101n]), ct([102n, 103n])],
+      [ct([201n]), ct([202n, 203n])]
     );
     await contract.recordSyntheticMessage(
       bob.address,
       alice.address,
-      ct([3n]),
-      ct([103n]),
-      ct([203n])
+      ct([4n]),
+      ct([104n]),
+      ct([204n])
     );
 
     await time.increase(14 * 24 * 60 * 60 + 1);
 
-    expect(await contract.pendingRewards(0, alice.address)).to.equal(6n);
-    expect(await contract.pendingRewards(0, bob.address)).to.equal(3n);
+    expect(await contract.epochUsageUnits(0, alice.address)).to.equal(3n);
+    expect(await contract.epochUsageUnits(0, bob.address)).to.equal(1n);
+    expect(await contract.pendingRewards(0, alice.address)).to.equal(8n);
+    expect(await contract.pendingRewards(0, bob.address)).to.equal(2n);
 
     await expect(() => contract.connect(alice).claimRewards(0)).to.changeEtherBalances(
       [alice, contract],
-      [6n, -6n]
+      [8n, -8n]
     );
 
-    expect(await contract.pendingRewards(0, bob.address)).to.equal(4n);
+    expect(await contract.pendingRewards(0, bob.address)).to.equal(3n);
 
     await expect(() => contract.connect(bob).claimRewards(0)).to.changeEtherBalances(
       [bob, contract],
-      [4n, -4n]
+      [3n, -3n]
     );
 
     const summary = await contract.getEpochSummary(0);
-    expect(summary.claimedAmount).to.equal(10n);
-    expect(summary.claimedUsage).to.equal(3n);
+    expect(summary.claimedAmount).to.equal(11n);
+    expect(summary.totalUsageUnits).to.equal(4n);
+    expect(summary.claimedUsageUnits).to.equal(4n);
   });
 
   it("rejects active-epoch claims, double claims, and past-epoch funding", async () => {

@@ -13,6 +13,7 @@ export interface MessageView {
   to: string;
   timestamp: bigint;
   epoch: bigint;
+  chunkCount: bigint;
   ciphertext: CtString;
 }
 
@@ -23,15 +24,48 @@ export interface PaginationRequest {
 }
 
 export interface EpochSummary {
-  totalMessages: bigint;
+  totalUsageUnits: bigint;
   rewardPool: bigint;
   claimedAmount: bigint;
-  claimedUsage: bigint;
+  claimedUsageUnits: bigint;
+}
+
+export interface EpochUsage {
+  epoch: bigint;
+  agent: string;
+  usageUnits: bigint;
+  totalUsageUnits: bigint;
+  pendingRewards: bigint;
+  hasClaimed: boolean;
+}
+
+export interface ContractConfig {
+  owner: string;
+  epochDuration: bigint;
+  genesisTimestamp: bigint;
+  maxChunkCells: bigint;
+  maxChunksPerMessage: bigint;
+}
+
+export interface AccountStats {
+  account: string;
+  inboxCount: bigint;
+  sentCount: bigint;
+}
+
+export interface MessageMetadata {
+  from: string;
+  to: string;
+  timestamp: bigint;
+  epoch: bigint;
 }
 
 export interface SendMessageRequest {
   to: string;
   plaintext: string;
+  maxChunkBytes?: number;
+  gasLimit?: bigint | number | string;
+  gasBufferBps?: number;
 }
 
 export interface SendMessageResult {
@@ -46,6 +80,7 @@ export interface ReadMessageRequest {
 
 export interface ReadMessageResult {
   message: MessageView;
+  chunks: CtString[];
   plaintext?: string;
 }
 
@@ -83,7 +118,12 @@ export type McpToolName =
   | "read_message"
   | "list_inbox"
   | "list_sent"
+  | "get_contract_config"
+  | "get_account_stats"
+  | "get_message_metadata"
   | "get_current_epoch"
+  | "get_epoch_for_timestamp"
+  | "get_epoch_usage"
   | "get_pending_rewards"
   | "get_epoch_summary"
   | "claim_rewards"

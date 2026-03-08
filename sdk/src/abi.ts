@@ -25,6 +25,90 @@ export const PRIVATE_AGENT_MESSAGING_ABI = [
   },
   {
     type: "function",
+    name: "owner",
+    inputs: [],
+    outputs: [
+      {
+        name: "",
+        type: "address",
+        internalType: "address"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "epochDuration",
+    inputs: [],
+    outputs: [
+      {
+        name: "",
+        type: "uint64",
+        internalType: "uint64"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "genesisTimestamp",
+    inputs: [],
+    outputs: [
+      {
+        name: "",
+        type: "uint64",
+        internalType: "uint64"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "MAX_CHUNK_CELLS",
+    inputs: [],
+    outputs: [
+      {
+        name: "",
+        type: "uint8",
+        internalType: "uint8"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "MAX_CHUNKS_PER_MESSAGE",
+    inputs: [],
+    outputs: [
+      {
+        name: "",
+        type: "uint32",
+        internalType: "uint32"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "epochForTimestamp",
+    inputs: [
+      {
+        name: "timestamp",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    outputs: [
+      {
+        name: "",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
     name: "fundEpoch",
     inputs: [
       {
@@ -48,7 +132,7 @@ export const PRIVATE_AGENT_MESSAGING_ABI = [
     ],
     outputs: [
       {
-        name: "totalMessages",
+        name: "totalUsageUnits",
         type: "uint256",
         internalType: "uint256"
       },
@@ -63,9 +147,76 @@ export const PRIVATE_AGENT_MESSAGING_ABI = [
         internalType: "uint256"
       },
       {
-        name: "claimedUsage",
+        name: "claimedUsageUnits",
         type: "uint256",
         internalType: "uint256"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "epochUsageUnits",
+    inputs: [
+      {
+        name: "",
+        type: "uint256",
+        internalType: "uint256"
+      },
+      {
+        name: "",
+        type: "address",
+        internalType: "address"
+      }
+    ],
+    outputs: [
+      {
+        name: "",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "epochTotalUsageUnits",
+    inputs: [
+      {
+        name: "",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    outputs: [
+      {
+        name: "",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "epochHasClaimed",
+    inputs: [
+      {
+        name: "",
+        type: "uint256",
+        internalType: "uint256"
+      },
+      {
+        name: "",
+        type: "address",
+        internalType: "address"
+      }
+    ],
+    outputs: [
+      {
+        name: "",
+        type: "bool",
+        internalType: "bool"
       }
     ],
     stateMutability: "view"
@@ -158,6 +309,49 @@ export const PRIVATE_AGENT_MESSAGING_ABI = [
   },
   {
     type: "function",
+    name: "sendMultipartMessage",
+    inputs: [
+      {
+        name: "to",
+        type: "address",
+        internalType: "address"
+      },
+      {
+        name: "encryptedChunks",
+        type: "tuple[]",
+        internalType: "struct itString[]",
+        components: [
+          {
+            name: "ciphertext",
+            type: "tuple",
+            internalType: "struct ctString",
+            components: [
+              {
+                name: "value",
+                type: "uint256[]",
+                internalType: "ctUint64[]"
+              }
+            ]
+          },
+          {
+            name: "signature",
+            type: "bytes[]",
+            internalType: "bytes[]"
+          }
+        ]
+      }
+    ],
+    outputs: [
+      {
+        name: "messageId",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    stateMutability: "nonpayable"
+  },
+  {
+    type: "function",
     name: "getMessage",
     inputs: [
       {
@@ -198,6 +392,11 @@ export const PRIVATE_AGENT_MESSAGING_ABI = [
             internalType: "uint64"
           },
           {
+            name: "chunkCount",
+            type: "uint32",
+            internalType: "uint32"
+          },
+          {
             name: "ciphertext",
             type: "tuple",
             internalType: "struct ctString",
@@ -208,6 +407,56 @@ export const PRIVATE_AGENT_MESSAGING_ABI = [
                 internalType: "ctUint64[]"
               }
             ]
+          }
+        ]
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "getMessageChunkCount",
+    inputs: [
+      {
+        name: "messageId",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    outputs: [
+      {
+        name: "chunkCount",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "getMessageChunk",
+    inputs: [
+      {
+        name: "messageId",
+        type: "uint256",
+        internalType: "uint256"
+      },
+      {
+        name: "chunkIndex",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    outputs: [
+      {
+        name: "ciphertext",
+        type: "tuple",
+        internalType: "struct ctString",
+        components: [
+          {
+            name: "value",
+            type: "uint256[]",
+            internalType: "ctUint64[]"
           }
         ]
       }
@@ -244,6 +493,177 @@ export const PRIVATE_AGENT_MESSAGING_ABI = [
         name: "epoch",
         type: "uint64",
         internalType: "uint64"
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "getSenderCiphertext",
+    inputs: [
+      {
+        name: "messageId",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    outputs: [
+      {
+        name: "ciphertext",
+        type: "tuple",
+        internalType: "struct ctString",
+        components: [
+          {
+            name: "value",
+            type: "uint256[]",
+            internalType: "ctUint64[]"
+          }
+        ]
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "getSenderChunkCiphertext",
+    inputs: [
+      {
+        name: "messageId",
+        type: "uint256",
+        internalType: "uint256"
+      },
+      {
+        name: "chunkIndex",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    outputs: [
+      {
+        name: "ciphertext",
+        type: "tuple",
+        internalType: "struct ctString",
+        components: [
+          {
+            name: "value",
+            type: "uint256[]",
+            internalType: "ctUint64[]"
+          }
+        ]
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "getRecipientCiphertext",
+    inputs: [
+      {
+        name: "messageId",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    outputs: [
+      {
+        name: "ciphertext",
+        type: "tuple",
+        internalType: "struct ctString",
+        components: [
+          {
+            name: "value",
+            type: "uint256[]",
+            internalType: "ctUint64[]"
+          }
+        ]
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "getRecipientChunkCiphertext",
+    inputs: [
+      {
+        name: "messageId",
+        type: "uint256",
+        internalType: "uint256"
+      },
+      {
+        name: "chunkIndex",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    outputs: [
+      {
+        name: "ciphertext",
+        type: "tuple",
+        internalType: "struct ctString",
+        components: [
+          {
+            name: "value",
+            type: "uint256[]",
+            internalType: "ctUint64[]"
+          }
+        ]
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "getNetworkCiphertext",
+    inputs: [
+      {
+        name: "messageId",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    outputs: [
+      {
+        name: "ciphertext",
+        type: "tuple",
+        internalType: "struct ctString",
+        components: [
+          {
+            name: "value",
+            type: "uint256[]",
+            internalType: "ctUint64[]"
+          }
+        ]
+      }
+    ],
+    stateMutability: "view"
+  },
+  {
+    type: "function",
+    name: "getNetworkChunkCiphertext",
+    inputs: [
+      {
+        name: "messageId",
+        type: "uint256",
+        internalType: "uint256"
+      },
+      {
+        name: "chunkIndex",
+        type: "uint256",
+        internalType: "uint256"
+      }
+    ],
+    outputs: [
+      {
+        name: "ciphertext",
+        type: "tuple",
+        internalType: "struct ctString",
+        components: [
+          {
+            name: "value",
+            type: "uint256[]",
+            internalType: "ctUint64[]"
+          }
+        ]
       }
     ],
     stateMutability: "view"

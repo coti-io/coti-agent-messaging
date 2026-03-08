@@ -13,6 +13,42 @@ contract PrivateAgentMessagingHarness is PrivateAgentMessaging {
         ctString calldata senderCiphertext,
         ctString calldata recipientCiphertext
     ) external returns (uint256 messageId) {
-        return _storeMessage(from, to, networkCiphertext, senderCiphertext, recipientCiphertext);
+        messageId = _createMessageRecord(from, to, 1);
+        _addEpochUsage(currentEpoch(), from, networkCiphertext.value.length);
+        _storeChunkCiphertexts(
+            messageId,
+            0,
+            networkCiphertext,
+            senderCiphertext,
+            recipientCiphertext
+        );
+    }
+
+    function recordSyntheticMultipartMessage(
+        address from,
+        address to,
+        ctString[] calldata networkCiphertexts,
+        ctString[] calldata senderCiphertexts,
+        ctString[] calldata recipientCiphertexts
+    ) external returns (uint256 messageId) {
+        require(networkCiphertexts.length > 0, "chunk count");
+        require(networkCiphertexts.length == senderCiphertexts.length, "sender length");
+        require(networkCiphertexts.length == recipientCiphertexts.length, "recipient length");
+
+        messageId = _createMessageRecord(from, to, networkCiphertexts.length);
+        uint256 usageUnits;
+
+        for (uint256 i = 0; i < networkCiphertexts.length; i++) {
+            usageUnits += networkCiphertexts[i].value.length;
+            _storeChunkCiphertexts(
+                messageId,
+                i,
+                networkCiphertexts[i],
+                senderCiphertexts[i],
+                recipientCiphertexts[i]
+            );
+        }
+
+        _addEpochUsage(currentEpoch(), from, usageUnits);
     }
 }

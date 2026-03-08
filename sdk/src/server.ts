@@ -1,6 +1,11 @@
 import "dotenv/config";
 
-import { CotiNetwork, Wallet, getDefaultProvider } from "@coti-io/coti-ethers";
+import {
+  CotiNetwork,
+  JsonRpcProvider,
+  Wallet,
+  getDefaultProvider
+} from "@coti-io/coti-ethers";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -28,8 +33,23 @@ function resolveNetwork(): CotiNetwork {
   return CotiNetwork.Testnet;
 }
 
+function resolveRpcUrl(): string | undefined {
+  if (process.env.COTI_RPC_URL) {
+    return process.env.COTI_RPC_URL;
+  }
+
+  const network = resolveNetwork();
+  if (network === CotiNetwork.Mainnet) {
+    return process.env.COTI_MAINNET_RPC_URL;
+  }
+
+  return process.env.COTI_TESTNET_RPC_URL;
+}
+
 function buildClient() {
-  const provider = getDefaultProvider(resolveNetwork());
+  const network = resolveNetwork();
+  const rpcUrl = resolveRpcUrl();
+  const provider = rpcUrl ? new JsonRpcProvider(rpcUrl) : getDefaultProvider(network);
   const wallet = new Wallet(getRequiredEnv("PRIVATE_KEY"), provider);
   wallet.setAesKey(getRequiredEnv("AES_KEY"));
 
@@ -73,7 +93,10 @@ export async function startMcpServer() {
         ?.description,
       inputSchema: {
         to: z.string().min(1),
-        plaintext: z.string()
+        plaintext: z.string(),
+        maxChunkBytes: z.number().int().positive().optional(),
+        gasLimit: z.union([z.string(), z.number().int().nonnegative()]).optional(),
+        gasBufferBps: z.number().int().nonnegative().optional()
       }
     },
     async (args) => {
@@ -135,6 +158,54 @@ export async function startMcpServer() {
   );
 
   server.registerTool(
+    "get_contract_config",
+    {
+      title: "Get Contract Config",
+      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+        (tool) => tool.name === "get_contract_config"
+      )?.description
+    },
+    async () => {
+      const result = await invokePrivateAgentMessagingTool(client, "get_contract_config", {});
+      return { content: formatToolContent(result) };
+    }
+  );
+
+  server.registerTool(
+    "get_account_stats",
+    {
+      title: "Get Account Stats",
+      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+        (tool) => tool.name === "get_account_stats"
+      )?.description,
+      inputSchema: {
+        account: z.string().min(1)
+      }
+    },
+    async (args) => {
+      const result = await invokePrivateAgentMessagingTool(client, "get_account_stats", args);
+      return { content: formatToolContent(result) };
+    }
+  );
+
+  server.registerTool(
+    "get_message_metadata",
+    {
+      title: "Get Message Metadata",
+      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+        (tool) => tool.name === "get_message_metadata"
+      )?.description,
+      inputSchema: {
+        messageId: z.union([z.string(), z.number().int().nonnegative()])
+      }
+    },
+    async (args) => {
+      const result = await invokePrivateAgentMessagingTool(client, "get_message_metadata", args);
+      return { content: formatToolContent(result) };
+    }
+  );
+
+  server.registerTool(
     "get_current_epoch",
     {
       title: "Get Current Epoch",
@@ -151,6 +222,45 @@ export async function startMcpServer() {
   const epochSchema = {
     epoch: z.union([z.string(), z.number().int().nonnegative()])
   };
+
+  server.registerTool(
+    "get_epoch_for_timestamp",
+    {
+      title: "Get Epoch For Timestamp",
+      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+        (tool) => tool.name === "get_epoch_for_timestamp"
+      )?.description,
+      inputSchema: {
+        timestamp: z.union([z.string(), z.number().int().nonnegative()])
+      }
+    },
+    async (args) => {
+      const result = await invokePrivateAgentMessagingTool(
+        client,
+        "get_epoch_for_timestamp",
+        args
+      );
+      return { content: formatToolContent(result) };
+    }
+  );
+
+  server.registerTool(
+    "get_epoch_usage",
+    {
+      title: "Get Epoch Usage",
+      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+        (tool) => tool.name === "get_epoch_usage"
+      )?.description,
+      inputSchema: {
+        epoch: z.union([z.string(), z.number().int().nonnegative()]),
+        agent: z.string().min(1)
+      }
+    },
+    async (args) => {
+      const result = await invokePrivateAgentMessagingTool(client, "get_epoch_usage", args);
+      return { content: formatToolContent(result) };
+    }
+  );
 
   server.registerTool(
     "get_epoch_summary",

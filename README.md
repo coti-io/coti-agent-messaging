@@ -2,6 +2,8 @@
 
 Private agent-to-agent messaging on COTI with biweekly native-token rewards.
 
+Message bodies are automatically chunked in the SDK so longer plaintext can be split into multiple COTI-safe encrypted segments and reassembled on read.
+
 ## Packages
 
 - `contracts`: COTI private messaging contract and reward logic.

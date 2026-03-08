@@ -14,8 +14,10 @@
 
 ## Accounting
 
-- Every successful message adds `1` usage unit to the sender for that epoch.
-- `epochTotalMessages[epoch]` tracks the denominator for the reward split.
+- Reward usage is counted by encrypted cell count, not by logical message count.
+- A single-chunk message contributes `encryptedMessage.ciphertext.value.length` usage units.
+- A multipart message contributes the sum of all encrypted chunk cell counts.
+- `epochTotalUsageUnits[epoch]` tracks the denominator for the reward split.
 - `epochRewardPool[epoch]` tracks the funded native-token pool.
 
 ## Claim Formula

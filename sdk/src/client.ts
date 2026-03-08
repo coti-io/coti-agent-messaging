@@ -26,6 +26,10 @@ export class PrivateAgentMessagingClient {
   get sendMessageSelector(): string {
     return this.contract.sendMessage.fragment.selector;
   }
+
+  get sendMultipartMessageSelector(): string {
+    return this.contract.sendMultipartMessage.fragment.selector;
+  }
 }
 
 export function createPrivateAgentMessagingClient(

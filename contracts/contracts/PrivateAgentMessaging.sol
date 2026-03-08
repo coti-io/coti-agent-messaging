@@ -10,6 +10,9 @@ contract PrivateAgentMessaging {
     error MessageNotFound();
     error UnauthorizedViewer();
     error ZeroValue();
+    error InvalidChunkCount();
+    error ChunkTooLarge();
+    error ChunkOutOfBounds();
     error EpochStillActive();
     error NothingToClaim();
     error AlreadyClaimed();
@@ -32,9 +35,7 @@ contract PrivateAgentMessaging {
         address to;
         uint64 timestamp;
         uint64 epoch;
-        ctString networkCiphertext;
-        ctString senderCiphertext;
-        ctString recipientCiphertext;
+        uint32 chunkCount;
     }
 
     struct MessageView {
@@ -43,8 +44,12 @@ contract PrivateAgentMessaging {
         address to;
         uint64 timestamp;
         uint64 epoch;
+        uint32 chunkCount;
         ctString ciphertext;
     }
+
+    uint8 public constant MAX_CHUNK_CELLS = 3;
+    uint32 public constant MAX_CHUNKS_PER_MESSAGE = 64;
 
     address public owner;
     uint64 public immutable epochDuration;
@@ -53,14 +58,17 @@ contract PrivateAgentMessaging {
     uint256 private _nextMessageId;
 
     mapping(uint256 => MessageRecord) private _messages;
+    mapping(uint256 => mapping(uint256 => ctString)) private _networkCiphertexts;
+    mapping(uint256 => mapping(uint256 => ctString)) private _senderCiphertexts;
+    mapping(uint256 => mapping(uint256 => ctString)) private _recipientCiphertexts;
     mapping(address => uint256[]) private _inboxMessageIds;
     mapping(address => uint256[]) private _sentMessageIds;
 
-    mapping(uint256 => mapping(address => uint256)) public epochMessageCount;
-    mapping(uint256 => uint256) public epochTotalMessages;
+    mapping(uint256 => mapping(address => uint256)) public epochUsageUnits;
+    mapping(uint256 => uint256) public epochTotalUsageUnits;
     mapping(uint256 => uint256) public epochRewardPool;
     mapping(uint256 => uint256) public epochClaimedAmount;
-    mapping(uint256 => uint256) public epochClaimedUsage;
+    mapping(uint256 => uint256) public epochClaimedUsageUnits;
     mapping(uint256 => mapping(address => bool)) public epochHasClaimed;
 
     modifier onlyOwner() {
@@ -128,14 +136,54 @@ contract PrivateAgentMessaging {
             revert InvalidRecipient();
         }
 
+        uint256 usageUnits = _validateEncryptedChunk(encryptedMessage);
+
+        messageId = _createMessageRecord(msg.sender, to, 1);
+
         gtString memory validatedMessage = MpcCore.validateCiphertext(encryptedMessage);
-        messageId = _storeMessage(
-            msg.sender,
-            to,
+        _storeChunkCiphertexts(
+            messageId,
+            0,
             MpcCore.offBoard(validatedMessage),
             MpcCore.offBoardToUser(validatedMessage, msg.sender),
             MpcCore.offBoardToUser(validatedMessage, to)
         );
+
+        _addEpochUsage(_messages[messageId].epoch, msg.sender, usageUnits);
+    }
+
+    function sendMultipartMessage(address to, itString[] calldata encryptedChunks)
+        external
+        returns (uint256 messageId)
+    {
+        if (to == address(0) || to == msg.sender) {
+            revert InvalidRecipient();
+        }
+
+        uint256 chunkCount = encryptedChunks.length;
+        if (chunkCount == 0 || chunkCount > MAX_CHUNKS_PER_MESSAGE) {
+            revert InvalidChunkCount();
+        }
+
+        uint256 usageUnits;
+        for (uint256 i = 0; i < chunkCount; i++) {
+            usageUnits += _validateEncryptedChunk(encryptedChunks[i]);
+        }
+
+        messageId = _createMessageRecord(msg.sender, to, chunkCount);
+
+        for (uint256 i = 0; i < chunkCount; i++) {
+            gtString memory validatedMessage = MpcCore.validateCiphertext(encryptedChunks[i]);
+            _storeChunkCiphertexts(
+                messageId,
+                i,
+                MpcCore.offBoard(validatedMessage),
+                MpcCore.offBoardToUser(validatedMessage, msg.sender),
+                MpcCore.offBoardToUser(validatedMessage, to)
+            );
+        }
+
+        _addEpochUsage(_messages[messageId].epoch, msg.sender, usageUnits);
     }
 
     function getMessageMetadata(uint256 messageId)
@@ -149,7 +197,7 @@ contract PrivateAgentMessaging {
 
     function getMessage(uint256 messageId) external view returns (MessageView memory messageView) {
         MessageRecord storage record = _requireMessage(messageId);
-        ctString memory ciphertext = _messageCiphertextForViewer(record, msg.sender);
+        ctString memory ciphertext = _messageCiphertextForViewer(messageId, record, msg.sender, 0);
 
         return MessageView({
             id: messageId,
@@ -157,13 +205,68 @@ contract PrivateAgentMessaging {
             to: record.to,
             timestamp: record.timestamp,
             epoch: record.epoch,
+            chunkCount: record.chunkCount,
             ciphertext: ciphertext
         });
     }
 
-    function getNetworkCiphertext(uint256 messageId) external view returns (ctString memory ciphertext) {
+    function getMessageChunkCount(uint256 messageId) external view returns (uint256 chunkCount) {
         MessageRecord storage record = _requireMessage(messageId);
-        return record.networkCiphertext;
+        return record.chunkCount;
+    }
+
+    function getMessageChunk(uint256 messageId, uint256 chunkIndex)
+        external
+        view
+        returns (ctString memory ciphertext)
+    {
+        MessageRecord storage record = _requireMessage(messageId);
+        return _messageCiphertextForViewer(messageId, record, msg.sender, chunkIndex);
+    }
+
+    function getSenderCiphertext(uint256 messageId) external view returns (ctString memory ciphertext) {
+        _requireMessage(messageId);
+        return _senderCiphertexts[messageId][0];
+    }
+
+    function getSenderChunkCiphertext(uint256 messageId, uint256 chunkIndex)
+        external
+        view
+        returns (ctString memory ciphertext)
+    {
+        MessageRecord storage record = _requireMessage(messageId);
+        _requireChunkIndex(record, chunkIndex);
+        return _senderCiphertexts[messageId][chunkIndex];
+    }
+
+    function getRecipientCiphertext(uint256 messageId) external view returns (ctString memory ciphertext) {
+        _requireMessage(messageId);
+        return _recipientCiphertexts[messageId][0];
+    }
+
+    function getRecipientChunkCiphertext(uint256 messageId, uint256 chunkIndex)
+        external
+        view
+        returns (ctString memory ciphertext)
+    {
+        MessageRecord storage record = _requireMessage(messageId);
+        _requireChunkIndex(record, chunkIndex);
+        return _recipientCiphertexts[messageId][chunkIndex];
+    }
+
+    function getNetworkCiphertext(uint256 messageId) external view returns (ctString memory ciphertext) {
+        _requireMessage(messageId);
+        return _networkCiphertexts[messageId][0];
+    }
+
+    function getNetworkChunkCiphertext(uint256 messageId, uint256 chunkIndex)
+        external
+        view
+        returns (ctString memory ciphertext)
+    {
+        MessageRecord storage record = _requireMessage(messageId);
+        _requireChunkIndex(record, chunkIndex);
+        return _networkCiphertexts[messageId][chunkIndex];
     }
 
     function inboxCount(address account) external view returns (uint256) {
@@ -195,15 +298,15 @@ contract PrivateAgentMessaging {
             return 0;
         }
 
-        uint256 usage = epochMessageCount[epoch][agent];
-        uint256 totalUsage = epochTotalMessages[epoch];
+        uint256 usage = epochUsageUnits[epoch][agent];
+        uint256 totalUsage = epochTotalUsageUnits[epoch];
         uint256 rewardPool = epochRewardPool[epoch];
 
         if (usage == 0 || totalUsage == 0 || rewardPool == 0) {
             return 0;
         }
 
-        uint256 claimedUsage = epochClaimedUsage[epoch];
+        uint256 claimedUsage = epochClaimedUsageUnits[epoch];
         uint256 claimedAmount = epochClaimedAmount[epoch];
 
         uint256 remainingUsage = totalUsage - claimedUsage;
@@ -230,10 +333,10 @@ contract PrivateAgentMessaging {
             revert NothingToClaim();
         }
 
-        uint256 usage = epochMessageCount[epoch][msg.sender];
+        uint256 usage = epochUsageUnits[epoch][msg.sender];
 
         epochHasClaimed[epoch][msg.sender] = true;
-        epochClaimedUsage[epoch] += usage;
+        epochClaimedUsageUnits[epoch] += usage;
         epochClaimedAmount[epoch] += amount;
 
         (bool success, ) = payable(msg.sender).call{value: amount}("");
@@ -248,17 +351,17 @@ contract PrivateAgentMessaging {
         external
         view
         returns (
-            uint256 totalMessages,
+            uint256 totalUsageUnits,
             uint256 rewardPool,
             uint256 claimedAmount,
-            uint256 claimedUsage
+            uint256 claimedUsageUnits
         )
     {
         return (
-            epochTotalMessages[epoch],
+            epochTotalUsageUnits[epoch],
             epochRewardPool[epoch],
             epochClaimedAmount[epoch],
-            epochClaimedUsage[epoch]
+            epochClaimedUsageUnits[epoch]
         );
     }
 
@@ -271,12 +374,10 @@ contract PrivateAgentMessaging {
         emit RewardFunded(epoch, funder, amount);
     }
 
-    function _storeMessage(
+    function _createMessageRecord(
         address from,
         address to,
-        ctString memory networkCiphertext,
-        ctString memory senderCiphertext,
-        ctString memory recipientCiphertext
+        uint256 chunkCount
     ) internal returns (uint256 messageId) {
         uint256 epoch = currentEpoch();
         messageId = _nextMessageId++;
@@ -287,32 +388,59 @@ contract PrivateAgentMessaging {
         record.to = to;
         record.timestamp = uint64(block.timestamp);
         record.epoch = uint64(epoch);
-        record.networkCiphertext = networkCiphertext;
-        record.senderCiphertext = senderCiphertext;
-        record.recipientCiphertext = recipientCiphertext;
+        record.chunkCount = uint32(chunkCount);
 
         _sentMessageIds[from].push(messageId);
         _inboxMessageIds[to].push(messageId);
 
-        epochMessageCount[epoch][from] += 1;
-        epochTotalMessages[epoch] += 1;
-
         emit MessageSent(messageId, from, to, epoch);
     }
 
+    function _addEpochUsage(uint256 epoch, address from, uint256 usageUnits) internal {
+        epochUsageUnits[epoch][from] += usageUnits;
+        epochTotalUsageUnits[epoch] += usageUnits;
+    }
+
+    function _storeChunkCiphertexts(
+        uint256 messageId,
+        uint256 chunkIndex,
+        ctString memory networkCiphertext,
+        ctString memory senderCiphertext,
+        ctString memory recipientCiphertext
+    ) internal {
+        _networkCiphertexts[messageId][chunkIndex] = networkCiphertext;
+        _senderCiphertexts[messageId][chunkIndex] = senderCiphertext;
+        _recipientCiphertexts[messageId][chunkIndex] = recipientCiphertext;
+    }
+
     function _messageCiphertextForViewer(
+        uint256 messageId,
         MessageRecord storage record,
-        address viewer
+        address viewer,
+        uint256 chunkIndex
     ) internal view returns (ctString memory ciphertext) {
+        _requireChunkIndex(record, chunkIndex);
+
         if (viewer == record.from) {
-            return record.senderCiphertext;
+            return _senderCiphertexts[messageId][chunkIndex];
         }
 
         if (viewer == record.to) {
-            return record.recipientCiphertext;
+            return _recipientCiphertexts[messageId][chunkIndex];
         }
 
         revert UnauthorizedViewer();
+    }
+
+    function _validateEncryptedChunk(itString calldata encryptedChunk) internal pure returns (uint256 cells) {
+        cells = encryptedChunk.ciphertext.value.length;
+        if (
+            cells == 0 ||
+            cells != encryptedChunk.signature.length ||
+            cells > MAX_CHUNK_CELLS
+        ) {
+            revert ChunkTooLarge();
+        }
     }
 
     function _slice(
@@ -339,6 +467,12 @@ contract PrivateAgentMessaging {
         record = _messages[messageId];
         if (!record.exists) {
             revert MessageNotFound();
+        }
+    }
+
+    function _requireChunkIndex(MessageRecord storage record, uint256 chunkIndex) internal view {
+        if (chunkIndex >= record.chunkCount) {
+            revert ChunkOutOfBounds();
         }
     }
 }

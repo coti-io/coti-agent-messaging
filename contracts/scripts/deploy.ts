@@ -1,0 +1,35 @@
+import { ethers } from "hardhat";
+
+const DEFAULT_EPOCH_DURATION = 14 * 24 * 60 * 60;
+
+async function main() {
+  const epochDurationSeconds = Number(
+    process.env.EPOCH_DURATION_SECONDS ?? DEFAULT_EPOCH_DURATION
+  );
+  const initialFundingWei = process.env.INITIAL_REWARD_FUND_WEI ?? "0";
+
+  if (!Number.isFinite(epochDurationSeconds) || epochDurationSeconds <= 0) {
+    throw new Error("EPOCH_DURATION_SECONDS must be a positive integer.");
+  }
+
+  const factory = await ethers.getContractFactory("PrivateAgentMessaging");
+  const contract = await factory.deploy(epochDurationSeconds, {
+    value: BigInt(initialFundingWei)
+  });
+
+  await contract.waitForDeployment();
+
+  const address = await contract.getAddress();
+  const network = await ethers.provider.getNetwork();
+
+  console.log("PrivateAgentMessaging deployed");
+  console.log(`network: ${network.name} (${network.chainId})`);
+  console.log(`address: ${address}`);
+  console.log(`epochDurationSeconds: ${epochDurationSeconds}`);
+  console.log(`initialRewardFundWei: ${initialFundingWei}`);
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

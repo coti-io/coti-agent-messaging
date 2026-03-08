@@ -1,0 +1,19 @@
+{
+  "name": "coti-agent-messaging",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "contracts",
+    "sdk"
+  ],
+  "scripts": {
+    "postinstall": "npm run generate:types",
+    "generate:types": "npm run generate:types -w contracts",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test -w contracts",
+    "lint": "npm run lint --workspaces --if-present",
+    "deploy:testnet": "npm run deploy:testnet -w contracts",
+    "deploy:mainnet": "npm run deploy:mainnet -w contracts",
+    "mcp:start": "npm run start:mcp -w sdk"
+  }
+}

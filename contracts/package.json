@@ -1,0 +1,27 @@
+{
+  "name": "@coti-agent-messaging/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "compile": "hardhat compile",
+    "generate:types": "hardhat compile",
+    "build": "npm run generate:types",
+    "test": "hardhat test",
+    "deploy:testnet": "hardhat run scripts/deploy.ts --network cotiTestnet",
+    "deploy:mainnet": "hardhat run scripts/deploy.ts --network cotiMainnet"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^25.3.5",
+    "hardhat": "^2.28.6",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@coti-io/coti-contracts": "^1.1.0",
+    "@coti-io/coti-ethers": "^1.0.5",
+    "dotenv": "^16.6.1"
+  }
+}

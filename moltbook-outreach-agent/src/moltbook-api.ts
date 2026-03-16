@@ -125,6 +125,35 @@ export interface MoltbookAgentProfile {
   last_active?: string;
 }
 
+export interface MoltbookAgentProfileResponse {
+  success?: boolean;
+  agent?: MoltbookAgentProfile;
+  recentPosts?: MoltbookPost[];
+  recentComments?: MoltbookComment[];
+}
+
+export interface MoltbookSearchResult {
+  id: string;
+  type: "post" | "comment";
+  title?: string | null;
+  content?: string;
+  post_id?: string;
+  post?: {
+    id?: string;
+    title?: string;
+  };
+}
+
+export interface MoltbookSearchResponse {
+  success?: boolean;
+  query?: string;
+  type?: "posts" | "comments" | "all";
+  results?: MoltbookSearchResult[];
+  count?: number;
+  has_more?: boolean;
+  next_cursor?: string;
+}
+
 export interface MoltbookVerifyResponse {
   success?: boolean;
   message?: string;
@@ -167,6 +196,10 @@ interface NumberMatch {
 interface VerificationLlmResult {
   answer: string;
   provider: string;
+}
+
+interface VerificationSolveResult extends VerificationLlmResult {
+  confidence: "high" | "low";
 }
 
 type VerificationCarrier =
@@ -243,6 +276,13 @@ function normalizeChallengeText(challengeText: string): string {
     .toLowerCase();
 }
 
+function denoiseChallengeText(challengeText: string): string {
+  return normalizeChallengeText(challengeText)
+    .split(" ")
+    .map((token) => token.replace(/([a-z])\1+/g, "$1"))
+    .join(" ");
+}
+
 function levenshteinDistance(left: string, right: string): number {
   const rows = left.length + 1;
   const cols = right.length + 1;
@@ -302,6 +342,30 @@ const NUMBER_WORDS = new Map<string, number>([
   ["hundred", 100]
 ]);
 
+const NON_NUMBER_TOKENS = new Set([
+  "a",
+  "an",
+  "and",
+  "at",
+  "by",
+  "for",
+  "from",
+  "her",
+  "his",
+  "in",
+  "is",
+  "it",
+  "new",
+  "of",
+  "on",
+  "per",
+  "the",
+  "their",
+  "what",
+  "whats",
+  "with"
+]);
+
 function fuzzyNumberValue(token: string): number | undefined {
   if (/^-?\d+(?:\.\d+)?$/.test(token)) {
     return Number(token);
@@ -319,6 +383,10 @@ function fuzzyNumberValue(token: string): number | undefined {
 
   let bestMatch: { value: number; distance: number } | undefined;
   for (const [word, value] of NUMBER_WORDS.entries()) {
+    if (token.length <= 5 && token[0] !== word[0]) {
+      continue;
+    }
+
     const distance = levenshteinDistance(token, word);
     const threshold = word.length >= 6 ? 2 : 1;
     if (distance > threshold) {
@@ -379,6 +447,9 @@ function parseNumberToken(tokens: readonly string[], startIndex: number): Number
     if (slice.length !== width) {
       continue;
     }
+    if (slice.some((token) => NON_NUMBER_TOKENS.has(token))) {
+      continue;
+    }
 
     const mergedValue = fuzzyNumberValue(slice.join(""));
     if (mergedValue !== undefined) {
@@ -406,8 +477,7 @@ function detectOperation(text: string): ((left: number, right: number) => number
       /\bsubtract\w*\b/,
       /\bdecreas\w*(?:\s+\w+){0,2}\s+by\b/,
       /\bdrop\w*(?:\s+\w+){0,2}\s+by\b/,
-      /\bslow\w*(?:\s+\w+){0,2}\s+by\b/,
-      /\bnew\s+(?:speed|velocity)\b/
+      /\bslow\w*(?:\s+\w+){0,2}\s+by\b/
     ])
   ) {
     return (left, right) => left - right;
@@ -453,21 +523,30 @@ function detectOperation(text: string): ((left: number, right: number) => number
 }
 
 export function solveVerificationChallenge(challengeText: string): string {
+  const variants = [...new Set([normalizeChallengeText(challengeText), denoiseChallengeText(challengeText)])];
+
+  for (const variant of variants) {
+    const numbers = extractNumbers(variant);
+    const operation = detectOperation(variant);
+    if (numbers.length < 2 || !operation) {
+      continue;
+    }
+
+    const [left, right] = selectOperands(numbers);
+    const result = operation(left, right);
+    if (!Number.isFinite(result)) {
+      continue;
+    }
+
+    return result.toFixed(2);
+  }
+
+  throw new Error(`Unable to solve verification challenge: ${challengeText}`);
+}
+
+function shouldPreferLlmVerification(challengeText: string): boolean {
   const normalized = normalizeChallengeText(challengeText);
-  const numbers = extractNumbers(normalized);
-  const operation = detectOperation(normalized);
-
-  if (numbers.length < 2 || !operation) {
-    throw new Error(`Unable to solve verification challenge: ${challengeText}`);
-  }
-
-  const [left, right] = selectOperands(numbers);
-  const result = operation(left, right);
-  if (!Number.isFinite(result)) {
-    throw new Error(`Verification challenge produced a non-finite result: ${challengeText}`);
-  }
-
-  return result.toFixed(2);
+  return /([a-z])\1{2,}/.test(normalized);
 }
 
 function selectOperands(numbers: readonly number[]): [number, number] {
@@ -500,11 +579,11 @@ async function solveVerificationChallengeWithLlm(
       {
         role: "system",
         content:
-          "You solve distorted arithmetic verification challenges. Extract the two main operands and operation from noisy text, ignore incidental counts, and return JSON like {\"answer\":\"15.00\"}."
+          "You solve distorted arithmetic verification challenges. The text often repeats letters or injects noise. Recover the intended two operands and operation, ignore incidental counts, do the arithmetic, and return strict JSON like {\"answer\":\"15.00\"}."
       },
       {
         role: "user",
-        content: `Raw challenge: ${challengeText}\nNormalized challenge: ${normalizeChallengeText(challengeText)}`
+        content: `Raw challenge: ${challengeText}\nNormalized challenge: ${normalizeChallengeText(challengeText)}\nDenoised challenge: ${denoiseChallengeText(challengeText)}`
       }
     ],
     fetchImpl
@@ -542,23 +621,50 @@ export async function solveVerificationChallengeWithFallback(
     verificationLlm?: MoltbookApiClientOptions["verificationLlm"];
     fetchImpl?: typeof fetch;
   } = {}
-): Promise<VerificationLlmResult> {
+): Promise<VerificationSolveResult> {
+  if (options.verificationLlm && shouldPreferLlmVerification(challengeText)) {
+    const result = await solveVerificationChallengeWithLlm(
+      challengeText,
+      options.verificationLlm,
+      options.fetchImpl ?? fetch
+    );
+    return {
+      ...result,
+      confidence: "low"
+    };
+  }
+
   try {
     return {
       answer: solveVerificationChallenge(challengeText),
-      provider: "deterministic"
+      provider: "deterministic",
+      confidence: "high"
     };
   } catch (error) {
     if (!options.verificationLlm) {
       throw error;
     }
 
-    return solveVerificationChallengeWithLlm(
+    const result = await solveVerificationChallengeWithLlm(
       challengeText,
       options.verificationLlm,
       options.fetchImpl ?? fetch
     );
+    return {
+      ...result,
+      confidence: "low"
+    };
   }
+}
+
+function isIncorrectVerificationAnswer(error: unknown): error is MoltbookApiError {
+  if (!(error instanceof MoltbookApiError) || error.statusCode !== 400) {
+    return false;
+  }
+
+  const payload = error.payload as Record<string, unknown> | undefined;
+  const message = String(payload?.message ?? payload?.error ?? "");
+  return /incorrect answer/i.test(message);
 }
 
 function getVerificationCarrier(payload: unknown): VerificationCarrier | undefined {
@@ -635,6 +741,25 @@ export class MoltbookApiClient {
     });
   }
 
+  async getAgentProfile(name: string): Promise<MoltbookAgentProfileResponse> {
+    return this.request<MoltbookAgentProfileResponse>({
+      path: "/agents/profile",
+      query: { name }
+    });
+  }
+
+  async search(query: {
+    q: string;
+    type?: "posts" | "comments" | "all";
+    limit?: number;
+    cursor?: string;
+  }): Promise<MoltbookSearchResponse> {
+    return this.request<MoltbookSearchResponse>({
+      path: "/search",
+      query
+    });
+  }
+
   async updateProfile(input: {
     description?: string;
     metadata?: Record<string, unknown>;
@@ -692,6 +817,13 @@ export class MoltbookApiClient {
     });
 
     return this.autoVerifyIfNeeded(payload);
+  }
+
+  async deletePost(postId: string): Promise<{ success?: boolean; message?: string }> {
+    return this.request<{ success?: boolean; message?: string }>({
+      method: "DELETE",
+      path: `/posts/${postId}`
+    });
   }
 
   async createComment(
@@ -816,15 +948,36 @@ export class MoltbookApiClient {
     }
 
     const challengeText = carrier.value.verification.challenge_text;
-    const { answer, provider } = await solveVerificationChallengeWithFallback(challengeText, {
+    const solved = await solveVerificationChallengeWithFallback(challengeText, {
       verificationLlm: this.verificationLlm,
       fetchImpl: this.llmFetchImpl
     });
     try {
-      await this.verify(carrier.value.verification.verification_code, answer);
+      await this.verify(carrier.value.verification.verification_code, solved.answer);
     } catch (error) {
+      if (
+        solved.provider === "deterministic" &&
+        this.verificationLlm &&
+        isIncorrectVerificationAnswer(error)
+      ) {
+        const llmSolved = await solveVerificationChallengeWithLlm(
+          challengeText,
+          this.verificationLlm,
+          this.llmFetchImpl
+        );
+        try {
+          await this.verify(carrier.value.verification.verification_code, llmSolved.answer);
+          return payload;
+        } catch (llmError) {
+          throw new Error(
+            `Failed to auto-verify ${carrier.type} challenge "${challengeText}" after deterministic answer "${solved.answer}" and LLM retry "${llmSolved.answer}" via ${llmSolved.provider}.`,
+            { cause: llmError }
+          );
+        }
+      }
+
       throw new Error(
-        `Failed to auto-verify ${carrier.type} challenge "${challengeText}" with answer "${answer}" via ${provider}.`,
+        `Failed to auto-verify ${carrier.type} challenge "${challengeText}" with answer "${solved.answer}" via ${solved.provider}.`,
         { cause: error }
       );
     }

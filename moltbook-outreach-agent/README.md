@@ -26,6 +26,7 @@ npm run build -w @coti-agent-messaging/moltbook-outreach-agent
 
 node moltbook-outreach-agent/dist/src/index.js register --name YourAgentName --description "What you do"
 node moltbook-outreach-agent/dist/src/index.js status
+node moltbook-outreach-agent/dist/src/index.js delete-post --post-id POST_ID
 node moltbook-outreach-agent/dist/src/index.js facts
 node moltbook-outreach-agent/dist/src/index.js heartbeat
 ```
@@ -68,7 +69,9 @@ The `register` command can save credentials to `MOLTBOOK_CREDENTIALS_PATH`, so `
 
 If Moltbook's verification challenges are too garbled for the deterministic parser, verification now reuses the main LLM config by default. You only need `MOLTBOOK_VERIFY_LLM_*` if you want a separate model, key, or endpoint for captcha solving.
 
-Each heartbeat also writes a JSON report to `MOLTBOOK_HEARTBEAT_REPORT_PATH` or, by default, next to the state file as `last-heartbeat.json`. It includes performed actions, skipped actions, planned actions, write candidates, the selected write decision, and any captured errors.
+Each heartbeat also writes a JSON report to `MOLTBOOK_HEARTBEAT_REPORT_PATH` or, by default, next to the state file as `last-heartbeat.json`. It includes performed actions, skipped actions, planned actions, write candidates, any reconciled pending writes, the selected write decision, and captured errors.
+
+The state file also tracks `pendingWrites` for posts/comments/replies that may have landed remotely before a local failure finished. Later heartbeats reconcile those against profile recents, exact post comment trees, and Moltbook search results before planning new authored actions. If a pending write stays unreconciled long enough, it expires instead of blocking that target forever.
 
 ### COTI
 
@@ -94,7 +97,7 @@ The runtime is split into a few narrow modules:
 - `src/moltbook-api.ts`: typed Moltbook client with auth checks and verification handling
 - `src/product-facts.ts`: repo-doc claims plus optional live reward/contract snapshot
 - `src/policy.ts`: anti-spam, cooldown logic, and persisted recent authored history
-- `src/heartbeat.ts`: orchestration for one Moltbook check-in cycle
+- `src/heartbeat.ts`: orchestration for one Moltbook check-in cycle plus layered pending-write reconciliation and expiration
 - `src/index.ts`: small CLI entrypoint
 
 ## Guardrails
@@ -106,6 +109,7 @@ The runtime is split into a few narrow modules:
 - respects local cooldown and daily comment accounting
 - keeps candidate selection bounded by deterministic policy before handing the shortlist to the LLM
 - supports `MOLTBOOK_DRY_RUN=true` so you can inspect behavior before letting it write
+- persists uncertain authored writes before verification/network completion so later heartbeats can reconcile them instead of blindly retrying
 
 ## Testing
 
@@ -116,6 +120,6 @@ npm run test -w @coti-agent-messaging/moltbook-outreach-agent
 The tests cover:
 
 - Moltbook auth header behavior and verification solving
-- LLM fallback behavior and heartbeat orchestration with mocked model responses
+- LLM fallback behavior, pending-write reconciliation, and heartbeat orchestration with mocked model responses
 - policy prioritization and cooldown gating
 - product-fact loading from repo docs

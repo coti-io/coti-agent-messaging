@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import type { MoltbookRuntimeConfig } from "../src/config.js";
 import { runHeartbeat } from "../src/heartbeat.js";
+import { contentFingerprint, createInitialState } from "../src/policy.js";
 
 test("heartbeat creates an outreach post, then replies usefully to later questions", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-"));
@@ -266,3 +267,656 @@ function jsonResponse(payload: unknown): Response {
     }
   });
 }
+
+test("heartbeat reconciles pending writes from remote profile and avoids duplicate replies", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-reconcile-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const replyContent =
+    "Recovered reply body about MCP tooling and early integration work.";
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false
+  };
+  const initialState = {
+    ...createInitialState(),
+    pendingWrites: [
+      {
+        id: "reply:created-post-1:comment-newest",
+        type: "reply",
+        fingerprint: contentFingerprint(replyContent),
+        content: replyContent,
+        postId: "created-post-1",
+        targetCommentId: "comment-newest",
+        targetSummary: "Interesting. How would another agent integrate this through MCP or the SDK?",
+        replyToAuthor: "BuilderBot",
+        createdAt: "2026-03-16T13:49:00.000Z"
+      }
+    ]
+  };
+  await writeFile(config.statePath, JSON.stringify(initialState, null, 2), "utf8");
+
+  let createdCommentCalls = 0;
+  let profileCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [
+          {
+            post_id: "created-post-1",
+            post_title: "Created post",
+            new_notification_count: 1
+          }
+        ],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/profile" && method === "GET") {
+      profileCalls += 1;
+      return jsonResponse({
+        success: true,
+        agent: { name: "OutreachBot" },
+        recentPosts: [],
+        recentComments: [
+          {
+            id: "remote-comment-1",
+            post_id: "created-post-1",
+            parent_id: "comment-newest",
+            content: replyContent
+          }
+        ]
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts/created-post-1/comments" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        comments: [
+          {
+            id: "comment-newest",
+            content: "Interesting. How would another agent integrate this through MCP or the SDK?",
+            author_name: "BuilderBot",
+            created_at: "2026-03-12T11:00:00.000Z"
+          }
+        ]
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts/created-post-1/comments" && method === "POST") {
+      createdCommentCalls += 1;
+      throw new Error("duplicate reply should not be created");
+    }
+
+    if (url.pathname === "/api/v1/notifications/read-by-post/created-post-1" && method === "POST") {
+      return jsonResponse({ success: true });
+    }
+
+    if (url.hostname === "openrouter.test") {
+      throw new Error("LLM should not be called when reconciliation resolves the pending write");
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    const result = await runHeartbeat(config);
+    assert.equal(profileCalls, 1);
+    assert.equal(createdCommentCalls, 0);
+    assert.match(result.summary, /Skipped|no unanswered comment/i);
+
+    const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
+      pendingWrites?: unknown[];
+      repliedCommentIds?: string[];
+    };
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      status?: string;
+      reconciledPendingWrites?: Array<{ id?: string; status?: string }>;
+      errors?: unknown[];
+    };
+
+    assert.deepEqual(savedState.pendingWrites, []);
+    assert.equal(savedState.repliedCommentIds?.includes("comment-newest"), true);
+    assert.equal(savedReport.status, "ok");
+    assert.deepEqual(savedReport.errors, []);
+    assert.deepEqual(savedReport.reconciledPendingWrites, [
+      {
+        id: "reply:created-post-1:comment-newest",
+        type: "reply",
+        status: "recovered"
+      }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat reconciles pending comments by scanning the target thread when profile recents miss", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-thread-reconcile-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const commentContent =
+    "Recovered comment body about memory continuity and private message history.";
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false
+  };
+  await writeFile(
+    config.statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        lastPostAt: new Date().toISOString(),
+        pendingWrites: [
+          {
+            id: "comment:post-memory",
+            type: "comment",
+            fingerprint: contentFingerprint(commentContent),
+            content: commentContent,
+            postId: "post-memory",
+            targetSummary: "The difference between an agent that executes and one that thinks",
+            createdAt: "2026-03-16T13:49:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/profile" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: { name: "OutreachBot" },
+        recentPosts: [],
+        recentComments: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts/post-memory/comments" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        comments: [
+          {
+            id: "comment-remote-1",
+            post_id: "post-memory",
+            content: commentContent,
+            created_at: "2026-03-16T13:49:30.000Z"
+          }
+        ]
+      });
+    }
+
+    if (url.pathname === "/api/v1/search" && method === "GET") {
+      throw new Error("search fallback should not be needed when thread reconciliation succeeds");
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    await runHeartbeat(config);
+    const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
+      pendingWrites?: unknown[];
+    };
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      reconciledPendingWrites?: Array<{ id?: string; type?: string; status?: string }>;
+    };
+
+    assert.deepEqual(savedState.pendingWrites, []);
+    assert.deepEqual(savedReport.reconciledPendingWrites, [
+      {
+        id: "comment:post-memory",
+        type: "comment",
+        status: "recovered"
+      }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat reconciles pending posts via search fallback when profile recents miss", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-search-reconcile-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const title = "Private memory only matters if retrieval works";
+  const content =
+    "A private thread is useless if an agent cannot recover the relevant prior exchange when the next decision arrives.";
+  const fingerprint = contentFingerprint(`${title}\n${content}`);
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false
+  };
+  await writeFile(
+    config.statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        pendingWrites: [
+          {
+            id: "create-post",
+            type: "post",
+            fingerprint,
+            title,
+            content,
+            createdAt: "2026-03-16T13:49:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/profile" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: { name: "OutreachBot" },
+        recentPosts: [],
+        recentComments: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/search" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        results: [
+          {
+            id: "remote-post-1",
+            type: "post",
+            title,
+            content
+          }
+        ]
+      });
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    await runHeartbeat(config);
+    const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
+      pendingWrites?: unknown[];
+      createdPostFingerprints?: string[];
+    };
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      reconciledPendingWrites?: Array<{ id?: string; type?: string; status?: string }>;
+    };
+
+    assert.deepEqual(savedState.pendingWrites, []);
+    assert.equal(savedState.createdPostFingerprints?.includes(fingerprint), true);
+    assert.deepEqual(savedReport.reconciledPendingWrites, [
+      {
+        id: "create-post",
+        type: "post",
+        status: "recovered"
+      }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat expires stale pending writes that remain unreconciled", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-expire-pending-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false
+  };
+  await writeFile(
+    config.statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        lastPostAt: new Date().toISOString(),
+        pendingWrites: [
+          {
+            id: "comment:stale-post",
+            type: "comment",
+            fingerprint: contentFingerprint("stale pending content"),
+            reconciliationMisses: 2,
+            content: "stale pending content",
+            postId: "stale-post",
+            targetSummary: "stale post",
+            createdAt: "2026-03-15T00:00:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/profile" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: { name: "OutreachBot" },
+        recentPosts: [],
+        recentComments: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts/stale-post/comments" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        comments: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/search" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        results: []
+      });
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    await runHeartbeat(config);
+    const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
+      pendingWrites?: unknown[];
+    };
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      reconciledPendingWrites?: Array<{ id?: string; type?: string; status?: string }>;
+    };
+
+    assert.deepEqual(savedState.pendingWrites, []);
+    assert.deepEqual(savedReport.reconciledPendingWrites, [
+      {
+        id: "comment:stale-post",
+        type: "comment",
+        status: "expired"
+      }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat increments reconciliation misses for unresolved pending writes", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-pending-miss-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false
+  };
+  await writeFile(
+    config.statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        lastPostAt: new Date().toISOString(),
+        pendingWrites: [
+          {
+            id: "reply:still-missing",
+            type: "reply",
+            fingerprint: contentFingerprint("still missing content"),
+            reconciliationMisses: 1,
+            content: "still missing content",
+            postId: "missing-post",
+            targetCommentId: "missing-comment",
+            targetSummary: "missing target",
+            createdAt: "2026-03-16T13:49:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/profile" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: { name: "OutreachBot" },
+        recentPosts: [],
+        recentComments: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts/missing-post/comments" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        comments: []
+      });
+    }
+
+    if (url.pathname === "/api/v1/search" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        results: []
+      });
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    await runHeartbeat(config);
+    const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
+      pendingWrites?: Array<{ reconciliationMisses?: number }>;
+    };
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      reconciledPendingWrites?: Array<{ id?: string; type?: string; status?: string }>;
+    };
+
+    assert.equal(savedState.pendingWrites?.[0]?.reconciliationMisses, 2);
+    assert.deepEqual(savedReport.reconciledPendingWrites, [
+      {
+        id: "reply:still-missing",
+        type: "reply",
+        status: "still_pending"
+      }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

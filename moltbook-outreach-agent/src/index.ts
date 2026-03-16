@@ -18,6 +18,7 @@ function printUsage(): void {
   console.log(`Usage:
   coti-moltbook-outreach-agent register --name NAME --description DESCRIPTION
   coti-moltbook-outreach-agent status
+  coti-moltbook-outreach-agent delete-post --post-id POST_ID
   coti-moltbook-outreach-agent facts
   coti-moltbook-outreach-agent heartbeat`);
 }
@@ -74,6 +75,22 @@ async function run(): Promise<void> {
       });
       const [status, me] = await Promise.all([api.getStatus(), api.getMe()]);
       console.log(JSON.stringify({ status, me }, null, 2));
+      return;
+    }
+    case "delete-post": {
+      const postId = getArg("--post-id");
+      if (!postId) {
+        throw new Error("delete-post requires --post-id.");
+      }
+
+      const config = await loadRuntimeConfig({ requireApiKey: true });
+      const api = new MoltbookApiClient({
+        baseUrl: config.moltbookBaseUrl,
+        apiKey: config.apiKey,
+        autoVerify: false
+      });
+      const result = await api.deletePost(postId);
+      console.log(JSON.stringify({ postId, ...result }, null, 2));
       return;
     }
     case "facts": {

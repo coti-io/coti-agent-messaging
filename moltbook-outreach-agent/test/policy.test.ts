@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   canCreatePost,
   createInitialState,
+  normalizeState,
   planHeartbeatActions,
   type OutreachAgentState
 } from "../src/policy.js";
@@ -85,5 +86,14 @@ test("recent posts block new post creation during cooldown", () => {
   };
 
   assert.equal(canCreatePost(state, false, new Date("2026-03-11T12:00:00.000Z")), false);
+});
+
+test("normalizeState drops unknown persisted keys", () => {
+  const normalized = normalizeState({
+    ...createInitialState(),
+    postTemplateCursor: 7
+  } as OutreachAgentState & { postTemplateCursor: number });
+
+  assert.equal("postTemplateCursor" in normalized, false);
 });
 

@@ -17,6 +17,20 @@ export interface RecentGeneratedArtifact {
   createdAt: string;
 }
 
+export interface PendingWrite {
+  id: string;
+  type: "post" | "comment" | "reply";
+  fingerprint: string;
+  reconciliationMisses?: number;
+  title?: string;
+  content: string;
+  postId?: string;
+  targetCommentId?: string;
+  targetSummary?: string;
+  replyToAuthor?: string;
+  createdAt: string;
+}
+
 export interface OutreachAgentState {
   firstSeenAt?: string;
   lastHeartbeatAt?: string;
@@ -29,6 +43,7 @@ export interface OutreachAgentState {
   repliedCommentIds: string[];
   createdPostFingerprints: string[];
   recentGeneratedArtifacts: RecentGeneratedArtifact[];
+  pendingWrites: PendingWrite[];
 }
 
 export type PlannedAction =
@@ -79,7 +94,8 @@ export function createInitialState(): OutreachAgentState {
     followedAgentNames: [],
     repliedCommentIds: [],
     createdPostFingerprints: [],
-    recentGeneratedArtifacts: []
+    recentGeneratedArtifacts: [],
+    pendingWrites: []
   };
 }
 
@@ -91,9 +107,20 @@ export function normalizeState(
   state: Partial<OutreachAgentState> | undefined,
   now = new Date()
 ): OutreachAgentState {
-  const normalized = {
-    ...createInitialState(),
-    ...state
+  const initial = createInitialState();
+  const normalized: OutreachAgentState = {
+    firstSeenAt: state?.firstSeenAt,
+    lastHeartbeatAt: state?.lastHeartbeatAt,
+    lastPostAt: state?.lastPostAt,
+    lastCommentAt: state?.lastCommentAt,
+    dailyCommentDate: state?.dailyCommentDate,
+    dailyCommentCount: state?.dailyCommentCount ?? initial.dailyCommentCount,
+    upvotedPostIds: state?.upvotedPostIds ?? initial.upvotedPostIds,
+    followedAgentNames: state?.followedAgentNames ?? initial.followedAgentNames,
+    repliedCommentIds: state?.repliedCommentIds ?? initial.repliedCommentIds,
+    createdPostFingerprints: state?.createdPostFingerprints ?? initial.createdPostFingerprints,
+    recentGeneratedArtifacts: state?.recentGeneratedArtifacts ?? initial.recentGeneratedArtifacts,
+    pendingWrites: state?.pendingWrites ?? initial.pendingWrites
   };
 
   const today = now.toISOString().slice(0, 10);
@@ -107,6 +134,12 @@ export function normalizeState(
   normalized.repliedCommentIds = uniqueRecent(normalized.repliedCommentIds, 500);
   normalized.createdPostFingerprints = uniqueRecent(normalized.createdPostFingerprints, 50);
   normalized.recentGeneratedArtifacts = normalized.recentGeneratedArtifacts.slice(-20);
+  normalized.pendingWrites = normalized.pendingWrites
+    .map((pendingWrite) => ({
+      ...pendingWrite,
+      reconciliationMisses: pendingWrite.reconciliationMisses ?? 0
+    }))
+    .slice(-10);
 
   if (!normalized.firstSeenAt) {
     normalized.firstSeenAt = now.toISOString();
@@ -219,6 +252,10 @@ export function planHeartbeatActions(input: {
   const state = normalizeState(input.state, now);
   const actions: PlannedAction[] = [];
   const newAgent = isNewAgent(input.profileCreatedAt, state, now);
+  const pendingCommentPostIds = new Set(
+    state.pendingWrites.filter((entry) => entry.type === "comment" && entry.postId).map((entry) => entry.postId!)
+  );
+  const hasPendingPost = state.pendingWrites.some((entry) => entry.type === "post");
 
   if (input.home.activity_on_your_posts.length > 0) {
     for (const activity of input.home.activity_on_your_posts.slice(0, 3)) {
@@ -274,7 +311,12 @@ export function planHeartbeatActions(input: {
 
   const commentTargets = candidatePosts.filter((post) => {
     const postId = post.post_id ?? post.id;
-    return Boolean(postId) && scorePost(post) >= 4 && canComment(state, newAgent, now);
+    return (
+      Boolean(postId) &&
+      !pendingCommentPostIds.has(postId!) &&
+      scorePost(post) >= 4 &&
+      canComment(state, newAgent, now)
+    );
   });
 
   for (const commentTarget of commentTargets.slice(0, 3)) {
@@ -288,7 +330,8 @@ export function planHeartbeatActions(input: {
   if (
     input.home.activity_on_your_posts.length === 0 &&
     canCreatePost(state, newAgent, now) &&
-    state.createdPostFingerprints.length < 50
+    state.createdPostFingerprints.length < 50 &&
+    !hasPendingPost
   ) {
     actions.push({
       type: "create_post",
@@ -330,6 +373,11 @@ export function chooseReplyTarget(input: {
   state: OutreachAgentState;
   agentName: string;
 }): ReplyTarget | undefined {
+  const pendingReplyTargetIds = new Set(
+    input.state.pendingWrites
+      .filter((entry) => entry.type === "reply" && entry.targetCommentId)
+      .map((entry) => entry.targetCommentId!)
+  );
   const candidates = flattenComments(input.comments)
     .filter((comment) => {
       const author = commentAuthorName(comment);
@@ -337,7 +385,7 @@ export function chooseReplyTarget(input: {
         return false;
       }
 
-      return !input.state.repliedCommentIds.includes(comment.id);
+      return !input.state.repliedCommentIds.includes(comment.id) && !pendingReplyTargetIds.has(comment.id);
     })
     .sort((left, right) => {
       const leftTime = Date.parse(left.created_at ?? "") || 0;

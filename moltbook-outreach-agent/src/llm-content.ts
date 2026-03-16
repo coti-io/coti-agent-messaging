@@ -46,7 +46,7 @@ interface LlmDraftResponse {
   rationale?: string;
 }
 
-const PROMPT_VERSION = "v2-technical-realist";
+const PROMPT_VERSION = "v3-sharper-operator";
 const BASE_PERSONALITY = [
   "Voice: technical realist.",
   "Sound like an engineer who has shipped systems, seen hype fail, and prefers explicit tradeoffs over grand claims.",
@@ -97,7 +97,7 @@ export async function chooseAndDraftWriteAction(
     fetchImpl
   );
 
-  const content = (response.content ?? "").trim();
+  const content = normalizeDraftContent(selectedCandidate, (response.content ?? "").trim());
   if (!content) {
     throw new Error(`LLM returned empty content for candidate ${selectedCandidate.id}`);
   }
@@ -223,6 +223,9 @@ function buildDraftSystemPrompt(candidate: WriteCandidate): string {
     "Do not sound like docs, release notes, or a pitch deck.",
     "Do not lead with rewards unless the target is explicitly discussing rewards.",
     "Use at most two concrete product claims unless the target explicitly asks for more.",
+    "Use repo-specific mechanics only when they materially sharpen the point; otherwise leave them out.",
+    "Prefer one hard distinction, one operational consequence, and one sharp closing line over a tidy mini-essay.",
+    "Cut throat-clearing, avoid explanatory filler, and do not enumerate just because you can.",
     "Avoid repeating recent authored phrases or openings.",
     "Return strict JSON with keys: selectedCandidateId, title, content, rationale."
   ];
@@ -233,9 +236,10 @@ function buildDraftSystemPrompt(candidate: WriteCandidate): string {
         ...commonRules,
         REPLY_PERSONALITY,
         "Write a reply that is conversational, sharp, and compact.",
-        "Aim for 220-650 characters.",
+        "Aim for 170-520 characters.",
         "The first sentence must directly engage the target's actual point.",
-        "Use at most two short paragraphs.",
+        "Use one compact paragraph by default; use two only if the turn needs a clear pivot.",
+        "Prefer one argument, not a tour of every relevant repo fact.",
         "Do not use inline code formatting in replies unless mentioning an actual symbol is necessary.",
         "End with either a sharp conclusion or one pointed question, not both."
       ].join(" ");
@@ -243,9 +247,13 @@ function buildDraftSystemPrompt(candidate: WriteCandidate): string {
       return [
         ...commonRules,
         "Write a comment that adds one useful technical angle to the post.",
-        "Aim for 220-700 characters.",
+        "Aim for 160-480 characters.",
         "Lead with the post's actual topic, not our product pitch.",
-        "Use at most two short paragraphs."
+        "Open with a distinction or disagreement that sharpens the thread, not a summary of what the post already said.",
+        "Use one compact paragraph by default; only use two short paragraphs when the second lands the point harder.",
+        "Use at most one concrete repo or product mechanism.",
+        "Do not use inline code formatting or backticks in comments.",
+        "A strong final sentence is better than a thorough explanation."
       ].join(" ");
     case "create_post":
       return [
@@ -275,7 +283,7 @@ function buildDraftUserPrompt(
           snippets: repoContext.relevantSnippets.slice(0, 4)
         }
       : {
-          snippets: repoContext.relevantSnippets.slice(0, 2)
+          snippets: repoContext.relevantSnippets.slice(0, 1)
         };
 
   return [
@@ -290,6 +298,11 @@ function buildDraftUserPrompt(
     "",
     "Relevant sdk/contracts context:",
     JSON.stringify(repoPayload, null, 2),
+    "",
+    "Writing target:",
+    candidate.type === "create_post"
+      ? "Make one strong claim and support it with concrete mechanics."
+      : "Keep it sharp. One distinction, one consequence, one memorable closing line beats a well-behaved explanation.",
     "",
     "Recent authored history:",
     buildRecentHistorySummary(state),
@@ -329,6 +342,17 @@ function validateDraft(
   if (state.createdPostFingerprints.includes(fingerprint)) {
     throw new Error("Generated content is too similar to recent authored history.");
   }
+}
+
+function normalizeDraftContent(candidate: WriteCandidate, content: string): string {
+  if (candidate.type === "create_post") {
+    return content;
+  }
+
+  return content
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/`+/g, "")
+    .trim();
 }
 
 function candidateToQueryText(candidate: WriteCandidate): string {

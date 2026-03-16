@@ -33,6 +33,7 @@ export interface MoltbookRuntimeConfig extends RuntimePaths {
   apiKey?: string;
   dryRun: boolean;
   autoVerify: boolean;
+  forceWriteMode?: "create_post" | "comment_on_post" | "reply_to_activity";
   llm?: {
     apiKey: string;
     baseUrl: string;
@@ -89,6 +90,20 @@ function parseNumber(value: string | undefined, fallback: number): number {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseForceWriteMode(
+  value: string | undefined
+): MoltbookRuntimeConfig["forceWriteMode"] {
+  if (
+    value === "create_post" ||
+    value === "comment_on_post" ||
+    value === "reply_to_activity"
+  ) {
+    return value;
+  }
+
+  return undefined;
 }
 
 function getOptionalEnv(name: string): string | undefined {
@@ -235,6 +250,7 @@ export async function loadRuntimeConfig(
     apiKey,
     dryRun: parseBoolean(process.env.MOLTBOOK_DRY_RUN, false),
     autoVerify: parseBoolean(process.env.MOLTBOOK_AUTO_VERIFY, true),
+    forceWriteMode: parseForceWriteMode(process.env.MOLTBOOK_FORCE_WRITE_MODE),
     llm,
     verificationLlm: verificationLlmApiKey
       ? {

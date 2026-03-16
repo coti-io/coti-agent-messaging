@@ -38,6 +38,31 @@ test("adds the bearer token for authenticated Moltbook requests", async () => {
   assert.equal(authorizationHeader, "Bearer moltbook_secret");
 });
 
+test("deletes a post with the documented endpoint", async () => {
+  let requestPath = "";
+  let requestMethod = "";
+
+  const client = new MoltbookApiClient({
+    baseUrl: "https://www.moltbook.com/api/v1",
+    apiKey: "moltbook_secret",
+    fetchImpl: async (url, init) => {
+      requestPath = new URL(String(url)).pathname;
+      requestMethod = init?.method ?? "GET";
+      return new Response(JSON.stringify({ success: true, message: "Deleted." }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      });
+    }
+  });
+
+  const result = await client.deletePost("post-123");
+  assert.equal(requestMethod, "DELETE");
+  assert.equal(requestPath, "/api/v1/posts/post-123");
+  assert.equal(result.success, true);
+});
+
 test("solves the documented verification challenge example", () => {
   const answer = solveVerificationChallenge(
     "A] lO^bSt-Er S[wImS aT/ tW]eNn-Tyy mE^tE[rS aNd] SlO/wS bY^ fI[vE, wH-aTs] ThE/ nEw^ SpE[eD?"
@@ -86,6 +111,22 @@ test("solves subtraction phrased as slows down by", () => {
   assert.equal(answer, "16.00");
 });
 
+test("solves noisy addition after denoising repeated letters", () => {
+  const answer = solveVerificationChallenge(
+    "A] Lo.OoBb-SsSttEeRr ] ClAaWw ] ExXrRtSs ] ThIrTy ] NoOoToOnSs ] Um~ ] AnNd ] An ] AlLlLy ] AdDdSs ] TwEeNnTtYy ] FiIvVeEe ] MoOrRe ] , ] WhHaTtSs ] ThHe ] ToOtAaLl ] FoOrRcEe ] ? }"
+  );
+
+  assert.equal(answer, "55.00");
+});
+
+test("solves velocity challenges phrased as gains toward a new velocity", () => {
+  const answer = solveVerificationChallenge(
+    "A] Lo.bSt-Er S^wImS[ iN/ CoOl WaTeR, HeR VeLoOciTy Is TwEnTy FiVe CeNtImEtErS PeR SeCoNd] AnD GaInS~ SeVeN CeNtImEtErS PeR SeCoNd FrOm DoMiNaNcE FiGhT, WhAt] Is ThE NeW VeLoCiTy?"
+  );
+
+  assert.equal(answer, "32.00");
+});
+
 test("uses the LLM fallback when deterministic parsing fails", async () => {
   const result = await solveVerificationChallengeWithFallback(
     "utter nonsense captcha text that the local parser cannot solve",
@@ -123,7 +164,148 @@ test("uses the LLM fallback when deterministic parsing fails", async () => {
 
   assert.deepEqual(result, {
     answer: "42.00",
-    provider: "llm:solver-mini"
+    provider: "llm:solver-mini",
+    confidence: "low"
   });
+});
+
+test("prefers the LLM for noisy verification challenges", async () => {
+  let llmCalls = 0;
+
+  const result = await solveVerificationChallengeWithFallback(
+    "A] lOoObsT-Er^ swImS[ iN~ cOoLmY wAtEr| anD um, cLaW fOrCeS <thIrTy fIvE> + {sEeVeNtEeN} nOoToNs~ duR|inG tErRiToRy fIgHtS, hOw/ mUcH ToTaL fOrCe?",
+    {
+      verificationLlm: {
+        apiKey: "llm-secret",
+        baseUrl: "https://example-llm.test/v1",
+        model: "solver-mini",
+        timeoutMs: 5000
+      },
+      fetchImpl: async () => {
+        llmCalls += 1;
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({ answer: "52.00" })
+                }
+              }
+            ]
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        );
+      }
+    }
+  );
+
+  assert.equal(llmCalls, 1);
+  assert.deepEqual(result, {
+    answer: "52.00",
+    provider: "llm:solver-mini",
+    confidence: "low"
+  });
+});
+
+test("auto-verify retries once with the LLM after an incorrect deterministic answer", async () => {
+  const verifyAnswers: string[] = [];
+  let llmCalls = 0;
+
+  const client = new MoltbookApiClient({
+    baseUrl: "https://www.moltbook.com/api/v1",
+    apiKey: "moltbook_secret",
+    autoVerify: true,
+    verificationLlm: {
+      apiKey: "llm-secret",
+      baseUrl: "https://example-llm.test/v1",
+      model: "solver-mini",
+      timeoutMs: 5000
+    },
+    fetchImpl: async (url, init) => {
+      const requestUrl = new URL(String(url));
+      const method = init?.method ?? "GET";
+
+      if (requestUrl.pathname === "/api/v1/posts/post-1/comments" && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            comment: {
+              id: "comment-1",
+              post_id: "post-1",
+              content: "hello",
+              verification: {
+                verification_code: "verify-123",
+                challenge_text: "A lobster swims at twenty meters per second and slows by five what is the new speed"
+              }
+            }
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        );
+      }
+
+      if (requestUrl.pathname === "/api/v1/verify" && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { answer?: string };
+        verifyAnswers.push(body.answer ?? "");
+        if (verifyAnswers.length === 1) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              message: "Incorrect answer"
+            }),
+            {
+              status: 400,
+              headers: {
+                "Content-Type": "application/json"
+              }
+            }
+          );
+        }
+
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        });
+      }
+
+      throw new Error(`Unhandled fetch: ${method} ${requestUrl.pathname}`);
+    },
+    llmFetchImpl: async () => {
+      llmCalls += 1;
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ answer: "42.00" })
+              }
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      );
+    }
+  });
+
+  const result = await client.createComment("post-1", { content: "hello" });
+  assert.equal(result.success, true);
+  assert.deepEqual(verifyAnswers, ["15.00", "42.00"]);
+  assert.equal(llmCalls, 1);
 });
 

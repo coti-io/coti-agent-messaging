@@ -8,7 +8,8 @@ Autonomous Moltbook agent for promoting `coti-agent-messaging` to other agents w
 - runs a Moltbook heartbeat starting from `/home`
 - prioritizes replies on its own posts over new outreach posts
 - upvotes, comments, follows, and posts only when the policy layer allows it
-- grounds product claims in this repo's docs and optional live COTI contract reads
+- uses an LLM to choose one authored action from a bounded shortlist and draft the final copy
+- grounds that draft in repo context from `sdk/`, `contracts/`, repo docs, recent authored history, and optional live COTI contract reads
 
 ## Core Pitch
 
@@ -46,11 +47,28 @@ MOLTBOOK_BASE_URL=https://www.moltbook.com/api/v1
 MOLTBOOK_DEFAULT_SUBMOLT=general
 MOLTBOOK_CREDENTIALS_PATH=~/.config/moltbook/credentials.json
 MOLTBOOK_STATE_PATH=/absolute/path/to/state.json
+MOLTBOOK_HEARTBEAT_REPORT_PATH=/absolute/path/to/last-heartbeat.json
 MOLTBOOK_DRY_RUN=false
 MOLTBOOK_AUTO_VERIFY=true
+MOLTBOOK_LLM_API_KEY=
+MOLTBOOK_LLM_MODEL=openai/gpt-4o-mini
+MOLTBOOK_LLM_BASE_URL=https://openrouter.ai/api/v1
+MOLTBOOK_LLM_TIMEOUT_MS=20000
+MOLTBOOK_LLM_APP_NAME=moltbook-outreach-agent
+MOLTBOOK_LLM_SITE_URL=
+MOLTBOOK_VERIFY_LLM_API_KEY=
+MOLTBOOK_VERIFY_LLM_MODEL=openai/gpt-4o-mini
+MOLTBOOK_VERIFY_LLM_BASE_URL=https://openrouter.ai/api/v1
+MOLTBOOK_VERIFY_LLM_TIMEOUT_MS=20000
 ```
 
 The `register` command can save credentials to `MOLTBOOK_CREDENTIALS_PATH`, so `MOLTBOOK_API_KEY` does not have to live in the environment after first setup.
+
+`MOLTBOOK_LLM_API_KEY` or `OPENROUTER_API_KEY` enables the main content-generation model. The heartbeat uses it to choose among bounded write candidates and draft the final post, comment, or reply.
+
+If Moltbook's verification challenges are too garbled for the deterministic parser, verification now reuses the main LLM config by default. You only need `MOLTBOOK_VERIFY_LLM_*` if you want a separate model, key, or endpoint for captcha solving.
+
+Each heartbeat also writes a JSON report to `MOLTBOOK_HEARTBEAT_REPORT_PATH` or, by default, next to the state file as `last-heartbeat.json`. It includes performed actions, skipped actions, planned actions, write candidates, the selected write decision, and any captured errors.
 
 ### COTI
 
@@ -70,10 +88,12 @@ COTI_MAINNET_RPC_URL=https://mainnet.coti.io/rpc
 
 The runtime is split into a few narrow modules:
 
+- `src/llm-client.ts`: shared OpenAI-compatible/OpenRouter chat client
+- `src/llm-content.ts`: LLM shortlist selection and post/comment/reply drafting
+- `src/repo-context.ts`: hybrid `sdk/` and `contracts/` summary plus lexical snippet retrieval
 - `src/moltbook-api.ts`: typed Moltbook client with auth checks and verification handling
 - `src/product-facts.ts`: repo-doc claims plus optional live reward/contract snapshot
-- `src/policy.ts`: anti-spam and cooldown logic
-- `src/content.ts`: deterministic post/comment/reply templates
+- `src/policy.ts`: anti-spam, cooldown logic, and persisted recent authored history
 - `src/heartbeat.ts`: orchestration for one Moltbook check-in cycle
 - `src/index.ts`: small CLI entrypoint
 
@@ -84,6 +104,7 @@ The runtime is split into a few narrow modules:
 - does not create posts just because time passed
 - treats replies on the agent's own posts as higher priority than new content
 - respects local cooldown and daily comment accounting
+- keeps candidate selection bounded by deterministic policy before handing the shortlist to the LLM
 - supports `MOLTBOOK_DRY_RUN=true` so you can inspect behavior before letting it write
 
 ## Testing
@@ -95,6 +116,6 @@ npm run test -w @coti-agent-messaging/moltbook-outreach-agent
 The tests cover:
 
 - Moltbook auth header behavior and verification solving
+- LLM fallback behavior and heartbeat orchestration with mocked model responses
 - policy prioritization and cooldown gating
-- reward-aware content framing
 - product-fact loading from repo docs

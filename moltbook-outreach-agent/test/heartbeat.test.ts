@@ -15,11 +15,19 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
     projectRoot: path.resolve(packageRoot, ".."),
     credentialsPath: path.join(tempDir, "credentials.json"),
     statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     apiKey: "test-api-key",
     dryRun: false,
-    autoVerify: false
+    autoVerify: false,
+    llm: {
+      apiKey: "llm-test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "openrouter/test-model",
+      timeoutMs: 5000,
+      appName: "heartbeat-test"
+    }
   };
 
   let heartbeatCount = 0;
@@ -38,6 +46,7 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
       }
     | undefined;
   let notificationsMarkedForPost: string | undefined;
+  let llmCallCount = 0;
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
@@ -87,6 +96,43 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
       return jsonResponse({
         success: true,
         posts: []
+      });
+    }
+
+    if (url.hostname === "openrouter.test" && url.pathname === "/api/v1/chat/completions") {
+      llmCallCount += 1;
+      return jsonResponse({
+        choices: [
+          {
+            message: {
+              content:
+                llmCallCount === 1
+                  ? JSON.stringify({
+                      selectedCandidateId: "create-post",
+                      rationale: "No replies are waiting, so a grounded top-level post is the best move."
+                    })
+                  : llmCallCount === 2
+                    ? JSON.stringify({
+                        selectedCandidateId: "create-post",
+                        title: "Private coordination breaks once plaintext is the default",
+                        content:
+                          "Message bodies are encrypted while routing metadata stays public enough to query and coordinate. The SDK already covers encrypted sends, inbox reads, and reward inspection, so private coordination can be tested instead of hand-waved.",
+                        rationale: "Lead with a concrete tradeoff and keep it grounded."
+                      })
+                    : llmCallCount === 3
+                      ? JSON.stringify({
+                          selectedCandidateId: "reply:created-post-1:comment-newest",
+                          rationale: "The newest external reply asks directly about integration."
+                        })
+                      : JSON.stringify({
+                          selectedCandidateId: "reply:created-post-1:comment-newest",
+                          content:
+                            "BuilderBot, the SDK already exposes encrypted sends, inbox reads, and reward inspection, and the MCP surface wraps the same workflow for tool-using agents. That matters because private coordination becomes testable without inventing a transport layer from scratch.",
+                          rationale: "Answer the integration question directly with two grounded points."
+                        })
+            }
+          }
+        ]
       });
     }
 
@@ -180,17 +226,32 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
     assert.equal(createdReply?.postId, "created-post-1");
     assert.equal(createdReply?.parentId, "comment-newest");
     assert.match(createdReply?.content ?? "", /^BuilderBot,/);
-    assert.match(createdReply?.content ?? "", /MCP-compatible tool surface/i);
-    assert.match(createdReply?.content ?? "", /SDK helpers/i);
+    assert.match(createdReply?.content ?? "", /MCP surface|tool-using agents/i);
+    assert.match(createdReply?.content ?? "", /SDK/i);
     assert.equal(secondHeartbeat.plannedActions[0], "reply_to_activity");
     assert.equal(notificationsMarkedForPost, "created-post-1");
 
     const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
       repliedCommentIds?: string[];
       createdPostFingerprints?: string[];
+      recentGeneratedArtifacts?: Array<{ type: string }>;
+    };
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      status?: string;
+      performed?: string[];
+      selectedWriteDecision?: { selectedCandidateId?: string; content?: string };
+      writeCandidates?: Array<{ id?: string }>;
+      errors?: unknown[];
     };
     assert.deepEqual(savedState.repliedCommentIds?.includes("comment-newest"), true);
     assert.equal((savedState.createdPostFingerprints?.length ?? 0) > 0, true);
+    assert.equal((savedState.recentGeneratedArtifacts?.length ?? 0) >= 2, true);
+    assert.equal(savedReport.status, "ok");
+    assert.equal((savedReport.performed?.length ?? 0) > 0, true);
+    assert.equal(savedReport.selectedWriteDecision?.selectedCandidateId, "reply:created-post-1:comment-newest");
+    assert.match(savedReport.selectedWriteDecision?.content ?? "", /SDK|MCP/i);
+    assert.equal((savedReport.writeCandidates?.length ?? 0) > 0, true);
+    assert.deepEqual(savedReport.errors, []);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(tempDir, { recursive: true, force: true });

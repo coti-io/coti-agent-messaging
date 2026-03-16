@@ -7,11 +7,15 @@ import type {
 } from "./moltbook-api.js";
 import type { ProductFactSheet } from "./product-facts.js";
 
-export type OutreachTemplateId =
-  | "high-value-coordination"
-  | "mcp-integration"
-  | "reward-aware-usage"
-  | "private-inbox-invitation";
+export interface RecentGeneratedArtifact {
+  id: string;
+  type: "post" | "comment" | "reply";
+  title?: string;
+  content: string;
+  targetId?: string;
+  targetSummary?: string;
+  createdAt: string;
+}
 
 export interface OutreachAgentState {
   firstSeenAt?: string;
@@ -20,11 +24,11 @@ export interface OutreachAgentState {
   lastCommentAt?: string;
   dailyCommentDate?: string;
   dailyCommentCount: number;
-  postTemplateCursor: number;
   upvotedPostIds: string[];
   followedAgentNames: string[];
   repliedCommentIds: string[];
   createdPostFingerprints: string[];
+  recentGeneratedArtifacts: RecentGeneratedArtifact[];
 }
 
 export type PlannedAction =
@@ -50,7 +54,6 @@ export type PlannedAction =
     }
   | {
       type: "create_post";
-      templateId: OutreachTemplateId;
       reason: string;
     }
   | {
@@ -72,11 +75,11 @@ export interface ReplyTarget {
 export function createInitialState(): OutreachAgentState {
   return {
     dailyCommentCount: 0,
-    postTemplateCursor: 0,
     upvotedPostIds: [],
     followedAgentNames: [],
     repliedCommentIds: [],
-    createdPostFingerprints: []
+    createdPostFingerprints: [],
+    recentGeneratedArtifacts: []
   };
 }
 
@@ -103,6 +106,7 @@ export function normalizeState(
   normalized.followedAgentNames = uniqueRecent(normalized.followedAgentNames, 100);
   normalized.repliedCommentIds = uniqueRecent(normalized.repliedCommentIds, 500);
   normalized.createdPostFingerprints = uniqueRecent(normalized.createdPostFingerprints, 50);
+  normalized.recentGeneratedArtifacts = normalized.recentGeneratedArtifacts.slice(-20);
 
   if (!normalized.firstSeenAt) {
     normalized.firstSeenAt = now.toISOString();
@@ -202,23 +206,6 @@ function normalizeFingerprint(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-function chooseTemplate(
-  factSheet: ProductFactSheet,
-  state: OutreachAgentState
-): OutreachTemplateId {
-  const templates: OutreachTemplateId[] = [
-    "high-value-coordination",
-    "mcp-integration",
-    "private-inbox-invitation"
-  ];
-
-  if (factSheet.liveSnapshot.pendingRewards && BigInt(factSheet.liveSnapshot.pendingRewards) > 0n) {
-    templates.push("reward-aware-usage");
-  }
-
-  return templates[state.postTemplateCursor % templates.length]!;
-}
-
 export function planHeartbeatActions(input: {
   home: MoltbookHomeResponse;
   followingFeed?: MoltbookFeedResponse;
@@ -285,12 +272,12 @@ export function planHeartbeatActions(input: {
     }
   }
 
-  const commentTarget = candidatePosts.find((post) => {
+  const commentTargets = candidatePosts.filter((post) => {
     const postId = post.post_id ?? post.id;
     return Boolean(postId) && scorePost(post) >= 4 && canComment(state, newAgent, now);
   });
 
-  if (commentTarget) {
+  for (const commentTarget of commentTargets.slice(0, 3)) {
     actions.push({
       type: "comment_on_post",
       post: commentTarget,
@@ -298,16 +285,13 @@ export function planHeartbeatActions(input: {
     });
   }
 
-  const templateId = chooseTemplate(input.factSheet, state);
-  const postFingerprint = normalizeFingerprint(templateId);
   if (
     input.home.activity_on_your_posts.length === 0 &&
     canCreatePost(state, newAgent, now) &&
-    !state.createdPostFingerprints.includes(postFingerprint)
+    state.createdPostFingerprints.length < 50
   ) {
     actions.push({
       type: "create_post",
-      templateId,
       reason: "No urgent replies are waiting and we have room for one substantive outreach post."
     });
   }
@@ -377,8 +361,19 @@ export function chooseReplyTarget(input: {
 export function applyActionResult(
   state: OutreachAgentState,
   action:
-    | { type: "create_post"; fingerprint: string }
-    | { type: "comment"; commentId: string }
+    | {
+        type: "create_post";
+        fingerprint: string;
+        title: string;
+        content: string;
+      }
+    | {
+        type: "comment";
+        commentId: string;
+        content: string;
+        targetSummary?: string;
+        replyToAuthor?: string;
+      }
     | { type: "upvote_post"; postId: string }
     | { type: "follow_agent"; agentName: string },
   now = new Date()
@@ -389,11 +384,21 @@ export function applyActionResult(
   switch (action.type) {
     case "create_post":
       nextState.lastPostAt = now.toISOString();
-      nextState.postTemplateCursor += 1;
       nextState.createdPostFingerprints = uniqueRecent(
         [...nextState.createdPostFingerprints, action.fingerprint],
         50
       );
+      const artifact: RecentGeneratedArtifact = {
+        id: `post:${action.fingerprint}`,
+        type: "post",
+        title: action.title,
+        content: action.content,
+        createdAt: now.toISOString()
+      };
+      nextState.recentGeneratedArtifacts = [
+        ...nextState.recentGeneratedArtifacts,
+        artifact
+      ].slice(-20);
       return nextState;
     case "comment":
       nextState.lastCommentAt = now.toISOString();
@@ -402,6 +407,18 @@ export function applyActionResult(
         [...nextState.repliedCommentIds, action.commentId],
         500
       );
+      const commentArtifact: RecentGeneratedArtifact = {
+        id: action.commentId,
+        type: action.replyToAuthor ? "reply" : "comment",
+        content: action.content,
+        targetId: action.commentId,
+        targetSummary: action.targetSummary,
+        createdAt: now.toISOString()
+      };
+      nextState.recentGeneratedArtifacts = [
+        ...nextState.recentGeneratedArtifacts,
+        commentArtifact
+      ].slice(-20);
       return nextState;
     case "upvote_post":
       nextState.upvotedPostIds = uniqueRecent([...nextState.upvotedPostIds, action.postId], 250);
@@ -415,7 +432,7 @@ export function applyActionResult(
   }
 }
 
-export function templateFingerprint(templateId: OutreachTemplateId): string {
-  return normalizeFingerprint(templateId);
+export function contentFingerprint(value: string): string {
+  return normalizeFingerprint(value).slice(0, 160);
 }
 

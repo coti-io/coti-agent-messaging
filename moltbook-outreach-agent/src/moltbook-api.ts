@@ -1,3 +1,5 @@
+import { createJsonChatCompletion } from "./llm-client.js";
+
 export interface MoltbookRateLimit {
   limit?: number;
   remaining?: number;
@@ -147,7 +149,24 @@ export interface MoltbookApiClientOptions {
   baseUrl: string;
   apiKey?: string;
   autoVerify?: boolean;
+  verificationLlm?: {
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    timeoutMs?: number;
+  };
   fetchImpl?: typeof fetch;
+  llmFetchImpl?: typeof fetch;
+}
+
+interface NumberMatch {
+  value: number;
+  consumed: number;
+}
+
+interface VerificationLlmResult {
+  answer: string;
+  provider: string;
 }
 
 type VerificationCarrier =
@@ -288,6 +307,16 @@ function fuzzyNumberValue(token: string): number | undefined {
     return Number(token);
   }
 
+  const exactValue = NUMBER_WORDS.get(token);
+  if (exactValue !== undefined) {
+    return exactValue;
+  }
+
+  // Short non-number words like "for" from "force" create garbage matches ("four").
+  if (token.length < 4) {
+    return undefined;
+  }
+
   let bestMatch: { value: number; distance: number } | undefined;
   for (const [word, value] of NUMBER_WORDS.entries()) {
     const distance = levenshteinDistance(token, word);
@@ -305,75 +334,118 @@ function fuzzyNumberValue(token: string): number | undefined {
 }
 
 function extractNumbers(text: string): number[] {
-  const tokens = text.split(" ").filter(Boolean);
+  const tokens = tokenizeChallenge(text);
   const values: number[] = [];
 
   for (let index = 0; index < tokens.length; index += 1) {
-    const current = fuzzyNumberValue(tokens[index]!);
-    if (current === undefined) {
+    const currentMatch = parseNumberToken(tokens, index);
+    if (!currentMatch) {
       continue;
     }
 
-    const next = tokens[index + 1] ? fuzzyNumberValue(tokens[index + 1]!) : undefined;
+    const nextIndex = index + currentMatch.consumed;
+    const next = parseNumberToken(tokens, nextIndex);
     if (
-      current >= 20 &&
-      current % 10 === 0 &&
-      next !== undefined &&
-      next >= 1 &&
-      next <= 9
+      currentMatch.value >= 20 &&
+      currentMatch.value % 10 === 0 &&
+      next &&
+      next.value >= 1 &&
+      next.value <= 9
     ) {
-      values.push(current + next);
-      index += 1;
+      values.push(currentMatch.value + next.value);
+      index = nextIndex + next.consumed - 1;
       continue;
     }
 
-    values.push(current);
+    values.push(currentMatch.value);
+    index += currentMatch.consumed - 1;
   }
 
   return values;
 }
 
+function tokenizeChallenge(text: string): string[] {
+  return text.split(" ").filter(Boolean);
+}
+
+function parseNumberToken(tokens: readonly string[], startIndex: number): NumberMatch | undefined {
+  const directToken = tokens[startIndex];
+  if (!directToken) {
+    return undefined;
+  }
+
+  for (let width = 3; width >= 2; width -= 1) {
+    const slice = tokens.slice(startIndex, startIndex + width);
+    if (slice.length !== width) {
+      continue;
+    }
+
+    const mergedValue = fuzzyNumberValue(slice.join(""));
+    if (mergedValue !== undefined) {
+      return { value: mergedValue, consumed: width };
+    }
+  }
+
+  const directValue = fuzzyNumberValue(directToken);
+  if (directValue !== undefined) {
+    return { value: directValue, consumed: 1 };
+  }
+
+  return undefined;
+}
+
 function detectOperation(text: string): ((left: number, right: number) => number) | undefined {
-  const hasWord = (candidates: readonly string[]) =>
-    candidates.some((candidate) => text.includes(candidate));
+  const hasPattern = (patterns: readonly RegExp[]) => patterns.some((pattern) => pattern.test(text));
 
   if (
-    hasWord([
-      "slows by",
-      "slow by",
-      "minus",
-      "decrease",
-      "decreases by",
-      "drops by",
-      "lost",
-      "lose",
-      "loses",
-      "less"
+    hasPattern([
+      /\bminus\b/,
+      /\bless\b/,
+      /\blost\b/,
+      /\blose\w*\b/,
+      /\bsubtract\w*\b/,
+      /\bdecreas\w*(?:\s+\w+){0,2}\s+by\b/,
+      /\bdrop\w*(?:\s+\w+){0,2}\s+by\b/,
+      /\bslow\w*(?:\s+\w+){0,2}\s+by\b/,
+      /\bnew\s+(?:speed|velocity)\b/
     ])
   ) {
     return (left, right) => left - right;
   }
 
   if (
-    hasWord([
-      "plus",
-      "add",
-      "adds",
-      "gains",
-      "gain",
-      "increase",
-      "increases by",
-      "more"
+    hasPattern([
+      /\bplus\b/,
+      /\badd\w*\b/,
+      /\bgain\w*\b/,
+      /\bincreas\w*(?:\s+\w+){0,2}\s+by\b/,
+      /\bmore\b/,
+      /\btotal\b/,
+      /\bsum\b/,
+      /\bcombined\b/,
+      /\btogether\b/,
+      /\baltogether\b/
     ])
   ) {
     return (left, right) => left + right;
   }
 
-  if (hasWord(["times", "multiplied by", "double", "doubles", "triple", "triples"])) {
+  if (
+    hasPattern([
+      /\btimes\b/,
+      /\bmultipl\w*(?:\s+\w+){0,2}\s+by\b/,
+      /\bdouble\w*\b/,
+      /\btriple\w*\b/
+    ])
+  ) {
     return (left, right) => left * right;
   }
 
-  if (hasWord(["divided by", "divide", "per", "split among", "shared among"])) {
+  // Bare "per" appears constantly in units like "meters per second", so it is too noisy
+  // to treat as division on its own.
+  if (
+    hasPattern([/\bdivid\w*(?:\s+\w+){0,2}\s+by\b/, /\bsplit among\b/, /\bshared among\b/])
+  ) {
     return (left, right) => left / right;
   }
 
@@ -389,12 +461,104 @@ export function solveVerificationChallenge(challengeText: string): string {
     throw new Error(`Unable to solve verification challenge: ${challengeText}`);
   }
 
-  const result = operation(numbers[0]!, numbers[1]!);
+  const [left, right] = selectOperands(numbers);
+  const result = operation(left, right);
   if (!Number.isFinite(result)) {
     throw new Error(`Verification challenge produced a non-finite result: ${challengeText}`);
   }
 
   return result.toFixed(2);
+}
+
+function selectOperands(numbers: readonly number[]): [number, number] {
+  if (numbers.length <= 2) {
+    return [numbers[0]!, numbers[1]!];
+  }
+
+  const ranked = numbers
+    .map((value, index) => ({ value, index, magnitude: Math.abs(value) }))
+    .sort((left, right) => right.magnitude - left.magnitude || left.index - right.index)
+    .slice(0, 2)
+    .sort((left, right) => left.index - right.index);
+
+  return [ranked[0]!.value, ranked[1]!.value];
+}
+
+async function solveVerificationChallengeWithLlm(
+  challengeText: string,
+  verificationLlm: NonNullable<MoltbookApiClientOptions["verificationLlm"]>,
+  fetchImpl: typeof fetch
+): Promise<VerificationLlmResult> {
+  const payload = await createJsonChatCompletion<{ answer: string }>(
+    {
+      apiKey: verificationLlm.apiKey,
+      baseUrl: verificationLlm.baseUrl,
+      model: verificationLlm.model,
+      timeoutMs: verificationLlm.timeoutMs ?? 10_000
+    },
+    [
+      {
+        role: "system",
+        content:
+          "You solve distorted arithmetic verification challenges. Extract the two main operands and operation from noisy text, ignore incidental counts, and return JSON like {\"answer\":\"15.00\"}."
+      },
+      {
+        role: "user",
+        content: `Raw challenge: ${challengeText}\nNormalized challenge: ${normalizeChallengeText(challengeText)}`
+      }
+    ],
+    fetchImpl
+  );
+
+  const answerText = payload.answer;
+  const answer = parseVerificationAnswer(answerText);
+  if (!answer) {
+    throw new Error(`LLM fallback returned an unusable answer: ${answerText}`);
+  }
+
+  return {
+    answer,
+    provider: `llm:${verificationLlm.model}`
+  };
+}
+
+function parseVerificationAnswer(text: string): string | undefined {
+  const match = text.match(/-?\d+(?:\.\d+)?/);
+  if (!match) {
+    return undefined;
+  }
+
+  const value = Number(match[0]);
+  if (!Number.isFinite(value)) {
+    return undefined;
+  }
+
+  return value.toFixed(2);
+}
+
+export async function solveVerificationChallengeWithFallback(
+  challengeText: string,
+  options: {
+    verificationLlm?: MoltbookApiClientOptions["verificationLlm"];
+    fetchImpl?: typeof fetch;
+  } = {}
+): Promise<VerificationLlmResult> {
+  try {
+    return {
+      answer: solveVerificationChallenge(challengeText),
+      provider: "deterministic"
+    };
+  } catch (error) {
+    if (!options.verificationLlm) {
+      throw error;
+    }
+
+    return solveVerificationChallengeWithLlm(
+      challengeText,
+      options.verificationLlm,
+      options.fetchImpl ?? fetch
+    );
+  }
 }
 
 function getVerificationCarrier(payload: unknown): VerificationCarrier | undefined {
@@ -435,12 +599,16 @@ export class MoltbookApiClient {
   private readonly apiKey?: string;
   private readonly autoVerify: boolean;
   private readonly fetchImpl: typeof fetch;
+  private readonly verificationLlm?: MoltbookApiClientOptions["verificationLlm"];
+  private readonly llmFetchImpl: typeof fetch;
 
   constructor(options: MoltbookApiClientOptions) {
     this.baseUrl = options.baseUrl;
     this.apiKey = options.apiKey;
     this.autoVerify = options.autoVerify ?? true;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.verificationLlm = options.verificationLlm;
+    this.llmFetchImpl = options.llmFetchImpl ?? fetch;
   }
 
   async registerAgent(input: {
@@ -647,8 +815,19 @@ export class MoltbookApiClient {
       return payload;
     }
 
-    const answer = solveVerificationChallenge(carrier.value.verification.challenge_text);
-    await this.verify(carrier.value.verification.verification_code, answer);
+    const challengeText = carrier.value.verification.challenge_text;
+    const { answer, provider } = await solveVerificationChallengeWithFallback(challengeText, {
+      verificationLlm: this.verificationLlm,
+      fetchImpl: this.llmFetchImpl
+    });
+    try {
+      await this.verify(carrier.value.verification.verification_code, answer);
+    } catch (error) {
+      throw new Error(
+        `Failed to auto-verify ${carrier.type} challenge "${challengeText}" with answer "${answer}" via ${provider}.`,
+        { cause: error }
+      );
+    }
     return payload;
   }
 }

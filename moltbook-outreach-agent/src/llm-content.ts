@@ -1,0 +1,468 @@
+import type { MoltbookRuntimeConfig } from "./config.js";
+import { createJsonChatCompletion } from "./llm-client.js";
+import type { MoltbookPost } from "./moltbook-api.js";
+import type { ProductFactSheet } from "./product-facts.js";
+import { contentFingerprint, type OutreachAgentState, type ReplyTarget } from "./policy.js";
+import { buildRepoContext } from "./repo-context.js";
+
+export type WriteCandidate =
+  | {
+      id: string;
+      type: "create_post";
+      reason: string;
+    }
+  | {
+      id: string;
+      type: "comment_on_post";
+      reason: string;
+      post: MoltbookPost;
+    }
+  | {
+      id: string;
+      type: "reply_to_activity";
+      reason: string;
+      postId: string;
+      postTitle: string;
+      target: ReplyTarget;
+    };
+
+export interface GeneratedWriteDecision {
+  selectedCandidateId: string;
+  title?: string;
+  content: string;
+  rationale: string;
+  fingerprint: string;
+}
+
+interface LlmSelectionResponse {
+  selectedCandidateId: string;
+  rationale?: string;
+}
+
+interface LlmDraftResponse {
+  selectedCandidateId: string;
+  title?: string;
+  content?: string;
+  rationale?: string;
+}
+
+const PROMPT_VERSION = "v2-technical-realist";
+const BASE_PERSONALITY = [
+  "Voice: technical realist.",
+  "Sound like an engineer who has shipped systems, seen hype fail, and prefers explicit tradeoffs over grand claims.",
+  "Be direct, calm, skeptical of hand-wavy language, and concrete without sounding like docs."
+].join(" ");
+const REPLY_PERSONALITY = [
+  "Replies should add a measured contrarian edge.",
+  "Start by meeting the other person's actual point, then sharpen or reframe it.",
+  "Do not posture. Do not rant. Do not sound like a pitch deck."
+].join(" ");
+
+export async function chooseAndDraftWriteAction(
+  config: MoltbookRuntimeConfig,
+  candidates: readonly WriteCandidate[],
+  factSheet: ProductFactSheet,
+  state: OutreachAgentState,
+  fetchImpl?: typeof fetch
+): Promise<GeneratedWriteDecision> {
+  if (!config.llm) {
+    throw new Error(
+      "LLM content generation requires MOLTBOOK_LLM_API_KEY or OPENROUTER_API_KEY."
+    );
+  }
+
+  if (candidates.length === 0) {
+    throw new Error("No write candidates were provided to the LLM writer.");
+  }
+
+  const queryText = [
+    ...candidates.map((candidate) => candidateToQueryText(candidate)),
+    ...state.recentGeneratedArtifacts.map((artifact) => `${artifact.title ?? ""} ${artifact.content}`)
+  ].join("\n");
+  const repoContext = await buildRepoContext(config.projectRoot, queryText);
+  const selection = await chooseCandidate(config, candidates, factSheet, state, repoContext, fetchImpl);
+  const selectedCandidate = candidates.find(
+    (candidate) => candidate.id === selection.selectedCandidateId
+  );
+  if (!selectedCandidate) {
+    throw new Error(`LLM selected an unknown candidate: ${selection.selectedCandidateId}`);
+  }
+  const response = await draftCandidate(
+    config,
+    selectedCandidate,
+    selection.rationale,
+    factSheet,
+    state,
+    repoContext,
+    fetchImpl
+  );
+
+  const content = (response.content ?? "").trim();
+  if (!content) {
+    throw new Error(`LLM returned empty content for candidate ${selectedCandidate.id}`);
+  }
+
+  const title =
+    selectedCandidate.type === "create_post" ? (response.title ?? "").trim() : undefined;
+  if (selectedCandidate.type === "create_post" && !title) {
+    throw new Error("LLM selected a post candidate but did not return a title.");
+  }
+
+  validateDraft(selectedCandidate, title, content, state);
+
+  return {
+    selectedCandidateId: selectedCandidate.id,
+    title,
+    content,
+    rationale: [selection.rationale, response.rationale].filter(Boolean).join(" ").trim() || "No rationale provided.",
+    fingerprint: contentFingerprint(`${title ?? ""}\n${content}`)
+  };
+}
+
+async function chooseCandidate(
+  config: MoltbookRuntimeConfig,
+  candidates: readonly WriteCandidate[],
+  factSheet: ProductFactSheet,
+  state: OutreachAgentState,
+  repoContext: Awaited<ReturnType<typeof buildRepoContext>>,
+  fetchImpl?: typeof fetch
+): Promise<LlmSelectionResponse> {
+  return createJsonChatCompletion<LlmSelectionResponse>(
+    config.llm!,
+    [
+      {
+        role: "system",
+        content: buildSelectionSystemPrompt()
+      },
+      {
+        role: "user",
+        content: buildSelectionUserPrompt(candidates, factSheet, state, repoContext)
+      }
+    ],
+    fetchImpl
+  );
+}
+
+async function draftCandidate(
+  config: MoltbookRuntimeConfig,
+  candidate: WriteCandidate,
+  selectionRationale: string | undefined,
+  factSheet: ProductFactSheet,
+  state: OutreachAgentState,
+  repoContext: Awaited<ReturnType<typeof buildRepoContext>>,
+  fetchImpl?: typeof fetch
+): Promise<LlmDraftResponse> {
+  return createJsonChatCompletion<LlmDraftResponse>(
+    config.llm!,
+    [
+      {
+        role: "system",
+        content: buildDraftSystemPrompt(candidate)
+      },
+      {
+        role: "user",
+        content: buildDraftUserPrompt(candidate, selectionRationale, factSheet, state, repoContext)
+      }
+    ],
+    fetchImpl
+  );
+}
+
+function buildSelectionSystemPrompt(): string {
+  return [
+    `Prompt version: ${PROMPT_VERSION}.`,
+    BASE_PERSONALITY,
+    "You are selecting exactly one authored Moltbook action from a bounded shortlist.",
+    "Prefer direct engagement on our own threads first, then comments where we can add something concrete, then top-level posts last.",
+    "Optimize for relevance, technical usefulness, and conversational fit.",
+    "Penalize candidates that would force awkward product dumping or repeat recent phrasing.",
+    "Return strict JSON with keys: selectedCandidateId, rationale."
+  ].join(" ");
+}
+
+function buildSelectionUserPrompt(
+  candidates: readonly WriteCandidate[],
+  factSheet: ProductFactSheet,
+  state: OutreachAgentState,
+  repoContext: Awaited<ReturnType<typeof buildRepoContext>>
+): string {
+  const recentHistory = buildRecentHistorySummary(state);
+  const shortlist = candidates.map((candidate) => ({
+    id: candidate.id,
+    type: candidate.type,
+    reason: candidate.reason,
+    targetSummary: describeCandidate(candidate)
+  }));
+
+  return [
+    "Candidate shortlist to choose from:",
+    JSON.stringify(shortlist, null, 2),
+    "",
+    "Grounded product claims most likely to matter:",
+    JSON.stringify(selectRelevantClaims(factSheet, shortlist.map((entry) => entry.targetSummary).join("\n")), null, 2),
+    "",
+    "Recent authored history to avoid echoing too closely:",
+    recentHistory,
+    "",
+    "Recent phrasing/openings to avoid:",
+    JSON.stringify(extractAvoidList(state), null, 2),
+    "",
+    "High-signal repo context:",
+    JSON.stringify({
+      summary: trimSummary(repoContext.baseSummary, 4),
+      snippets: repoContext.relevantSnippets.slice(0, 3)
+    }, null, 2)
+  ].join("\n");
+}
+
+function buildDraftSystemPrompt(candidate: WriteCandidate): string {
+  const commonRules = [
+    `Prompt version: ${PROMPT_VERSION}.`,
+    BASE_PERSONALITY,
+    "Ground claims only in the provided facts and repo snippets.",
+    "Do not sound like docs, release notes, or a pitch deck.",
+    "Do not lead with rewards unless the target is explicitly discussing rewards.",
+    "Use at most two concrete product claims unless the target explicitly asks for more.",
+    "Avoid repeating recent authored phrases or openings.",
+    "Return strict JSON with keys: selectedCandidateId, title, content, rationale."
+  ];
+
+  switch (candidate.type) {
+    case "reply_to_activity":
+      return [
+        ...commonRules,
+        REPLY_PERSONALITY,
+        "Write a reply that is conversational, sharp, and compact.",
+        "Aim for 220-650 characters.",
+        "The first sentence must directly engage the target's actual point.",
+        "Use at most two short paragraphs.",
+        "Do not use inline code formatting in replies unless mentioning an actual symbol is necessary.",
+        "End with either a sharp conclusion or one pointed question, not both."
+      ].join(" ");
+    case "comment_on_post":
+      return [
+        ...commonRules,
+        "Write a comment that adds one useful technical angle to the post.",
+        "Aim for 220-700 characters.",
+        "Lead with the post's actual topic, not our product pitch.",
+        "Use at most two short paragraphs."
+      ].join(" ");
+    case "create_post":
+      return [
+        ...commonRules,
+        "Write an original top-level post with a title and body.",
+        "Title should be punchy, concrete, and under 110 characters.",
+        "Body should be 350-1100 characters.",
+        "Open with a strong observation or tradeoff, not a slogan.",
+        "The post should feel like a technical operator talking, not a marketer."
+      ].join(" ");
+  }
+}
+
+function buildDraftUserPrompt(
+  candidate: WriteCandidate,
+  selectionRationale: string | undefined,
+  factSheet: ProductFactSheet,
+  state: OutreachAgentState,
+  repoContext: Awaited<ReturnType<typeof buildRepoContext>>
+): string {
+  const candidateQuery = candidateToQueryText(candidate);
+  const relevantClaims = selectRelevantClaims(factSheet, candidateQuery);
+  const repoPayload =
+    candidate.type === "create_post"
+      ? {
+          summary: trimSummary(repoContext.baseSummary, 6),
+          snippets: repoContext.relevantSnippets.slice(0, 4)
+        }
+      : {
+          snippets: repoContext.relevantSnippets.slice(0, 2)
+        };
+
+  return [
+    "Selected candidate:",
+    JSON.stringify(describeDraftCandidate(candidate), null, 2),
+    "",
+    "Why this candidate was selected:",
+    selectionRationale ?? "No rationale provided.",
+    "",
+    "Grounded claims to draw from:",
+    JSON.stringify(relevantClaims, null, 2),
+    "",
+    "Relevant sdk/contracts context:",
+    JSON.stringify(repoPayload, null, 2),
+    "",
+    "Recent authored history:",
+    buildRecentHistorySummary(state),
+    "",
+    "Avoid reusing these openings or phrases:",
+    JSON.stringify(extractAvoidList(state), null, 2)
+  ].join("\n");
+}
+
+function validateDraft(
+  candidate: WriteCandidate,
+  title: string | undefined,
+  content: string,
+  state: OutreachAgentState
+): void {
+  if (candidate.type === "create_post" && title && title.length > 110) {
+    throw new Error("Generated post title is too long.");
+  }
+
+  if (candidate.type === "create_post" && content.length > 1_100) {
+    throw new Error("Generated post content is too long.");
+  }
+
+  if (candidate.type !== "create_post" && content.length > 700) {
+    throw new Error("Generated reply/comment is too long.");
+  }
+
+  if (candidate.type === "reply_to_activity" && content.length < 120) {
+    throw new Error("Generated reply is too thin.");
+  }
+
+  if (candidate.type !== "create_post" && content.includes("`")) {
+    throw new Error("Replies/comments should avoid doc-style inline code formatting.");
+  }
+
+  const fingerprint = contentFingerprint(`${title ?? ""}\n${content}`);
+  if (state.createdPostFingerprints.includes(fingerprint)) {
+    throw new Error("Generated content is too similar to recent authored history.");
+  }
+}
+
+function candidateToQueryText(candidate: WriteCandidate): string {
+  switch (candidate.type) {
+    case "create_post":
+      return candidate.reason;
+    case "comment_on_post":
+      return `${candidate.post.title} ${candidate.post.content_preview ?? ""} ${candidate.post.content ?? ""}`;
+    case "reply_to_activity":
+      return `${candidate.postTitle} ${candidate.target.content}`;
+  }
+}
+
+function describeCandidate(candidate: WriteCandidate): string {
+  switch (candidate.type) {
+    case "create_post":
+      return candidate.reason;
+    case "comment_on_post":
+      return `${candidate.post.title} ${candidate.post.content_preview ?? ""} ${candidate.post.content ?? ""}`.trim();
+    case "reply_to_activity":
+      return `${candidate.postTitle} | ${candidate.target.authorName ?? "commenter"} said: ${candidate.target.content}`;
+  }
+}
+
+function describeDraftCandidate(candidate: WriteCandidate): Record<string, string> {
+  switch (candidate.type) {
+    case "create_post":
+      return {
+        selectedCandidateId: candidate.id,
+        type: candidate.type,
+        reason: candidate.reason
+      };
+    case "comment_on_post":
+      return {
+        selectedCandidateId: candidate.id,
+        type: candidate.type,
+        postTitle: candidate.post.title,
+        postPreview: candidate.post.content_preview ?? candidate.post.content ?? "",
+        reason: candidate.reason
+      };
+    case "reply_to_activity":
+      return {
+        selectedCandidateId: candidate.id,
+        type: candidate.type,
+        postTitle: candidate.postTitle,
+        authorName: candidate.target.authorName ?? "commenter",
+        targetComment: candidate.target.content,
+        reason: candidate.reason
+      };
+  }
+}
+
+function selectRelevantClaims(factSheet: ProductFactSheet, queryText: string) {
+  const searchTerms = extractQueryTerms(queryText);
+  return factSheet.claims
+    .map((claim) => ({
+      claim,
+      score: scoreClaim(claim, searchTerms)
+    }))
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 3)
+    .map(({ claim }) => ({
+      id: claim.id,
+      headline: claim.headline,
+      detail: claim.detail,
+      evidence: claim.evidence.slice(0, 1)
+    }));
+}
+
+function scoreClaim(
+  claim: ProductFactSheet["claims"][number],
+  searchTerms: readonly string[]
+): number {
+  const haystack = `${claim.headline} ${claim.detail} ${claim.evidence.join(" ")}`.toLowerCase();
+  return searchTerms.reduce((score, term) => {
+    return haystack.includes(term) ? score + Math.min(term.length, 6) : score;
+  }, 0);
+}
+
+function extractQueryTerms(text: string): string[] {
+  return [...new Set((text.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []).slice(0, 24))];
+}
+
+function trimSummary(summary: string, maxLines: number): string {
+  return summary.split("\n").slice(0, maxLines).join("\n");
+}
+
+function buildRecentHistorySummary(state: OutreachAgentState): string {
+  const recent = state.recentGeneratedArtifacts.slice(-4);
+  if (recent.length === 0) {
+    return "No recent authored history.";
+  }
+
+  return recent
+    .map((artifact) =>
+      JSON.stringify({
+        type: artifact.type,
+        title: artifact.title,
+        opening: extractOpening(artifact.content),
+        targetSummary: artifact.targetSummary,
+        createdAt: artifact.createdAt
+      })
+    )
+    .join("\n");
+}
+
+function extractAvoidList(state: OutreachAgentState): string[] {
+  return state.recentGeneratedArtifacts
+    .slice(-5)
+    .flatMap((artifact) => {
+      const opening = extractOpening(artifact.content);
+      const notablePhrases = extractNotablePhrases(artifact.content);
+      return [opening, ...notablePhrases];
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function extractOpening(content: string): string {
+  const firstParagraph = content.split("\n\n")[0] ?? content;
+  return firstParagraph.trim().slice(0, 140);
+}
+
+function extractNotablePhrases(content: string): string[] {
+  const lower = content.toLowerCase();
+  const candidates = [
+    "private coordination",
+    "integration surface",
+    "instead of hand wavy",
+    "the compounding part is the killer",
+    "boring in the best sense",
+    "something agents can actually ship",
+    "what matters is"
+  ];
+
+  return candidates.filter((phrase) => lower.includes(phrase)).slice(0, 2);
+}

@@ -24,6 +24,7 @@ export interface RuntimePaths {
   projectRoot: string;
   credentialsPath: string;
   statePath: string;
+  heartbeatReportPath: string;
 }
 
 export interface MoltbookRuntimeConfig extends RuntimePaths {
@@ -32,6 +33,20 @@ export interface MoltbookRuntimeConfig extends RuntimePaths {
   apiKey?: string;
   dryRun: boolean;
   autoVerify: boolean;
+  llm?: {
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    timeoutMs: number;
+    appName?: string;
+    siteUrl?: string;
+  };
+  verificationLlm?: {
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    timeoutMs: number;
+  };
   coti?: {
     privateKey: string;
     aesKey: string;
@@ -65,6 +80,15 @@ function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   }
 
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+function parseNumber(value: string | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function getOptionalEnv(name: string): string | undefined {
@@ -103,15 +127,19 @@ export function resolvePaths(): RuntimePaths {
   const credentialsPath = resolveHomePath(
     process.env.MOLTBOOK_CREDENTIALS_PATH ?? "~/.config/moltbook/credentials.json"
   );
-  const statePath = resolveHomePath(
-    process.env.MOLTBOOK_STATE_PATH ?? path.join(packageRoot, ".data", "state.json")
+  const defaultStatePath = path.join(packageRoot, ".data", "state.json");
+  const statePath = resolveHomePath(process.env.MOLTBOOK_STATE_PATH ?? defaultStatePath);
+  const heartbeatReportPath = resolveHomePath(
+    process.env.MOLTBOOK_HEARTBEAT_REPORT_PATH ??
+      path.join(path.dirname(statePath), "last-heartbeat.json")
   );
 
   return {
     packageRoot,
     projectRoot,
     credentialsPath,
-    statePath
+    statePath,
+    heartbeatReportPath
   };
 }
 
@@ -173,6 +201,7 @@ export async function loadRuntimeConfig(
   const privateKey = getOptionalEnv("PRIVATE_KEY");
   const aesKey = getOptionalEnv("AES_KEY");
   const contractAddress = getOptionalEnv("CONTRACT_ADDRESS");
+  const llmApiKey = getOptionalEnv("MOLTBOOK_LLM_API_KEY") ?? getOptionalEnv("OPENROUTER_API_KEY");
   const hasCotiCredentials = Boolean(privateKey && aesKey && contractAddress);
 
   if (requireCoti && !hasCotiCredentials) {
@@ -181,6 +210,24 @@ export async function loadRuntimeConfig(
     );
   }
 
+  const llm = llmApiKey
+    ? {
+        apiKey: llmApiKey,
+        baseUrl:
+          process.env.MOLTBOOK_LLM_BASE_URL ??
+          process.env.OPENROUTER_BASE_URL ??
+          "https://openrouter.ai/api/v1",
+        model:
+          process.env.MOLTBOOK_LLM_MODEL ??
+          process.env.OPENROUTER_MODEL ??
+          "openai/gpt-4o-mini",
+        timeoutMs: parseNumber(process.env.MOLTBOOK_LLM_TIMEOUT_MS, 20_000),
+        appName: process.env.MOLTBOOK_LLM_APP_NAME ?? "moltbook-outreach-agent",
+        siteUrl: process.env.MOLTBOOK_LLM_SITE_URL
+      }
+    : undefined;
+  const verificationLlmApiKey = getOptionalEnv("MOLTBOOK_VERIFY_LLM_API_KEY") ?? llm?.apiKey;
+
   return {
     ...paths,
     moltbookBaseUrl: process.env.MOLTBOOK_BASE_URL ?? "https://www.moltbook.com/api/v1",
@@ -188,6 +235,24 @@ export async function loadRuntimeConfig(
     apiKey,
     dryRun: parseBoolean(process.env.MOLTBOOK_DRY_RUN, false),
     autoVerify: parseBoolean(process.env.MOLTBOOK_AUTO_VERIFY, true),
+    llm,
+    verificationLlm: verificationLlmApiKey
+      ? {
+          apiKey: verificationLlmApiKey,
+          baseUrl:
+            process.env.MOLTBOOK_VERIFY_LLM_BASE_URL ??
+            llm?.baseUrl ??
+            "https://openrouter.ai/api/v1",
+          model:
+            process.env.MOLTBOOK_VERIFY_LLM_MODEL ??
+            llm?.model ??
+            "openai/gpt-4o-mini",
+          timeoutMs: parseNumber(
+            process.env.MOLTBOOK_VERIFY_LLM_TIMEOUT_MS,
+            llm?.timeoutMs ?? 10_000
+          )
+        }
+      : undefined,
     coti: hasCotiCredentials
       ? {
           privateKey: getRequiredEnv("PRIVATE_KEY"),

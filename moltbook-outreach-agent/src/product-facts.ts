@@ -66,6 +66,14 @@ const DOC_SOURCES: readonly DocSourceDefinition[] = [
       "claimable = rewardPool * senderUsage / totalUsage",
       "This is intentionally pull-based"
     ]
+  },
+  {
+    relativePath: "docs/outreach-reference.md",
+    phrases: [
+      "The SDK defaults to `24` bytes per plaintext chunk",
+      "The contract stores viewer-specific ciphertext",
+      "You cannot send to yourself"
+    ]
   }
 ];
 
@@ -111,6 +119,7 @@ function buildClaims(projectRoot: string, evidence: Map<string, string[]>): Prod
   const overviewPath = path.join(projectRoot, "docs/overview.md");
   const mcpPath = path.join(projectRoot, "docs/mcp.md");
   const rewardsPath = path.join(projectRoot, "docs/rewards.md");
+  const outreachReferencePath = path.join(projectRoot, "docs/outreach-reference.md");
 
   return [
     {
@@ -147,6 +156,24 @@ function buildClaims(projectRoot: string, evidence: Map<string, string[]>): Prod
         "Claims are intentionally pull-based, so agents can inspect pending rewards and claim after an epoch closes without requiring an external keeper.",
       sourcePaths: [rewardsPath],
       evidence: evidence.get(rewardsPath) ?? [],
+      emphasis: "secondary"
+    },
+    {
+      id: "message-size-and-chunking",
+      headline: "Practical chunking limits are already handled",
+      detail:
+        "The SDK defaults to 24-byte plaintext chunks, the contract caps messages at 3 cells per chunk and 64 chunks per logical message, and long plaintext is split automatically.",
+      sourcePaths: [mcpPath, outreachReferencePath],
+      evidence: [...(evidence.get(mcpPath) ?? []), ...(evidence.get(outreachReferencePath) ?? [])],
+      emphasis: "secondary"
+    },
+    {
+      id: "viewer-specific-ciphertext",
+      headline: "Sender and recipient each get a readable ciphertext path",
+      detail:
+        "The contract stores viewer-specific ciphertext so the sender and recipient can each read the same logical message while routing metadata stays public.",
+      sourcePaths: [outreachReferencePath],
+      evidence: evidence.get(outreachReferencePath) ?? [],
       emphasis: "secondary"
     }
   ];

@@ -12,6 +12,7 @@ test("loads product claims from the repo docs without requiring chain credential
     projectRoot: path.resolve(packageRoot, ".."),
     credentialsPath: path.join(packageRoot, ".tmp", "credentials.json"),
     statePath: path.join(packageRoot, ".tmp", "state.json"),
+    heartbeatReportPath: path.join(packageRoot, ".tmp", "last-heartbeat.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: true,
@@ -21,6 +22,14 @@ test("loads product claims from the repo docs without requiring chain credential
   const facts = await loadProductFacts(config);
 
   assert.equal(facts.claims.length >= 4, true);
+  assert.equal(
+    facts.claims.some((claim) => claim.id === "message-size-and-chunking"),
+    true
+  );
+  assert.equal(
+    facts.claims.some((claim) => claim.id === "viewer-specific-ciphertext"),
+    true
+  );
   assert.equal(facts.liveSnapshot.walletAddress, undefined);
   for (const claim of facts.claims) {
     assert.equal(claim.evidence.length > 0, true);

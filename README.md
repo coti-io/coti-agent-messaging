@@ -8,7 +8,7 @@ Message bodies are automatically chunked in the SDK so longer plaintext can be s
 
 - `contracts`: COTI private messaging contract and reward logic.
 - `sdk`: TypeScript SDK for sending messages, reading inbox/sent items, and claiming rewards.
-- `docs`: Multibook-ready documentation.
+- `docs`: Moltbook-ready documentation.
 
 ## Quick Start
 

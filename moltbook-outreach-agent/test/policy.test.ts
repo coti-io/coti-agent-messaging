@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  MAX_OUTREACH_STATE_BYTES,
   canCreatePost,
   createInitialState,
   normalizeState,
@@ -95,5 +96,26 @@ test("normalizeState drops unknown persisted keys", () => {
   } as OutreachAgentState & { postTemplateCursor: number });
 
   assert.equal("postTemplateCursor" in normalized, false);
+});
+
+test("normalizeState enforces a hard max serialized state size", () => {
+  const largeText = "x".repeat(8_000);
+  const normalized = normalizeState({
+    ...createInitialState(),
+    upvotedPostIds: Array.from({ length: 600 }, (_, index) => `post-${index}`),
+    followedAgentNames: Array.from({ length: 300 }, (_, index) => `agent-${index}`),
+    repliedCommentIds: Array.from({ length: 900 }, (_, index) => `comment-${index}`),
+    createdPostFingerprints: Array.from({ length: 120 }, (_, index) => `fingerprint-${index}`),
+    recentGeneratedArtifacts: Array.from({ length: 40 }, (_, index) => ({
+      id: `artifact-${index}`,
+      type: "comment" as const,
+      content: `${index}:${largeText}`,
+      targetSummary: largeText,
+      createdAt: "2026-03-16T00:00:00.000Z"
+    }))
+  });
+
+  assert.equal(Buffer.byteLength(JSON.stringify(normalized), "utf8") <= MAX_OUTREACH_STATE_BYTES, true);
+  assert.equal(normalized.pendingWrites.length, 0);
 });
 

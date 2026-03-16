@@ -46,6 +46,17 @@ export interface OutreachAgentState {
   pendingWrites: PendingWrite[];
 }
 
+export const MAX_OUTREACH_STATE_BYTES = 64 * 1024;
+const MAX_UPVOTED_POST_IDS = 250;
+const MAX_FOLLOWED_AGENT_NAMES = 100;
+const MAX_REPLIED_COMMENT_IDS = 500;
+const MAX_CREATED_POST_FINGERPRINTS = 50;
+const MAX_RECENT_GENERATED_ARTIFACTS = 20;
+const MAX_PENDING_WRITES = 10;
+const MAX_STORED_ARTIFACT_TITLE_LENGTH = 140;
+const MAX_STORED_ARTIFACT_CONTENT_LENGTH = 700;
+const MAX_STORED_ARTIFACT_TARGET_SUMMARY_LENGTH = 280;
+
 export type PlannedAction =
   | {
       type: "reply_to_activity";
@@ -103,6 +114,74 @@ function uniqueRecent(values: readonly string[], limit: number): string[] {
   return [...new Set(values)].slice(-limit);
 }
 
+function clampText(value: string | undefined, limit: number): string | undefined {
+  if (!value) {
+    return value;
+  }
+
+  return value.length > limit ? value.slice(0, limit) : value;
+}
+
+function approximateStateSizeBytes(state: OutreachAgentState): number {
+  return Buffer.byteLength(JSON.stringify(state), "utf8");
+}
+
+function enforceStateSizeLimit(state: OutreachAgentState): OutreachAgentState {
+  if (approximateStateSizeBytes(state) <= MAX_OUTREACH_STATE_BYTES) {
+    return state;
+  }
+
+  const nextState: OutreachAgentState = {
+    ...state,
+    recentGeneratedArtifacts: state.recentGeneratedArtifacts.map((artifact) => ({
+      ...artifact,
+      title: clampText(artifact.title, MAX_STORED_ARTIFACT_TITLE_LENGTH),
+      content: clampText(artifact.content, MAX_STORED_ARTIFACT_CONTENT_LENGTH) ?? "",
+      targetSummary: clampText(artifact.targetSummary, MAX_STORED_ARTIFACT_TARGET_SUMMARY_LENGTH)
+    }))
+  };
+
+  while (
+    approximateStateSizeBytes(nextState) > MAX_OUTREACH_STATE_BYTES &&
+    nextState.recentGeneratedArtifacts.length > 0
+  ) {
+    nextState.recentGeneratedArtifacts = nextState.recentGeneratedArtifacts.slice(1);
+  }
+
+  if (approximateStateSizeBytes(nextState) <= MAX_OUTREACH_STATE_BYTES) {
+    return nextState;
+  }
+
+  const reducers: Array<(current: OutreachAgentState) => OutreachAgentState> = [
+    (current) => ({
+      ...current,
+      repliedCommentIds: current.repliedCommentIds.slice(-250)
+    }),
+    (current) => ({
+      ...current,
+      upvotedPostIds: current.upvotedPostIds.slice(-125)
+    }),
+    (current) => ({
+      ...current,
+      followedAgentNames: current.followedAgentNames.slice(-50)
+    }),
+    (current) => ({
+      ...current,
+      createdPostFingerprints: current.createdPostFingerprints.slice(-25)
+    })
+  ];
+
+  let reducedState = nextState;
+  for (const reduce of reducers) {
+    if (approximateStateSizeBytes(reducedState) <= MAX_OUTREACH_STATE_BYTES) {
+      break;
+    }
+    reducedState = reduce(reducedState);
+  }
+
+  return reducedState;
+}
+
 export function normalizeState(
   state: Partial<OutreachAgentState> | undefined,
   now = new Date()
@@ -129,23 +208,33 @@ export function normalizeState(
     normalized.dailyCommentCount = 0;
   }
 
-  normalized.upvotedPostIds = uniqueRecent(normalized.upvotedPostIds, 250);
-  normalized.followedAgentNames = uniqueRecent(normalized.followedAgentNames, 100);
-  normalized.repliedCommentIds = uniqueRecent(normalized.repliedCommentIds, 500);
-  normalized.createdPostFingerprints = uniqueRecent(normalized.createdPostFingerprints, 50);
-  normalized.recentGeneratedArtifacts = normalized.recentGeneratedArtifacts.slice(-20);
+  normalized.upvotedPostIds = uniqueRecent(normalized.upvotedPostIds, MAX_UPVOTED_POST_IDS);
+  normalized.followedAgentNames = uniqueRecent(normalized.followedAgentNames, MAX_FOLLOWED_AGENT_NAMES);
+  normalized.repliedCommentIds = uniqueRecent(normalized.repliedCommentIds, MAX_REPLIED_COMMENT_IDS);
+  normalized.createdPostFingerprints = uniqueRecent(
+    normalized.createdPostFingerprints,
+    MAX_CREATED_POST_FINGERPRINTS
+  );
+  normalized.recentGeneratedArtifacts = normalized.recentGeneratedArtifacts
+    .map((artifact) => ({
+      ...artifact,
+      title: clampText(artifact.title, MAX_STORED_ARTIFACT_TITLE_LENGTH),
+      content: clampText(artifact.content, MAX_STORED_ARTIFACT_CONTENT_LENGTH) ?? "",
+      targetSummary: clampText(artifact.targetSummary, MAX_STORED_ARTIFACT_TARGET_SUMMARY_LENGTH)
+    }))
+    .slice(-MAX_RECENT_GENERATED_ARTIFACTS);
   normalized.pendingWrites = normalized.pendingWrites
     .map((pendingWrite) => ({
       ...pendingWrite,
       reconciliationMisses: pendingWrite.reconciliationMisses ?? 0
     }))
-    .slice(-10);
+    .slice(-MAX_PENDING_WRITES);
 
   if (!normalized.firstSeenAt) {
     normalized.firstSeenAt = now.toISOString();
   }
 
-  return normalized;
+  return enforceStateSizeLimit(normalized);
 }
 
 function hoursSince(isoTimestamp: string | undefined, now: Date): number | undefined {
@@ -434,7 +523,7 @@ export function applyActionResult(
       nextState.lastPostAt = now.toISOString();
       nextState.createdPostFingerprints = uniqueRecent(
         [...nextState.createdPostFingerprints, action.fingerprint],
-        50
+        MAX_CREATED_POST_FINGERPRINTS
       );
       const artifact: RecentGeneratedArtifact = {
         id: `post:${action.fingerprint}`,
@@ -446,14 +535,14 @@ export function applyActionResult(
       nextState.recentGeneratedArtifacts = [
         ...nextState.recentGeneratedArtifacts,
         artifact
-      ].slice(-20);
+      ].slice(-MAX_RECENT_GENERATED_ARTIFACTS);
       return nextState;
     case "comment":
       nextState.lastCommentAt = now.toISOString();
       nextState.dailyCommentCount += 1;
       nextState.repliedCommentIds = uniqueRecent(
         [...nextState.repliedCommentIds, action.commentId],
-        500
+        MAX_REPLIED_COMMENT_IDS
       );
       const commentArtifact: RecentGeneratedArtifact = {
         id: action.commentId,
@@ -466,15 +555,18 @@ export function applyActionResult(
       nextState.recentGeneratedArtifacts = [
         ...nextState.recentGeneratedArtifacts,
         commentArtifact
-      ].slice(-20);
+      ].slice(-MAX_RECENT_GENERATED_ARTIFACTS);
       return nextState;
     case "upvote_post":
-      nextState.upvotedPostIds = uniqueRecent([...nextState.upvotedPostIds, action.postId], 250);
+      nextState.upvotedPostIds = uniqueRecent(
+        [...nextState.upvotedPostIds, action.postId],
+        MAX_UPVOTED_POST_IDS
+      );
       return nextState;
     case "follow_agent":
       nextState.followedAgentNames = uniqueRecent(
         [...nextState.followedAgentNames, action.agentName],
-        100
+        MAX_FOLLOWED_AGENT_NAMES
       );
       return nextState;
   }

@@ -46,6 +46,11 @@ interface LlmDraftResponse {
   rationale?: string;
 }
 
+interface LabeledCandidate {
+  label: string;
+  candidate: WriteCandidate;
+}
+
 const PROMPT_VERSION = "v3-sharper-operator";
 const BASE_PERSONALITY = [
   "Voice: technical realist.",
@@ -81,15 +86,25 @@ export async function chooseAndDraftWriteAction(
     ...state.recentGeneratedArtifacts.map((artifact) => `${artifact.title ?? ""} ${artifact.content}`)
   ].join("\n");
   const repoContext = await buildRepoContext(config.projectRoot, queryText);
-  const selection = await chooseCandidate(llmProvider, candidates, factSheet, state, repoContext);
-  const selectedCandidate = candidates.find(
-    (candidate) => candidate.id === selection.selectedCandidateId
+  const labeledCandidates = candidates.map((candidate, index) => ({
+    label: candidateLabelForIndex(index),
+    candidate
+  }));
+  const selection = await chooseCandidate(llmProvider, labeledCandidates, factSheet, state, repoContext);
+  const selectedLabeledCandidate = labeledCandidates.find(
+    (entry) => entry.label === selection.selectedCandidateId
   );
-  if (!selectedCandidate) {
-    throw new Error(`LLM selected an unknown candidate: ${selection.selectedCandidateId}`);
+  if (!selectedLabeledCandidate) {
+    throw new Error(
+      `LLM selected an unknown candidate label: ${selection.selectedCandidateId}. Valid labels: ${labeledCandidates
+        .map((entry) => entry.label)
+        .join(", ")}`
+    );
   }
+  const selectedCandidate = selectedLabeledCandidate.candidate;
   const response = await draftCandidate(
     llmProvider,
+    selectedLabeledCandidate.label,
     selectedCandidate,
     selection.rationale,
     factSheet,
@@ -121,7 +136,7 @@ export async function chooseAndDraftWriteAction(
 
 async function chooseCandidate(
   llmProvider: JsonLlmProvider,
-  candidates: readonly WriteCandidate[],
+  labeledCandidates: readonly LabeledCandidate[],
   factSheet: ProductFactSheet,
   state: OutreachAgentState,
   repoContext: Awaited<ReturnType<typeof buildRepoContext>>
@@ -133,13 +148,14 @@ async function chooseCandidate(
     },
     {
       role: "user",
-      content: buildSelectionUserPrompt(candidates, factSheet, state, repoContext)
+      content: buildSelectionUserPrompt(labeledCandidates, factSheet, state, repoContext)
     }
   ]);
 }
 
 async function draftCandidate(
   llmProvider: JsonLlmProvider,
+  candidateLabel: string,
   candidate: WriteCandidate,
   selectionRationale: string | undefined,
   factSheet: ProductFactSheet,
@@ -149,11 +165,18 @@ async function draftCandidate(
   return llmProvider.createJsonCompletion<LlmDraftResponse>([
     {
       role: "system",
-      content: buildDraftSystemPrompt(candidate)
+      content: buildDraftSystemPrompt(candidateLabel, candidate)
     },
     {
       role: "user",
-      content: buildDraftUserPrompt(candidate, selectionRationale, factSheet, state, repoContext)
+      content: buildDraftUserPrompt(
+        candidateLabel,
+        candidate,
+        selectionRationale,
+        factSheet,
+        state,
+        repoContext
+      )
     }
   ]);
 }
@@ -166,19 +189,20 @@ function buildSelectionSystemPrompt(): string {
     "Prefer direct engagement on our own threads first, then comments where we can add something concrete, then top-level posts last.",
     "Optimize for relevance, technical usefulness, and conversational fit.",
     "Penalize candidates that would force awkward product dumping or repeat recent phrasing.",
+    "Each candidate has a short label like A, B, or C. Return selectedCandidateId using that label exactly.",
     "Return strict JSON with keys: selectedCandidateId, rationale."
   ].join(" ");
 }
 
 function buildSelectionUserPrompt(
-  candidates: readonly WriteCandidate[],
+  labeledCandidates: readonly LabeledCandidate[],
   factSheet: ProductFactSheet,
   state: OutreachAgentState,
   repoContext: Awaited<ReturnType<typeof buildRepoContext>>
 ): string {
   const recentHistory = buildRecentHistorySummary(state);
-  const shortlist = candidates.map((candidate) => ({
-    id: candidate.id,
+  const shortlist = labeledCandidates.map(({ label, candidate }) => ({
+    selectedCandidateId: label,
     type: candidate.type,
     reason: candidate.reason,
     targetSummary: describeCandidate(candidate)
@@ -205,7 +229,7 @@ function buildSelectionUserPrompt(
   ].join("\n");
 }
 
-function buildDraftSystemPrompt(candidate: WriteCandidate): string {
+function buildDraftSystemPrompt(candidateLabel: string, candidate: WriteCandidate): string {
   const commonRules = [
     `Prompt version: ${PROMPT_VERSION}.`,
     BASE_PERSONALITY,
@@ -217,6 +241,7 @@ function buildDraftSystemPrompt(candidate: WriteCandidate): string {
     "Prefer one hard distinction, one operational consequence, and one sharp closing line over a tidy mini-essay.",
     "Cut throat-clearing, avoid explanatory filler, and do not enumerate just because you can.",
     "Avoid repeating recent authored phrases or openings.",
+    `Echo selectedCandidateId as "${candidateLabel}".`,
     "Return strict JSON with keys: selectedCandidateId, title, content, rationale."
   ];
 
@@ -258,6 +283,7 @@ function buildDraftSystemPrompt(candidate: WriteCandidate): string {
 }
 
 function buildDraftUserPrompt(
+  candidateLabel: string,
   candidate: WriteCandidate,
   selectionRationale: string | undefined,
   factSheet: ProductFactSheet,
@@ -278,7 +304,7 @@ function buildDraftUserPrompt(
 
   return [
     "Selected candidate:",
-    JSON.stringify(describeDraftCandidate(candidate), null, 2),
+    JSON.stringify(describeDraftCandidate(candidateLabel, candidate), null, 2),
     "",
     "Why this candidate was selected:",
     selectionRationale ?? "No rationale provided.",
@@ -367,17 +393,17 @@ function describeCandidate(candidate: WriteCandidate): string {
   }
 }
 
-function describeDraftCandidate(candidate: WriteCandidate): Record<string, string> {
+function describeDraftCandidate(candidateLabel: string, candidate: WriteCandidate): Record<string, string> {
   switch (candidate.type) {
     case "create_post":
       return {
-        selectedCandidateId: candidate.id,
+        selectedCandidateId: candidateLabel,
         type: candidate.type,
         reason: candidate.reason
       };
     case "comment_on_post":
       return {
-        selectedCandidateId: candidate.id,
+        selectedCandidateId: candidateLabel,
         type: candidate.type,
         postTitle: candidate.post.title,
         postPreview: candidate.post.content_preview ?? candidate.post.content ?? "",
@@ -385,7 +411,7 @@ function describeDraftCandidate(candidate: WriteCandidate): Record<string, strin
       };
     case "reply_to_activity":
       return {
-        selectedCandidateId: candidate.id,
+        selectedCandidateId: candidateLabel,
         type: candidate.type,
         postTitle: candidate.postTitle,
         authorName: candidate.target.authorName ?? "commenter",
@@ -393,6 +419,19 @@ function describeDraftCandidate(candidate: WriteCandidate): Record<string, strin
         reason: candidate.reason
       };
   }
+}
+
+function candidateLabelForIndex(index: number): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  let nextIndex = index;
+  let label = "";
+
+  do {
+    label = alphabet[nextIndex % alphabet.length] + label;
+    nextIndex = Math.floor(nextIndex / alphabet.length) - 1;
+  } while (nextIndex >= 0);
+
+  return label;
 }
 
 function selectRelevantClaims(factSheet: ProductFactSheet, queryText: string) {

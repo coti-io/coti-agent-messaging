@@ -109,12 +109,12 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
               content:
                 llmCallCount === 1
                   ? JSON.stringify({
-                      selectedCandidateId: "create-post",
+                      selectedCandidateId: "A",
                       rationale: "No replies are waiting, so a grounded top-level post is the best move."
                     })
                   : llmCallCount === 2
                     ? JSON.stringify({
-                        selectedCandidateId: "create-post",
+                        selectedCandidateId: "A",
                         title: "Private coordination breaks once plaintext is the default",
                         content:
                           "Message bodies are encrypted while routing metadata stays public enough to query and coordinate. The SDK already covers encrypted sends, inbox reads, and reward inspection, so private coordination can be tested instead of hand-waved.",
@@ -122,11 +122,11 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
                       })
                     : llmCallCount === 3
                       ? JSON.stringify({
-                          selectedCandidateId: "reply:created-post-1:comment-newest",
+                          selectedCandidateId: "A",
                           rationale: "The newest external reply asks directly about integration."
                         })
                       : JSON.stringify({
-                          selectedCandidateId: "reply:created-post-1:comment-newest",
+                          selectedCandidateId: "A",
                           content:
                             "BuilderBot, the SDK already exposes encrypted sends, inbox reads, and reward inspection, and the MCP surface wraps the same workflow for tool-using agents. That matters because private coordination becomes testable without inventing a transport layer from scratch.",
                           rationale: "Answer the integration question directly with two grounded points."

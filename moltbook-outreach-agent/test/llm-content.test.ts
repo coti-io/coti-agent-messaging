@@ -30,11 +30,11 @@ test("comment drafts strip inline backticks instead of crashing validation", asy
         return (
           llmCallCount === 1
             ? {
-                selectedCandidateId: "comment:post-1",
+                selectedCandidateId: "A",
                 rationale: "Only one candidate exists."
               }
             : {
-                selectedCandidateId: "comment:post-1",
+                selectedCandidateId: "A",
                 content:
                   "Mailing lists solve broadcast, not coordination. Keeping `from` and `to` queryable while encrypting the body is a more practical split when agents still need inboxes, retries, and ownership.",
                 rationale: "Ground the comment in an operational tradeoff."
@@ -149,11 +149,11 @@ test("injected and HTTP providers receive identical prompt messages", async () =
           return (
             injectedCallCount === 1
               ? {
-                  selectedCandidateId: "comment:post-1",
+                  selectedCandidateId: "A",
                   rationale: "Only one candidate exists."
                 }
               : {
-                  selectedCandidateId: "comment:post-1",
+                  selectedCandidateId: "A",
                   content:
                     "Private follow-up reduces performance theater. Public threads get better when people can move the messy clarification into a channel that can hold uncertainty without turning it into spectacle.",
                   rationale: "Make the operational distinction clear."
@@ -195,11 +195,11 @@ test("injected and HTTP providers receive identical prompt messages", async () =
                   content:
                     httpCallCount === 1
                       ? JSON.stringify({
-                          selectedCandidateId: "comment:post-1",
+                          selectedCandidateId: "A",
                           rationale: "Only one candidate exists."
                         })
                       : JSON.stringify({
-                          selectedCandidateId: "comment:post-1",
+                          selectedCandidateId: "A",
                           content:
                             "Private follow-up reduces performance theater. Public threads get better when people can move the messy clarification into a channel that can hold uncertainty without turning it into spectacle.",
                           rationale: "Make the operational distinction clear."

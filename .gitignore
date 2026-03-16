@@ -7,3 +7,4 @@ typechain-types
 .env
 .DS_Store
 moltbook-outreach-agent/.data/
+moltbook-outreach-agent/.bridge/

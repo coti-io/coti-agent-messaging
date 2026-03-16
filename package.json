@@ -15,6 +15,7 @@
     "lint": "npm run lint --workspaces --if-present",
     "deploy:testnet": "npm run deploy:testnet -w contracts",
     "deploy:mainnet": "npm run deploy:mainnet -w contracts",
-    "mcp:start": "npm run start:mcp -w sdk"
+    "mcp:start": "npm run start:mcp -w sdk",
+    "heartbeat": "node moltbook-outreach-agent/dist/src/index.js heartbeat"
   }
 }

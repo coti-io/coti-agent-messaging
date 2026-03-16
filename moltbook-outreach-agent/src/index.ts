@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { runBridgeServerCli } from "./bridge-server.js";
+import { stopBridgeServer } from "./bridge-stop.js";
 import { loadRuntimeConfig, saveStoredCredentials } from "./config.js";
 import { runHeartbeat } from "./heartbeat.js";
 import { MoltbookApiClient } from "./moltbook-api.js";
@@ -20,6 +22,8 @@ function printUsage(): void {
   coti-moltbook-outreach-agent status
   coti-moltbook-outreach-agent delete-post --post-id POST_ID
   coti-moltbook-outreach-agent facts
+  coti-moltbook-outreach-agent bridge-server
+  coti-moltbook-outreach-agent bridge-stop
   coti-moltbook-outreach-agent heartbeat`);
 }
 
@@ -97,6 +101,14 @@ async function run(): Promise<void> {
       const config = await loadRuntimeConfig();
       const facts = await loadProductFacts(config);
       console.log(JSON.stringify(facts, null, 2));
+      return;
+    }
+    case "bridge-server": {
+      await runBridgeServerCli();
+      return;
+    }
+    case "bridge-stop": {
+      console.log(JSON.stringify(await stopBridgeServer(), null, 2));
       return;
     }
     case "heartbeat": {

@@ -12,6 +12,67 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface BridgeLlmClientConfig {
+  url: string;
+  timeoutMs: number;
+  label: string;
+  authToken?: string;
+}
+
+export interface JsonLlmProvider {
+  label: string;
+  createJsonCompletion<T>(messages: readonly ChatMessage[]): Promise<T>;
+}
+
+export function createHttpJsonLlmProvider(
+  config: ChatClientConfig,
+  fetchImpl: typeof fetch = fetch
+): JsonLlmProvider {
+  return {
+    label: config.model,
+    createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+      return createJsonChatCompletion<T>(config, messages, fetchImpl);
+    }
+  };
+}
+
+export function createBridgeJsonLlmProvider(
+  config: BridgeLlmClientConfig,
+  fetchImpl: typeof fetch = fetch
+): JsonLlmProvider {
+  return {
+    label: config.label,
+    async createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+
+      try {
+        const headers = new Headers({
+          "Content-Type": "application/json"
+        });
+        if (config.authToken) {
+          headers.set("Authorization", `Bearer ${config.authToken}`);
+        }
+
+        const response = await fetchImpl(config.url, {
+          method: "POST",
+          signal: controller.signal,
+          headers,
+          body: JSON.stringify({ messages })
+        });
+        const payload = await parseResponseBody(response);
+        if (!response.ok) {
+          throw new Error(`Bridge completion failed with status ${response.status}.`);
+        }
+
+        return extractJsonCompletionResult<T>(payload);
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+  };
+}
+
 export async function createJsonChatCompletion<T>(
   config: ChatClientConfig,
   messages: readonly ChatMessage[],
@@ -73,6 +134,19 @@ export async function parseResponseBody(response: Response): Promise<unknown> {
   } catch {
     return { message: text };
   }
+}
+
+export function extractJsonCompletionResult<T>(payload: unknown): T {
+  if (payload && typeof payload === "object" && "result" in payload) {
+    return (payload as { result: T }).result;
+  }
+
+  const content = extractResponseText(payload);
+  if (content) {
+    return JSON.parse(content) as T;
+  }
+
+  return payload as T;
 }
 
 export function extractResponseText(payload: unknown): string {

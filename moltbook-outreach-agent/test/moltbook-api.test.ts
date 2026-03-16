@@ -169,6 +169,30 @@ test("uses the LLM fallback when deterministic parsing fails", async () => {
   });
 });
 
+test("uses an injected verification provider before any HTTP fallback", async () => {
+  let providerCalls = 0;
+
+  const result = await solveVerificationChallengeWithFallback(
+    "utter nonsense captcha text that the local parser cannot solve",
+    {
+      verificationLlmProvider: {
+        label: "self-solver",
+        async createJsonCompletion<T>() {
+          providerCalls += 1;
+          return { answer: "39.00" } as T;
+        }
+      }
+    }
+  );
+
+  assert.equal(providerCalls, 1);
+  assert.deepEqual(result, {
+    answer: "39.00",
+    provider: "llm:self-solver",
+    confidence: "low"
+  });
+});
+
 test("prefers the LLM for noisy verification challenges", async () => {
   let llmCalls = 0;
 

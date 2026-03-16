@@ -1,5 +1,5 @@
-import type { MoltbookRuntimeConfig } from "./config.js";
-import { createJsonChatCompletion } from "./llm-client.js";
+import { buildMainLlmProvider, type MoltbookRuntimeConfig } from "./config.js";
+import type { JsonLlmProvider } from "./llm-client.js";
 import type { MoltbookPost } from "./moltbook-api.js";
 import type { ProductFactSheet } from "./product-facts.js";
 import { contentFingerprint, type OutreachAgentState, type ReplyTarget } from "./policy.js";
@@ -65,9 +65,10 @@ export async function chooseAndDraftWriteAction(
   state: OutreachAgentState,
   fetchImpl?: typeof fetch
 ): Promise<GeneratedWriteDecision> {
-  if (!config.llm) {
+  const llmProvider = buildMainLlmProvider(config, fetchImpl);
+  if (!llmProvider) {
     throw new Error(
-      "LLM content generation requires MOLTBOOK_LLM_API_KEY or OPENROUTER_API_KEY."
+      "LLM content generation requires an injected provider or MOLTBOOK_LLM_API_KEY/OPENROUTER_API_KEY."
     );
   }
 
@@ -80,7 +81,7 @@ export async function chooseAndDraftWriteAction(
     ...state.recentGeneratedArtifacts.map((artifact) => `${artifact.title ?? ""} ${artifact.content}`)
   ].join("\n");
   const repoContext = await buildRepoContext(config.projectRoot, queryText);
-  const selection = await chooseCandidate(config, candidates, factSheet, state, repoContext, fetchImpl);
+  const selection = await chooseCandidate(llmProvider, candidates, factSheet, state, repoContext);
   const selectedCandidate = candidates.find(
     (candidate) => candidate.id === selection.selectedCandidateId
   );
@@ -88,13 +89,12 @@ export async function chooseAndDraftWriteAction(
     throw new Error(`LLM selected an unknown candidate: ${selection.selectedCandidateId}`);
   }
   const response = await draftCandidate(
-    config,
+    llmProvider,
     selectedCandidate,
     selection.rationale,
     factSheet,
     state,
-    repoContext,
-    fetchImpl
+    repoContext
   );
 
   const content = normalizeDraftContent(selectedCandidate, (response.content ?? "").trim());
@@ -120,52 +120,42 @@ export async function chooseAndDraftWriteAction(
 }
 
 async function chooseCandidate(
-  config: MoltbookRuntimeConfig,
+  llmProvider: JsonLlmProvider,
   candidates: readonly WriteCandidate[],
   factSheet: ProductFactSheet,
   state: OutreachAgentState,
-  repoContext: Awaited<ReturnType<typeof buildRepoContext>>,
-  fetchImpl?: typeof fetch
+  repoContext: Awaited<ReturnType<typeof buildRepoContext>>
 ): Promise<LlmSelectionResponse> {
-  return createJsonChatCompletion<LlmSelectionResponse>(
-    config.llm!,
-    [
-      {
-        role: "system",
-        content: buildSelectionSystemPrompt()
-      },
-      {
-        role: "user",
-        content: buildSelectionUserPrompt(candidates, factSheet, state, repoContext)
-      }
-    ],
-    fetchImpl
-  );
+  return llmProvider.createJsonCompletion<LlmSelectionResponse>([
+    {
+      role: "system",
+      content: buildSelectionSystemPrompt()
+    },
+    {
+      role: "user",
+      content: buildSelectionUserPrompt(candidates, factSheet, state, repoContext)
+    }
+  ]);
 }
 
 async function draftCandidate(
-  config: MoltbookRuntimeConfig,
+  llmProvider: JsonLlmProvider,
   candidate: WriteCandidate,
   selectionRationale: string | undefined,
   factSheet: ProductFactSheet,
   state: OutreachAgentState,
-  repoContext: Awaited<ReturnType<typeof buildRepoContext>>,
-  fetchImpl?: typeof fetch
+  repoContext: Awaited<ReturnType<typeof buildRepoContext>>
 ): Promise<LlmDraftResponse> {
-  return createJsonChatCompletion<LlmDraftResponse>(
-    config.llm!,
-    [
-      {
-        role: "system",
-        content: buildDraftSystemPrompt(candidate)
-      },
-      {
-        role: "user",
-        content: buildDraftUserPrompt(candidate, selectionRationale, factSheet, state, repoContext)
-      }
-    ],
-    fetchImpl
-  );
+  return llmProvider.createJsonCompletion<LlmDraftResponse>([
+    {
+      role: "system",
+      content: buildDraftSystemPrompt(candidate)
+    },
+    {
+      role: "user",
+      content: buildDraftUserPrompt(candidate, selectionRationale, factSheet, state, repoContext)
+    }
+  ]);
 }
 
 function buildSelectionSystemPrompt(): string {

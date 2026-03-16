@@ -1,4 +1,4 @@
-import { createJsonChatCompletion } from "./llm-client.js";
+import { createHttpJsonLlmProvider, type JsonLlmProvider } from "./llm-client.js";
 
 export interface MoltbookRateLimit {
   limit?: number;
@@ -184,6 +184,7 @@ export interface MoltbookApiClientOptions {
     model: string;
     timeoutMs?: number;
   };
+  verificationLlmProvider?: JsonLlmProvider;
   fetchImpl?: typeof fetch;
   llmFetchImpl?: typeof fetch;
 }
@@ -565,29 +566,19 @@ function selectOperands(numbers: readonly number[]): [number, number] {
 
 async function solveVerificationChallengeWithLlm(
   challengeText: string,
-  verificationLlm: NonNullable<MoltbookApiClientOptions["verificationLlm"]>,
-  fetchImpl: typeof fetch
+  verificationLlmProvider: JsonLlmProvider
 ): Promise<VerificationLlmResult> {
-  const payload = await createJsonChatCompletion<{ answer: string }>(
+  const payload = await verificationLlmProvider.createJsonCompletion<{ answer: string }>([
     {
-      apiKey: verificationLlm.apiKey,
-      baseUrl: verificationLlm.baseUrl,
-      model: verificationLlm.model,
-      timeoutMs: verificationLlm.timeoutMs ?? 10_000
+      role: "system",
+      content:
+        "You solve distorted arithmetic verification challenges. The text often repeats letters or injects noise. Recover the intended two operands and operation, ignore incidental counts, do the arithmetic, and return strict JSON like {\"answer\":\"15.00\"}."
     },
-    [
-      {
-        role: "system",
-        content:
-          "You solve distorted arithmetic verification challenges. The text often repeats letters or injects noise. Recover the intended two operands and operation, ignore incidental counts, do the arithmetic, and return strict JSON like {\"answer\":\"15.00\"}."
-      },
-      {
-        role: "user",
-        content: `Raw challenge: ${challengeText}\nNormalized challenge: ${normalizeChallengeText(challengeText)}\nDenoised challenge: ${denoiseChallengeText(challengeText)}`
-      }
-    ],
-    fetchImpl
-  );
+    {
+      role: "user",
+      content: `Raw challenge: ${challengeText}\nNormalized challenge: ${normalizeChallengeText(challengeText)}\nDenoised challenge: ${denoiseChallengeText(challengeText)}`
+    }
+  ]);
 
   const answerText = payload.answer;
   const answer = parseVerificationAnswer(answerText);
@@ -597,7 +588,7 @@ async function solveVerificationChallengeWithLlm(
 
   return {
     answer,
-    provider: `llm:${verificationLlm.model}`
+    provider: `llm:${verificationLlmProvider.label}`
   };
 }
 
@@ -618,15 +609,27 @@ function parseVerificationAnswer(text: string): string | undefined {
 export async function solveVerificationChallengeWithFallback(
   challengeText: string,
   options: {
+    verificationLlmProvider?: JsonLlmProvider;
     verificationLlm?: MoltbookApiClientOptions["verificationLlm"];
     fetchImpl?: typeof fetch;
   } = {}
 ): Promise<VerificationSolveResult> {
-  if (options.verificationLlm && shouldPreferLlmVerification(challengeText)) {
+  const verificationLlmProvider =
+    options.verificationLlmProvider ??
+    (options.verificationLlm
+      ? createHttpJsonLlmProvider(
+          {
+            ...options.verificationLlm,
+            timeoutMs: options.verificationLlm.timeoutMs ?? 10_000
+          },
+          options.fetchImpl ?? fetch
+        )
+      : undefined);
+
+  if (verificationLlmProvider && shouldPreferLlmVerification(challengeText)) {
     const result = await solveVerificationChallengeWithLlm(
       challengeText,
-      options.verificationLlm,
-      options.fetchImpl ?? fetch
+      verificationLlmProvider
     );
     return {
       ...result,
@@ -641,14 +644,13 @@ export async function solveVerificationChallengeWithFallback(
       confidence: "high"
     };
   } catch (error) {
-    if (!options.verificationLlm) {
+    if (!verificationLlmProvider) {
       throw error;
     }
 
     const result = await solveVerificationChallengeWithLlm(
       challengeText,
-      options.verificationLlm,
-      options.fetchImpl ?? fetch
+      verificationLlmProvider
     );
     return {
       ...result,
@@ -705,16 +707,24 @@ export class MoltbookApiClient {
   private readonly apiKey?: string;
   private readonly autoVerify: boolean;
   private readonly fetchImpl: typeof fetch;
-  private readonly verificationLlm?: MoltbookApiClientOptions["verificationLlm"];
-  private readonly llmFetchImpl: typeof fetch;
+  private readonly verificationLlmProvider?: JsonLlmProvider;
 
   constructor(options: MoltbookApiClientOptions) {
     this.baseUrl = options.baseUrl;
     this.apiKey = options.apiKey;
     this.autoVerify = options.autoVerify ?? true;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.verificationLlm = options.verificationLlm;
-    this.llmFetchImpl = options.llmFetchImpl ?? fetch;
+    this.verificationLlmProvider =
+      options.verificationLlmProvider ??
+      (options.verificationLlm
+        ? createHttpJsonLlmProvider(
+            {
+              ...options.verificationLlm,
+              timeoutMs: options.verificationLlm.timeoutMs ?? 10_000
+            },
+            options.llmFetchImpl ?? fetch
+          )
+        : undefined);
   }
 
   async registerAgent(input: {
@@ -949,22 +959,17 @@ export class MoltbookApiClient {
 
     const challengeText = carrier.value.verification.challenge_text;
     const solved = await solveVerificationChallengeWithFallback(challengeText, {
-      verificationLlm: this.verificationLlm,
-      fetchImpl: this.llmFetchImpl
+      verificationLlmProvider: this.verificationLlmProvider
     });
     try {
       await this.verify(carrier.value.verification.verification_code, solved.answer);
     } catch (error) {
       if (
         solved.provider === "deterministic" &&
-        this.verificationLlm &&
+        this.verificationLlmProvider &&
         isIncorrectVerificationAnswer(error)
       ) {
-        const llmSolved = await solveVerificationChallengeWithLlm(
-          challengeText,
-          this.verificationLlm,
-          this.llmFetchImpl
-        );
+        const llmSolved = await solveVerificationChallengeWithLlm(challengeText, this.verificationLlmProvider);
         try {
           await this.verify(carrier.value.verification.verification_code, llmSolved.answer);
           return payload;

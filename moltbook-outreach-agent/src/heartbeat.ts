@@ -1,7 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { loadRuntimeConfig, type MoltbookRuntimeConfig } from "./config.js";
+import {
+  buildVerificationLlmProvider,
+  loadRuntimeConfig,
+  type MoltbookRuntimeConfig
+} from "./config.js";
 import {
   chooseAndDraftWriteAction,
   type GeneratedWriteDecision,
@@ -113,7 +117,7 @@ export async function runHeartbeat(
     baseUrl: config.moltbookBaseUrl,
     apiKey: config.apiKey,
     autoVerify: config.autoVerify,
-    verificationLlm: config.verificationLlm ?? config.llm
+    verificationLlmProvider: buildVerificationLlmProvider(config)
   });
   const startedAt = new Date().toISOString();
   const report: HeartbeatReport = {

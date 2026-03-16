@@ -11,6 +11,13 @@ import {
   getDefaultProvider
 } from "@coti-io/coti-ethers";
 import { createPrivateAgentMessagingClient } from "@coti-agent-messaging/sdk";
+import {
+  createBridgeJsonLlmProvider,
+  createHttpJsonLlmProvider,
+  type BridgeLlmClientConfig,
+  type ChatClientConfig,
+  type JsonLlmProvider
+} from "./llm-client.js";
 
 export interface MoltbookStoredCredentials {
   apiKey: string;
@@ -34,20 +41,12 @@ export interface MoltbookRuntimeConfig extends RuntimePaths {
   dryRun: boolean;
   autoVerify: boolean;
   forceWriteMode?: "create_post" | "comment_on_post" | "reply_to_activity";
-  llm?: {
-    apiKey: string;
-    baseUrl: string;
-    model: string;
-    timeoutMs: number;
-    appName?: string;
-    siteUrl?: string;
-  };
-  verificationLlm?: {
-    apiKey: string;
-    baseUrl: string;
-    model: string;
-    timeoutMs: number;
-  };
+  llm?: ChatClientConfig;
+  verificationLlm?: ChatClientConfig;
+  llmBridge?: BridgeLlmClientConfig;
+  verificationLlmBridge?: BridgeLlmClientConfig;
+  llmProvider?: JsonLlmProvider;
+  verificationLlmProvider?: JsonLlmProvider;
   coti?: {
     privateKey: string;
     aesKey: string;
@@ -241,7 +240,17 @@ export async function loadRuntimeConfig(
         siteUrl: process.env.MOLTBOOK_LLM_SITE_URL
       }
     : undefined;
+  const llmBridgeUrl = getOptionalEnv("MOLTBOOK_LLM_BRIDGE_URL");
+  const llmBridge = llmBridgeUrl
+    ? {
+        url: llmBridgeUrl,
+        timeoutMs: parseNumber(process.env.MOLTBOOK_LLM_BRIDGE_TIMEOUT_MS, llm?.timeoutMs ?? 20_000),
+        label: process.env.MOLTBOOK_LLM_BRIDGE_LABEL ?? "local-bridge",
+        authToken: getOptionalEnv("MOLTBOOK_LLM_BRIDGE_AUTH_TOKEN")
+      }
+    : undefined;
   const verificationLlmApiKey = getOptionalEnv("MOLTBOOK_VERIFY_LLM_API_KEY") ?? llm?.apiKey;
+  const verificationLlmBridgeUrl = getOptionalEnv("MOLTBOOK_VERIFY_LLM_BRIDGE_URL") ?? llmBridge?.url;
 
   return {
     ...paths,
@@ -252,6 +261,7 @@ export async function loadRuntimeConfig(
     autoVerify: parseBoolean(process.env.MOLTBOOK_AUTO_VERIFY, true),
     forceWriteMode: parseForceWriteMode(process.env.MOLTBOOK_FORCE_WRITE_MODE),
     llm,
+    llmBridge,
     verificationLlm: verificationLlmApiKey
       ? {
           apiKey: verificationLlmApiKey,
@@ -269,6 +279,21 @@ export async function loadRuntimeConfig(
           )
         }
       : undefined,
+    verificationLlmBridge: verificationLlmBridgeUrl
+      ? {
+          url: verificationLlmBridgeUrl,
+          timeoutMs: parseNumber(
+            process.env.MOLTBOOK_VERIFY_LLM_BRIDGE_TIMEOUT_MS,
+            llmBridge?.timeoutMs ?? llm?.timeoutMs ?? 10_000
+          ),
+          label:
+            process.env.MOLTBOOK_VERIFY_LLM_BRIDGE_LABEL ??
+            llmBridge?.label ??
+            "local-bridge",
+          authToken:
+            getOptionalEnv("MOLTBOOK_VERIFY_LLM_BRIDGE_AUTH_TOKEN") ?? llmBridge?.authToken
+        }
+      : undefined,
     coti: hasCotiCredentials
       ? {
           privateKey: getRequiredEnv("PRIVATE_KEY"),
@@ -279,6 +304,56 @@ export async function loadRuntimeConfig(
         }
       : undefined
   };
+}
+
+export function buildMainLlmProvider(
+  config: MoltbookRuntimeConfig,
+  fetchImpl?: typeof fetch
+): JsonLlmProvider | undefined {
+  if (config.llmProvider) {
+    return config.llmProvider;
+  }
+
+  if (config.llmBridge) {
+    return createBridgeJsonLlmProvider(config.llmBridge, fetchImpl);
+  }
+
+  if (config.llm) {
+    return createHttpJsonLlmProvider(config.llm, fetchImpl);
+  }
+
+  return undefined;
+}
+
+export function buildVerificationLlmProvider(
+  config: MoltbookRuntimeConfig,
+  fetchImpl?: typeof fetch
+): JsonLlmProvider | undefined {
+  if (config.verificationLlmProvider) {
+    return config.verificationLlmProvider;
+  }
+
+  if (config.llmProvider) {
+    return config.llmProvider;
+  }
+
+  if (config.verificationLlmBridge) {
+    return createBridgeJsonLlmProvider(config.verificationLlmBridge, fetchImpl);
+  }
+
+  if (config.llmBridge) {
+    return createBridgeJsonLlmProvider(config.llmBridge, fetchImpl);
+  }
+
+  if (config.verificationLlm) {
+    return createHttpJsonLlmProvider(config.verificationLlm, fetchImpl);
+  }
+
+  if (config.llm) {
+    return createHttpJsonLlmProvider(config.llm, fetchImpl);
+  }
+
+  return undefined;
 }
 
 export function buildPrivateMessagingClient(config: MoltbookRuntimeConfig) {

@@ -1,11 +1,20 @@
 {
   "name": "@coti-agent-messaging/contracts",
   "version": "0.1.0",
-  "private": true,
   "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coti-io/coti-agent-messaging.git",
+    "directory": "contracts"
+  },
+  "bugs": {
+    "url": "https://github.com/coti-io/coti-agent-messaging/issues"
+  },
+  "homepage": "https://github.com/coti-io/coti-agent-messaging/tree/main/contracts",
   "scripts": {
     "compile": "hardhat compile",
-    "generate:types": "hardhat compile",
+    "export:abi": "node ./scripts/export-abi.mjs",
+    "generate:types": "npm run compile && npm run export:abi",
     "build": "npm run generate:types",
     "test": "hardhat test",
     "deploy:testnet": "hardhat run scripts/deploy.ts --network cotiTestnet",

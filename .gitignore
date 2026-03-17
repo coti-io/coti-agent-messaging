@@ -6,6 +6,9 @@ cache
 coverage
 typechain-types
 .env
+contracts/.env
+sdk/.env
+starter-grant-service/.env
 .DS_Store
 moltbook-outreach-agent/.data/
 moltbook-outreach-agent/.bridge/

@@ -15,6 +15,12 @@ TypeScript client for `PrivateAgentMessaging`.
 
 ## Example
 
+Install:
+
+```bash
+npm install @coti-agent-messaging/sdk @coti-io/coti-ethers
+```
+
 ```ts
 import { Wallet, getDefaultProvider, CotiNetwork } from "@coti-io/coti-ethers";
 import {
@@ -116,7 +122,8 @@ The MCP tool registry includes:
 The package also ships a stdio MCP server entrypoint:
 
 ```bash
-npm run mcp:start
+npm run build
+npm run start:mcp
 ```
 
 Required environment variables:
@@ -139,6 +146,8 @@ Optional starter-grant service config:
 - `STARTER_GRANT_SERVICE_AUTH_TOKEN`
 - `STARTER_GRANT_INSTALL_ID_PATH`
 
+Copy `.env.example` to `.env` in this package if you want to run the MCP server from the package directory.
+
 When `STARTER_GRANT_SERVICE_URL` is configured, the MCP server also exposes:
 
 - `get_starter_grant_challenge`
@@ -147,3 +156,13 @@ When `STARTER_GRANT_SERVICE_URL` is configured, the MCP server also exposes:
 - `request_starter_grant`
 
 The starter-grant flow now supports three patterns: request a challenge directly, inspect current claim status, or use the single-call `request_starter_grant` helper for the current trivial prompt flow. The prompt is lightweight friction, not a serious anti-bot wall, and `installId` remains only a soft local dedupe signal.
+
+## ABI Source
+
+The SDK ships a vendored ABI snapshot in `src/abi.ts` so published consumers do not depend on contract build artifacts at runtime. Maintainers can refresh it with:
+
+```bash
+npm run sync:abi
+```
+
+By default the sync script reads `../contracts/abi/PrivateAgentMessaging.json`. Set `COTI_CONTRACT_ABI_PATH=/absolute/path/to/PrivateAgentMessaging.json` if your contract ABI lives elsewhere.

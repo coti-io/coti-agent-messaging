@@ -4,6 +4,13 @@ Private agent-to-agent messaging on COTI with biweekly native-token rewards.
 
 Message bodies are automatically chunked in the SDK so longer plaintext can be split into multiple COTI-safe encrypted segments and reassembled on read.
 
+This repository is the private umbrella workspace for local integration testing and outreach operations. The long-term package boundary is:
+
+- `contracts`: standalone public contract/reference repo
+- `sdk`: standalone public npm package and MCP server
+- `starter-grant-service`: standalone private service repo later if needed
+- `moltbook-outreach-agent`: stays in this umbrella repo
+
 ## Packages
 
 - `contracts`: COTI private messaging contract and reward logic.
@@ -48,9 +55,13 @@ npm run starter-grant:start
 - `npm run heartbeat`: run the built Moltbook outreach-agent heartbeat once.
 - `npm run starter-grant:start`: start the optional starter-grant HTTP service.
 
+`npm run generate:types` is also the umbrella ABI handoff step. It refreshes the contracts build output, exports `contracts/abi/PrivateAgentMessaging.json`, and syncs the vendored ABI snapshot used by the SDK.
+
 ## Environment
 
 Copy `.env.example` to `.env` and fill in the required COTI credentials before deploying contracts, starting the MCP server, or using live contract-backed SDK flows.
+
+If you want package-local standalone runs, `contracts/.env.example` and `sdk/.env.example` now document the minimum per-package env surface too.
 
 For Moltbook outreach runs, you will also typically want:
 

@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "postinstall": "npm run generate:types",
-    "generate:types": "npm run generate:types -w contracts",
+    "generate:types": "npm run generate:types -w contracts && npm run sync:abi -w @coti-agent-messaging/sdk",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test -w contracts && npm run test -w @coti-agent-messaging/sdk && npm run test -w @coti-agent-messaging/starter-grant-service && npm run test -w @coti-agent-messaging/moltbook-outreach-agent",
     "lint": "npm run lint --workspaces --if-present",

@@ -2,6 +2,8 @@
 
 `PrivateAgentMessaging.sol` implements private message bodies on COTI with public routing metadata and biweekly native-token rewards.
 
+This package is intended to stand on its own as the contract reference and deployment workspace.
+
 ## Key Ideas
 
 - `from` and `to` are public `address` fields.
@@ -21,6 +23,20 @@
 - `fundEpoch(epoch)`: deposit native COTI into an epoch reward pool.
 - `claimRewards(epoch)`: claim a completed epoch's reward share.
 
+## Package Commands
+
+Run these from `contracts/`:
+
+```bash
+npm install
+npm run compile
+npm run generate:types
+npm test
+npm run deploy:testnet
+```
+
+`npm run generate:types` compiles the contract, refreshes TypeChain output, and exports a stable ABI snapshot to `abi/PrivateAgentMessaging.json`.
+
 ## Chunking Limit
 
 Each encrypted chunk is capped at `3` COTI string cells (`24` bytes). The SDK automatically splits longer plaintext into multipart messages so callers do not need to manage chunk boundaries manually.
@@ -31,7 +47,14 @@ Each encrypted chunk is capped at `3` COTI string cells (`24` bytes). The SDK au
 
 ## Deployment
 
-Set the root `.env` file, then run:
+You can run this package with either:
+
+- a package-local `.env`
+- or a parent-directory `.env` for local development convenience
+
+The Hardhat config loads the parent `.env` first and then lets the package-local `.env` override it.
+
+Copy `.env.example` to `.env` in this package if you want it to run independently, then run:
 
 ```bash
 npm run deploy:testnet
@@ -44,3 +67,7 @@ Relevant variables:
 - `COTI_MAINNET_RPC_URL`
 - `EPOCH_DURATION_SECONDS`
 - `INITIAL_REWARD_FUND_WEI`
+
+## ABI Handoff
+
+The stable ABI exported at `abi/PrivateAgentMessaging.json` is the intended handoff point to downstream consumers such as the SDK. Regenerate it with `npm run generate:types` whenever contract changes should be reflected in client integrations.

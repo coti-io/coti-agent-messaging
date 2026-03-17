@@ -107,6 +107,62 @@ export interface FundEpochRequest {
   amountWei: bigint;
 }
 
+export interface StarterGrantServiceConfig {
+  url: string;
+  timeoutMs: number;
+  authToken?: string;
+  installIdPath?: string;
+}
+
+export interface GetStarterGrantChallengeResult {
+  challengeId: string;
+  prompt: string;
+  claimPayload: string;
+  expiresAt: string;
+  walletAddress: string;
+  installId: string;
+}
+
+export interface GetStarterGrantStatusResult {
+  status: "eligible" | "challenge_pending" | "claimed";
+  walletAddress: string;
+  installId: string;
+  challenge?: {
+    challengeId: string;
+    prompt: string;
+    claimPayload: string;
+    issuedAt: string;
+    expiresAt: string;
+  };
+  claim?: {
+    challengeId: string;
+    transactionHash?: string;
+    amountWei?: string;
+    createdAt: string;
+    matchedOn: "wallet" | "install";
+  };
+}
+
+export interface ClaimStarterGrantRequest {
+  challengeId: string;
+  challengeAnswer: string;
+  claimPayload: string;
+}
+
+export interface ClaimStarterGrantResult {
+  status: "claimed";
+  walletAddress: string;
+  installId: string;
+  challengeId: string;
+  transactionHash: string;
+  amountWei: string;
+}
+
+export interface RequestStarterGrantResult extends ClaimStarterGrantResult {
+  prompt: string;
+  expiresAt: string;
+}
+
 export interface PrivateAgentMessagingClientConfig {
   contractAddress: string;
   runner: any;
@@ -127,7 +183,11 @@ export type McpToolName =
   | "get_pending_rewards"
   | "get_epoch_summary"
   | "claim_rewards"
-  | "fund_epoch";
+  | "fund_epoch"
+  | "get_starter_grant_challenge"
+  | "get_starter_grant_status"
+  | "claim_starter_grant"
+  | "request_starter_grant";
 
 export interface McpToolDefinition {
   name: McpToolName;

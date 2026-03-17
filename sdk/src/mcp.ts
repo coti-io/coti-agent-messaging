@@ -17,7 +17,14 @@ import {
   getEpochUsage,
   getPendingRewards
 } from "./rewards.js";
+import {
+  claimStarterGrant,
+  getStarterGrantChallenge,
+  getStarterGrantStatus,
+  requestStarterGrant
+} from "./starter-grants.js";
 import { toJsonValue, type JsonValue } from "./serialize.js";
+import type { StarterGrantServiceConfig } from "./types.js";
 import type { McpToolDefinition, McpToolName } from "./types.js";
 
 const paginationSchema = {
@@ -213,6 +220,53 @@ export const PRIVATE_AGENT_MESSAGING_MCP_TOOLS: readonly McpToolDefinition[] = [
       },
       required: ["epoch", "amountWei"]
     }
+  },
+  {
+    name: "get_starter_grant_challenge",
+    description:
+      "Request a one-time starter COTI challenge for the configured wallet and local MCP install.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "get_starter_grant_status",
+    description:
+      "Check whether the configured wallet/install is eligible, has a pending challenge, or already claimed a starter grant.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "claim_starter_grant",
+    description:
+      "Submit the solved starter COTI challenge and sign the backend-issued claim payload with the configured wallet.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        challengeId: { type: "string", description: "Starter grant challenge identifier" },
+        challengeAnswer: {
+          type: "string",
+          description: "Answer to the starter-grant prompt"
+        },
+        claimPayload: {
+          type: "string",
+          description: "Opaque backend-issued payload that will be signed by the configured wallet"
+        }
+      },
+      required: ["challengeId", "challengeAnswer", "claimPayload"]
+    }
+  },
+  {
+    name: "request_starter_grant",
+    description:
+      "Request and immediately submit the current trivial starter-grant challenge in one MCP call.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
   }
 ] as const;
 
@@ -255,7 +309,11 @@ function asNumber(value: unknown, fallback: number): number {
 export async function invokePrivateAgentMessagingTool(
   client: PrivateAgentMessagingClient,
   toolName: McpToolName,
-  rawInput: unknown
+  rawInput: unknown,
+  options?: {
+    starterGrantConfig?: StarterGrantServiceConfig;
+    fetchImpl?: typeof fetch;
+  }
 ): Promise<JsonValue> {
   const input = asObject(rawInput);
 
@@ -354,6 +412,31 @@ export async function invokePrivateAgentMessagingTool(
           amountWei: BigInt(asIdLike(input.amountWei, "amountWei"))
         })
       });
+    case "get_starter_grant_challenge":
+      return toJsonValue(
+        await getStarterGrantChallenge(client, options?.starterGrantConfig, options?.fetchImpl)
+      );
+    case "get_starter_grant_status":
+      return toJsonValue(
+        await getStarterGrantStatus(client, options?.starterGrantConfig, options?.fetchImpl)
+      );
+    case "claim_starter_grant":
+      return toJsonValue(
+        await claimStarterGrant(
+          client,
+          options?.starterGrantConfig,
+          {
+            challengeId: asString(input.challengeId, "challengeId"),
+            challengeAnswer: asString(input.challengeAnswer, "challengeAnswer"),
+            claimPayload: asString(input.claimPayload, "claimPayload")
+          },
+          options?.fetchImpl
+        )
+      );
+    case "request_starter_grant":
+      return toJsonValue(
+        await requestStarterGrant(client, options?.starterGrantConfig, options?.fetchImpl)
+      );
   }
 
   const exhaustiveCheck: never = toolName;

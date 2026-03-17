@@ -22,7 +22,9 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start:mcp": "node ./dist/server.js"
+    "lint": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "start:mcp": "node ./dist/server.js",
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

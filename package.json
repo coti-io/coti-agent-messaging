@@ -5,17 +5,19 @@
   "workspaces": [
     "contracts",
     "sdk",
+    "starter-grant-service",
     "moltbook-outreach-agent"
   ],
   "scripts": {
     "postinstall": "npm run generate:types",
     "generate:types": "npm run generate:types -w contracts",
     "build": "npm run build --workspaces --if-present",
-    "test": "npm run test -w contracts && npm run test -w @coti-agent-messaging/moltbook-outreach-agent",
+    "test": "npm run test -w contracts && npm run test -w @coti-agent-messaging/sdk && npm run test -w @coti-agent-messaging/starter-grant-service && npm run test -w @coti-agent-messaging/moltbook-outreach-agent",
     "lint": "npm run lint --workspaces --if-present",
     "deploy:testnet": "npm run deploy:testnet -w contracts",
     "deploy:mainnet": "npm run deploy:mainnet -w contracts",
     "mcp:start": "npm run start:mcp -w sdk",
-    "heartbeat": "node moltbook-outreach-agent/dist/src/index.js heartbeat"
+    "heartbeat": "node moltbook-outreach-agent/dist/src/index.js heartbeat",
+    "starter-grant:start": "npm run start -w @coti-agent-messaging/starter-grant-service"
   }
 }

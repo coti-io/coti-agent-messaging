@@ -25,6 +25,12 @@ export {
   getPendingRewards
 } from "./rewards.js";
 export {
+  claimStarterGrant,
+  getStarterGrantChallenge,
+  getStarterGrantStatus,
+  requestStarterGrant
+} from "./starter-grants.js";
+export {
   PRIVATE_AGENT_MESSAGING_MCP_TOOLS,
   invokePrivateAgentMessagingTool
 } from "./mcp.js";
@@ -32,11 +38,15 @@ export type { JsonValue } from "./serialize.js";
 export type {
   ClaimRewardsRequest,
   ClaimRewardsResult,
+  ClaimStarterGrantRequest,
+  ClaimStarterGrantResult,
   ContractConfig,
   CtString,
   EpochUsage,
   EpochSummary,
   FundEpochRequest,
+  GetStarterGrantChallengeResult,
+  GetStarterGrantStatusResult,
   ItString,
   AccountStats,
   ListMessagesRequest,
@@ -49,6 +59,8 @@ export type {
   PrivateAgentMessagingClientConfig,
   ReadMessageRequest,
   ReadMessageResult,
+  RequestStarterGrantResult,
   SendMessageRequest,
-  SendMessageResult
+  SendMessageResult,
+  StarterGrantServiceConfig
 } from "./types.js";

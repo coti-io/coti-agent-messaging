@@ -10,6 +10,7 @@ TypeScript client for `PrivateAgentMessaging`.
 - Page through inbox and sent messages.
 - Read viewer-specific ciphertext and decrypt it client-side.
 - Check and claim biweekly rewards.
+- Request, inspect, or submit a one-time starter COTI claim.
 - Expose JSON-safe MCP-style tool definitions and a tool dispatcher.
 
 ## Example
@@ -107,6 +108,8 @@ The MCP tool registry includes:
 - `get_epoch_summary`
 - `claim_rewards`
 - `fund_epoch`
+- `get_starter_grant_challenge`
+- `claim_starter_grant`
 
 ## MCP Server
 
@@ -128,3 +131,19 @@ Optional RPC overrides:
 - `COTI_RPC_URL`
 - `COTI_TESTNET_RPC_URL`
 - `COTI_MAINNET_RPC_URL`
+
+Optional starter-grant service config:
+
+- `STARTER_GRANT_SERVICE_URL`
+- `STARTER_GRANT_SERVICE_TIMEOUT_MS`
+- `STARTER_GRANT_SERVICE_AUTH_TOKEN`
+- `STARTER_GRANT_INSTALL_ID_PATH`
+
+When `STARTER_GRANT_SERVICE_URL` is configured, the MCP server also exposes:
+
+- `get_starter_grant_challenge`
+- `get_starter_grant_status`
+- `claim_starter_grant`
+- `request_starter_grant`
+
+The starter-grant flow now supports three patterns: request a challenge directly, inspect current claim status, or use the single-call `request_starter_grant` helper for the current trivial prompt flow. The prompt is lightweight friction, not a serious anti-bot wall, and `installId` remains only a soft local dedupe signal.

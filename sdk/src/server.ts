@@ -13,6 +13,7 @@ import { z } from "zod";
 import { createPrivateAgentMessagingClient } from "./client.js";
 import { invokePrivateAgentMessagingTool } from "./mcp.js";
 import { PRIVATE_AGENT_MESSAGING_MCP_TOOLS } from "./mcp.js";
+import type { StarterGrantServiceConfig } from "./types.js";
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -46,6 +47,29 @@ function resolveRpcUrl(): string | undefined {
   return process.env.COTI_TESTNET_RPC_URL;
 }
 
+function parseNumber(value: string | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resolveStarterGrantServiceConfig(): StarterGrantServiceConfig | undefined {
+  const url = process.env.STARTER_GRANT_SERVICE_URL;
+  if (!url) {
+    return undefined;
+  }
+
+  return {
+    url,
+    timeoutMs: parseNumber(process.env.STARTER_GRANT_SERVICE_TIMEOUT_MS, 15_000),
+    authToken: process.env.STARTER_GRANT_SERVICE_AUTH_TOKEN,
+    installIdPath: process.env.STARTER_GRANT_INSTALL_ID_PATH
+  };
+}
+
 function buildClient() {
   const network = resolveNetwork();
   const rpcUrl = resolveRpcUrl();
@@ -70,6 +94,7 @@ function formatToolContent(result: unknown) {
 
 export async function startMcpServer() {
   const client = buildClient();
+  const starterGrantConfig = resolveStarterGrantServiceConfig();
 
   const server = new McpServer(
     {
@@ -100,7 +125,9 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "send_message", args);
+      const result = await invokePrivateAgentMessagingTool(client, "send_message", args, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -117,7 +144,9 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "read_message", args);
+      const result = await invokePrivateAgentMessagingTool(client, "read_message", args, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -138,7 +167,9 @@ export async function startMcpServer() {
       inputSchema: listSchema
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "list_inbox", args);
+      const result = await invokePrivateAgentMessagingTool(client, "list_inbox", args, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -152,7 +183,9 @@ export async function startMcpServer() {
       inputSchema: listSchema
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "list_sent", args);
+      const result = await invokePrivateAgentMessagingTool(client, "list_sent", args, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -166,7 +199,9 @@ export async function startMcpServer() {
       )?.description
     },
     async () => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_contract_config", {});
+      const result = await invokePrivateAgentMessagingTool(client, "get_contract_config", {}, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -183,7 +218,9 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_account_stats", args);
+      const result = await invokePrivateAgentMessagingTool(client, "get_account_stats", args, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -200,7 +237,9 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_message_metadata", args);
+      const result = await invokePrivateAgentMessagingTool(client, "get_message_metadata", args, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -214,7 +253,9 @@ export async function startMcpServer() {
       )?.description
     },
     async () => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_current_epoch", {});
+      const result = await invokePrivateAgentMessagingTool(client, "get_current_epoch", {}, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -238,7 +279,8 @@ export async function startMcpServer() {
       const result = await invokePrivateAgentMessagingTool(
         client,
         "get_epoch_for_timestamp",
-        args
+        args,
+        { starterGrantConfig }
       );
       return { content: formatToolContent(result) };
     }
@@ -257,7 +299,9 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_epoch_usage", args);
+      const result = await invokePrivateAgentMessagingTool(client, "get_epoch_usage", args, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -272,7 +316,9 @@ export async function startMcpServer() {
       inputSchema: epochSchema
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_epoch_summary", args);
+      const result = await invokePrivateAgentMessagingTool(client, "get_epoch_summary", args, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -290,7 +336,9 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_pending_rewards", args);
+      const result = await invokePrivateAgentMessagingTool(client, "get_pending_rewards", args, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -305,7 +353,9 @@ export async function startMcpServer() {
       inputSchema: epochSchema
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "claim_rewards", args);
+      const result = await invokePrivateAgentMessagingTool(client, "claim_rewards", args, {
+        starterGrantConfig
+      });
       return { content: formatToolContent(result) };
     }
   );
@@ -322,7 +372,87 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "fund_epoch", args);
+      const result = await invokePrivateAgentMessagingTool(client, "fund_epoch", args, {
+        starterGrantConfig
+      });
+      return { content: formatToolContent(result) };
+    }
+  );
+
+  server.registerTool(
+    "get_starter_grant_challenge",
+    {
+      title: "Get Starter Grant Challenge",
+      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+        (tool) => tool.name === "get_starter_grant_challenge"
+      )?.description
+    },
+    async () => {
+      const result = await invokePrivateAgentMessagingTool(
+        client,
+        "get_starter_grant_challenge",
+        {},
+        { starterGrantConfig }
+      );
+      return { content: formatToolContent(result) };
+    }
+  );
+
+  server.registerTool(
+    "get_starter_grant_status",
+    {
+      title: "Get Starter Grant Status",
+      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+        (tool) => tool.name === "get_starter_grant_status"
+      )?.description
+    },
+    async () => {
+      const result = await invokePrivateAgentMessagingTool(
+        client,
+        "get_starter_grant_status",
+        {},
+        { starterGrantConfig }
+      );
+      return { content: formatToolContent(result) };
+    }
+  );
+
+  server.registerTool(
+    "claim_starter_grant",
+    {
+      title: "Claim Starter Grant",
+      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+        (tool) => tool.name === "claim_starter_grant"
+      )?.description,
+      inputSchema: {
+        challengeId: z.string().min(1),
+        challengeAnswer: z.string().min(1),
+        claimPayload: z.string().min(1)
+      }
+    },
+    async (args) => {
+      const result = await invokePrivateAgentMessagingTool(client, "claim_starter_grant", args, {
+        starterGrantConfig
+      });
+      return { content: formatToolContent(result) };
+    }
+  );
+
+  server.registerTool(
+    "request_starter_grant",
+    {
+      title: "Request Starter Grant",
+      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+        (tool) => tool.name === "request_starter_grant"
+      )?.description
+    },
+    async () => {
+      const result = await invokePrivateAgentMessagingTool(
+        client,
+        "request_starter_grant",
+        {},
+        { starterGrantConfig }
+      );
       return { content: formatToolContent(result) };
     }
   );

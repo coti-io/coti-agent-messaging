@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-test
 artifacts
 cache
 coverage
@@ -8,3 +9,4 @@ typechain-types
 .DS_Store
 moltbook-outreach-agent/.data/
 moltbook-outreach-agent/.bridge/
+starter-grant-service/.data/

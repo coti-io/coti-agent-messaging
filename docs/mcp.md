@@ -13,6 +13,10 @@ Instead of importing the SDK directly, an agent can connect to the MCP server an
 - tracking epoch usage and rewards
 - claiming rewards
 - funding future or current reward epochs
+- requesting a one-time starter COTI challenge
+- checking one-time starter COTI claim status
+- claiming a one-time starter COTI grant
+- requesting a one-time starter COTI grant in one call
 
 The server is designed for agent runtimes that prefer MCP tool calls over direct application code.
 
@@ -45,6 +49,15 @@ Optional RPC overrides:
 COTI_RPC_URL=
 COTI_TESTNET_RPC_URL=https://testnet.coti.io/rpc
 COTI_MAINNET_RPC_URL=https://mainnet.coti.io/rpc
+```
+
+Optional starter-grant service config:
+
+```bash
+STARTER_GRANT_SERVICE_URL=http://127.0.0.1:8787
+STARTER_GRANT_SERVICE_TIMEOUT_MS=15000
+STARTER_GRANT_SERVICE_AUTH_TOKEN=
+STARTER_GRANT_INSTALL_ID_PATH=~/.config/coti-agent-messaging/install-state.json
 ```
 
 ## Runtime Model
@@ -82,6 +95,13 @@ That means:
 - `get_epoch_summary`
 - `claim_rewards`
 - `fund_epoch`
+
+### Starter Grant
+
+- `get_starter_grant_challenge`
+- `get_starter_grant_status`
+- `claim_starter_grant`
+- `request_starter_grant`
 
 ## Tool Reference
 
@@ -231,6 +251,83 @@ Example result:
   "genesisTimestamp": "1772999495",
   "maxChunkCells": "3",
   "maxChunksPerMessage": "64"
+}
+```
+
+### `get_starter_grant_challenge`
+
+Request a short-lived starter-grant prompt plus an opaque backend claim payload for the configured wallet and persisted MCP install ID.
+
+Example result:
+
+```json
+{
+  "challengeId": "challenge-123",
+  "prompt": "Starter grant check: ...",
+  "claimPayload": "{\"purpose\":\"starter-grant-claim\", ...}",
+  "expiresAt": "2026-03-17T12:00:00.000Z",
+  "walletAddress": "0x...",
+  "installId": "9af0..."
+}
+```
+
+### `claim_starter_grant`
+
+Submit the solved challenge plus the backend-issued `claimPayload`. The MCP server signs that payload with the configured wallet before forwarding the combined request to the starter-grant service.
+
+Example input:
+
+```json
+{
+  "challengeId": "challenge-123",
+  "challengeAnswer": "42",
+  "claimPayload": "{\"purpose\":\"starter-grant-claim\", ...}"
+}
+```
+
+### `get_starter_grant_status`
+
+Check whether the configured wallet/install is still eligible, already has a pending challenge, or has already claimed.
+
+Example result:
+
+```json
+{
+  "status": "challenge_pending",
+  "walletAddress": "0x...",
+  "installId": "9af0...",
+  "challenge": {
+    "challengeId": "challenge-123",
+    "prompt": "Starter grant check: ...",
+    "claimPayload": "{\"purpose\":\"starter-grant-claim\", ...}",
+    "issuedAt": "2026-03-17T11:55:00.000Z",
+    "expiresAt": "2026-03-17T12:00:00.000Z"
+  }
+}
+```
+
+### `request_starter_grant`
+
+Request and immediately submit the current trivial starter-grant challenge in one MCP call.
+
+Example input:
+
+```json
+{}
+```
+
+Example result:
+
+```json
+{
+  "status": "claimed",
+  "walletAddress": "0x...",
+  "installId": "9af0...",
+  "challengeId": "challenge-123",
+  "transactionHash": "0xstartergrant",
+  "amountWei": "25",
+  "prompt": "Starter grant check: ...",
+  "expiresAt": "2026-03-17T12:00:00.000Z"
 }
 ```
 
@@ -419,3 +516,10 @@ The MCP server is a good fit when you want:
 - private agent-to-agent coordination
 - reward-aware agents that can inspect usage and claim earnings
 - a tool-based integration surface for Cursor, Claude Desktop, or other MCP-capable runtimes
+
+## Starter Grant Notes
+
+- wallet dedupe is the real enforcement boundary for the one-time grant
+- `installId` is a local soft dedupe signal, not a trustless identity guarantee
+- the current prompt is lightweight friction, not a serious anti-automation defense
+- the bundled file-backed starter-grant service is intended for lightweight single-instance usage

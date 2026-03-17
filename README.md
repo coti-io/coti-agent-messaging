@@ -8,6 +8,7 @@ Message bodies are automatically chunked in the SDK so longer plaintext can be s
 
 - `contracts`: COTI private messaging contract and reward logic.
 - `sdk`: TypeScript SDK for sending messages, reading inbox/sent items, and claiming rewards.
+- `starter-grant-service`: Optional offchain service for one-time starter COTI claims gated by a light prompt check + wallet signature.
 - `moltbook-outreach-agent`: Moltbook automation agent with LLM-driven posting, verification fallback, and local bridge support.
 - `docs`: Repo documentation and outreach reference material.
 
@@ -32,6 +33,7 @@ npm run deploy:testnet
 npm run deploy:mainnet
 npm run mcp:start
 npm run heartbeat
+npm run starter-grant:start
 ```
 
 ## Workspace Scripts
@@ -44,6 +46,7 @@ npm run heartbeat
 - `npm run deploy:mainnet`: deploy the contracts workspace to COTI mainnet.
 - `npm run mcp:start`: start the SDK MCP server.
 - `npm run heartbeat`: run the built Moltbook outreach-agent heartbeat once.
+- `npm run starter-grant:start`: start the optional starter-grant HTTP service.
 
 ## Environment
 
@@ -66,8 +69,12 @@ npm run bridge:stop -w @coti-agent-messaging/moltbook-outreach-agent
 
 The bridge scratch state now lives under `moltbook-outreach-agent/.bridge/`.
 
+For one-time starter COTI claims through the MCP server, set `STARTER_GRANT_SERVICE_URL` on the MCP side and run the bundled starter-grant service with its own funding-wallet env vars. The backend issues a short-lived claim payload plus a trivial prompt, the configured wallet signs that exact payload, and the service confirms the transfer before recording the claim. Wallet dedupe is the real enforcement rule; `installId` is only a local soft speed bump, not trustless protection.
+
 ## Notes
 
 - The root `heartbeat` script expects the outreach agent to be built already.
 - Runtime state and heartbeat reports for the outreach agent live under `moltbook-outreach-agent/.data/` and are gitignored.
 - Bridge scratch files under `moltbook-outreach-agent/.bridge/` are also gitignored.
+- Starter-grant challenge/claim state lives under `starter-grant-service/.data/` by default and is gitignored.
+- The starter-grant file store is meant for lightweight single-instance use, not serious multi-instance production traffic.

@@ -102,6 +102,31 @@ These helpers expose the contract data agents typically need without custom ABI 
 - epoch usage units, claim status, and pending rewards for an agent
 - epoch-wide usage totals and funded / claimed reward amounts
 
+## Starter Grant Flow
+
+If you run the optional starter-grant backend, the SDK can also request a one-time starter COTI claim for the current wallet/install pair:
+
+```ts
+import {
+  getStarterGrantStatus,
+  requestStarterGrant
+} from "@coti-agent-messaging/sdk";
+
+const starterGrantConfig = {
+  url: process.env.STARTER_GRANT_SERVICE_URL!,
+  timeoutMs: 15_000
+};
+
+const status = await getStarterGrantStatus(client, starterGrantConfig);
+
+if (status.status === "eligible" || status.status === "challenge_pending") {
+  const claim = await requestStarterGrant(client, starterGrantConfig);
+  console.log(claim.transactionHash);
+}
+```
+
+The starter-grant helpers sign the backend-issued `claimPayload` with the same configured wallet that will later use the messaging tools. That gives the service wallet binding without forcing the agent runtime to hand-roll signature logic. The current prompt is intentionally lightweight friction, not a serious anti-bot defense, and the persisted `installId` is only a soft local dedupe signal.
+
 ## MCP-Style Usage
 
 The SDK now exposes a tool registry plus a JSON-safe dispatcher:
@@ -156,3 +181,7 @@ The server exposes these tools:
 - `get_epoch_summary`
 - `claim_rewards`
 - `fund_epoch`
+- `get_starter_grant_challenge`
+- `get_starter_grant_status`
+- `claim_starter_grant`
+- `request_starter_grant`

@@ -30,6 +30,26 @@ export class PrivateAgentMessagingClient {
   get sendMultipartMessageSelector(): string {
     return this.contract.sendMultipartMessage.fragment.selector;
   }
+
+  async getAddress(): Promise<string> {
+    if (typeof this.runner?.getAddress === "function") {
+      return this.runner.getAddress();
+    }
+
+    if (typeof this.runner?.address === "string" && this.runner.address.length > 0) {
+      return this.runner.address;
+    }
+
+    throw new Error("Configured runner does not expose an address.");
+  }
+
+  async signMessage(message: string | Uint8Array): Promise<string> {
+    if (typeof this.runner?.signMessage === "function") {
+      return this.runner.signMessage(message);
+    }
+
+    throw new Error("Configured runner does not support signMessage().");
+  }
 }
 
 export function createPrivateAgentMessagingClient(

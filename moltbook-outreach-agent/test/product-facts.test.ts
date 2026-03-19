@@ -30,6 +30,10 @@ test("loads product claims from the repo docs without requiring chain credential
     facts.claims.some((claim) => claim.id === "viewer-specific-ciphertext"),
     true
   );
+  assert.equal(
+    facts.claims.some((claim) => claim.id === "web4-private-messaging-wedge"),
+    true
+  );
   assert.equal(facts.liveSnapshot.walletAddress, undefined);
   for (const claim of facts.claims) {
     assert.equal(claim.evidence.length > 0, true);

@@ -74,6 +74,14 @@ const DOC_SOURCES: readonly DocSourceDefinition[] = [
       "The contract stores viewer-specific ciphertext",
       "You cannot send to yourself"
     ]
+  },
+  {
+    relativePath: "docs/web4-alignment-memo.md",
+    phrases: [
+      "COTI is building the privacy and incentive layer for agent-to-agent communication, starting with private messaging.",
+      "Agent onboarding feels lightweight rather than infrastructure-heavy.",
+      "Starter grants are wallet-bound and run through a challenge-and-signature flow"
+    ]
   }
 ];
 
@@ -120,8 +128,18 @@ function buildClaims(projectRoot: string, evidence: Map<string, string[]>): Prod
   const mcpPath = path.join(projectRoot, "docs/mcp.md");
   const rewardsPath = path.join(projectRoot, "docs/rewards.md");
   const outreachReferencePath = path.join(projectRoot, "docs/outreach-reference.md");
+  const web4AlignmentMemoPath = path.join(projectRoot, "docs/web4-alignment-memo.md");
 
   return [
+    {
+      id: "web4-private-messaging-wedge",
+      headline: "Private messaging is the first WEB4 wedge",
+      detail:
+        "COTI frames WEB4 as agent-to-agent internet behavior and starts with private messaging as the first concrete product wedge, not as a claim to already own the whole category.",
+      sourcePaths: [web4AlignmentMemoPath],
+      evidence: evidence.get(web4AlignmentMemoPath) ?? [],
+      emphasis: "primary"
+    },
     {
       id: "private-bodies-public-routing",
       headline: "Private message bodies, simple routing",
@@ -144,9 +162,13 @@ function buildClaims(projectRoot: string, evidence: Map<string, string[]>): Prod
       id: "reward-epochs",
       headline: "Funded reward epochs for real usage",
       detail:
-        "Rewards exist to bootstrap meaningful use: they are funded in native COTI, time-boxed by epoch, and calculated from encrypted cell usage.",
-      sourcePaths: [overviewPath, rewardsPath],
-      evidence: [...(evidence.get(overviewPath) ?? []), ...(evidence.get(rewardsPath) ?? [])],
+        "Rewards exist to bootstrap meaningful use: they are funded in native COTI, time-boxed by epoch, and calculated from encrypted cell usage rather than empty message-count theater.",
+      sourcePaths: [overviewPath, rewardsPath, web4AlignmentMemoPath],
+      evidence: [
+        ...(evidence.get(overviewPath) ?? []),
+        ...(evidence.get(rewardsPath) ?? []),
+        ...(evidence.get(web4AlignmentMemoPath) ?? [])
+      ],
       emphasis: "bonus"
     },
     {
@@ -174,6 +196,15 @@ function buildClaims(projectRoot: string, evidence: Map<string, string[]>): Prod
         "The contract stores viewer-specific ciphertext so the sender and recipient can each read the same logical message while routing metadata stays public.",
       sourcePaths: [outreachReferencePath],
       evidence: evidence.get(outreachReferencePath) ?? [],
+      emphasis: "secondary"
+    },
+    {
+      id: "lightweight-agent-onboarding",
+      headline: "Lower first-use friction, then reward deeper usage",
+      detail:
+        "The adoption strategy is to keep onboarding lightweight, subsidize first actions, and reinforce repeat behavior with grants and usage-based rewards.",
+      sourcePaths: [web4AlignmentMemoPath],
+      evidence: evidence.get(web4AlignmentMemoPath) ?? [],
       emphasis: "secondary"
     }
   ];

@@ -1,6 +1,6 @@
 # Contracts
 
-`PrivateAgentMessaging.sol` implements private message bodies on COTI with public routing metadata and biweekly native-token rewards.
+`PrivateMessaging.sol` implements private message bodies on COTI with public routing metadata and biweekly native-token rewards.
 
 This package is intended to stand on its own as the contract reference and deployment workspace.
 
@@ -35,7 +35,7 @@ npm test
 npm run deploy:testnet
 ```
 
-`npm run generate:types` compiles the contract, refreshes TypeChain output, and exports a stable ABI snapshot to `abi/PrivateAgentMessaging.json`.
+`npm run generate:types` compiles the contract, refreshes TypeChain output, and exports a stable ABI snapshot to `abi/PrivateMessaging.json`.
 
 ## Chunking Limit
 
@@ -43,7 +43,7 @@ Each encrypted chunk is capped at `3` COTI string cells (`24` bytes). The SDK au
 
 ## Testing Note
 
-`PrivateAgentMessagingHarness.sol` exists only to unit-test reward and pagination behavior without depending on the full COTI private-input runtime in every test.
+`PrivateMessagingHarness.sol` exists only to unit-test reward and pagination behavior without depending on the full COTI private-input runtime in every test.
 
 ## Deployment
 
@@ -70,4 +70,4 @@ Relevant variables:
 
 ## ABI Handoff
 
-The stable ABI exported at `abi/PrivateAgentMessaging.json` is the intended handoff point to downstream consumers such as the SDK. Regenerate it with `npm run generate:types` whenever contract changes should be reflected in client integrations.
+The stable ABI exported at `abi/PrivateMessaging.json` is the intended handoff point to downstream consumers such as the SDK. Regenerate it with `npm run generate:types` whenever contract changes should be reflected in client integrations.

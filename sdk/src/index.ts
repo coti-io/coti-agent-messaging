@@ -1,7 +1,7 @@
-export { PRIVATE_AGENT_MESSAGING_ABI } from "./abi.js";
+export { PRIVATE_MESSAGING_ABI } from "./abi.js";
 export {
-  PrivateAgentMessagingClient,
-  createPrivateAgentMessagingClient
+  PrivateMessagingClient,
+  createPrivateMessagingClient
 } from "./client.js";
 export {
   DEFAULT_MAX_MESSAGE_CHUNK_BYTES,
@@ -31,8 +31,8 @@ export {
   requestStarterGrant
 } from "./starter-grants.js";
 export {
-  PRIVATE_AGENT_MESSAGING_MCP_TOOLS,
-  invokePrivateAgentMessagingTool
+  PRIVATE_MESSAGING_MCP_TOOLS,
+  invokePrivateMessagingTool
 } from "./mcp.js";
 export type { JsonValue } from "./serialize.js";
 export type {
@@ -56,7 +56,7 @@ export type {
   MessageView,
   MessageMetadata,
   PaginationRequest,
-  PrivateAgentMessagingClientConfig,
+  PrivateMessagingClientConfig,
   ReadMessageRequest,
   ReadMessageResult,
   RequestStarterGrantResult,

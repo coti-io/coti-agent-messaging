@@ -163,7 +163,7 @@ export interface RequestStarterGrantResult extends ClaimStarterGrantResult {
   expiresAt: string;
 }
 
-export interface PrivateAgentMessagingClientConfig {
+export interface PrivateMessagingClientConfig {
   contractAddress: string;
   runner: any;
   aesKey?: string;

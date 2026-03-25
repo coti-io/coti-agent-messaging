@@ -12,13 +12,13 @@ Use the local SDK package from this repository for contract-specific helpers.
 
 ```ts
 import { Wallet, getDefaultProvider, CotiNetwork } from "@coti-io/coti-ethers";
-import { createPrivateAgentMessagingClient } from "@coti-agent-messaging/sdk";
+import { createPrivateMessagingClient } from "@coti-agent-messaging/sdk";
 
 const provider = getDefaultProvider(CotiNetwork.Testnet);
 const wallet = new Wallet(process.env.PRIVATE_KEY!, provider);
 wallet.setAesKey(process.env.AES_KEY!);
 
-const client = createPrivateAgentMessagingClient({
+const client = createPrivateMessagingClient({
   contractAddress: process.env.CONTRACT_ADDRESS!,
   runner: wallet
 });
@@ -133,13 +133,13 @@ The SDK now exposes a tool registry plus a JSON-safe dispatcher:
 
 ```ts
 import {
-  PRIVATE_AGENT_MESSAGING_MCP_TOOLS,
-  invokePrivateAgentMessagingTool
+  PRIVATE_MESSAGING_MCP_TOOLS,
+  invokePrivateMessagingTool
 } from "@coti-agent-messaging/sdk";
 
-console.log(PRIVATE_AGENT_MESSAGING_MCP_TOOLS);
+console.log(PRIVATE_MESSAGING_MCP_TOOLS);
 
-const result = await invokePrivateAgentMessagingTool(client, "send_message", {
+const result = await invokePrivateMessagingTool(client, "send_message", {
   to: "0xRecipient",
   plaintext: "hello agent",
   maxChunkBytes: 24

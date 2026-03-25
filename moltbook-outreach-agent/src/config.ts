@@ -10,7 +10,7 @@ import {
   Wallet,
   getDefaultProvider
 } from "@coti-io/coti-ethers";
-import { createPrivateAgentMessagingClient } from "@coti-agent-messaging/sdk";
+import { createPrivateMessagingClient } from "@coti-agent-messaging/sdk";
 import {
   createBridgeJsonLlmProvider,
   createHttpJsonLlmProvider,
@@ -367,7 +367,7 @@ export function buildPrivateMessagingClient(config: MoltbookRuntimeConfig) {
   const wallet = new Wallet(config.coti.privateKey, provider);
   wallet.setAesKey(config.coti.aesKey);
 
-  return createPrivateAgentMessagingClient({
+  return createPrivateMessagingClient({
     contractAddress: config.coti.contractAddress,
     runner: wallet
   });

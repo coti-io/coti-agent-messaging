@@ -1,6 +1,6 @@
 # Contracts
 
-## `PrivateAgentMessaging`
+## `PrivateMessaging`
 
 The contract stores public routing metadata and encrypted message bodies. Long plaintext is supported through multipart chunking under one logical message ID.
 

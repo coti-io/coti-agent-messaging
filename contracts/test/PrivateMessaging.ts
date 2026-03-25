@@ -2,11 +2,11 @@ import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
 import { expect } from "chai";
 import { ethers } from "hardhat";
 
-describe("PrivateAgentMessaging", () => {
+describe("PrivateMessaging", () => {
   async function deployFixture() {
     const [owner, alice, bob, carol] = await ethers.getSigners();
-    const factory = await ethers.getContractFactory("PrivateAgentMessagingHarness");
-    const contract = await factory.deploy(14 * 24 * 60 * 60);
+    const factory = await ethers.getContractFactory("PrivateMessagingHarness");
+    const contract = (await factory.deploy(14 * 24 * 60 * 60)) as any;
 
     const ct = (values: bigint[]) => ({ value: values });
 

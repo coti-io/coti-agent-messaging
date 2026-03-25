@@ -6,21 +6,21 @@ import type {
   EpochSummary,
   FundEpochRequest
 } from "./types.js";
-import { PrivateAgentMessagingClient } from "./client.js";
+import { PrivateMessagingClient } from "./client.js";
 
-export async function getCurrentEpoch(client: PrivateAgentMessagingClient): Promise<bigint> {
+export async function getCurrentEpoch(client: PrivateMessagingClient): Promise<bigint> {
   return BigInt(await client.contract.currentEpoch());
 }
 
 export async function getEpochForTimestamp(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   timestamp: bigint | number | string
 ): Promise<bigint> {
   return BigInt(await client.contract.epochForTimestamp(timestamp));
 }
 
 export async function getContractConfig(
-  client: PrivateAgentMessagingClient
+  client: PrivateMessagingClient
 ): Promise<ContractConfig> {
   const [owner, epochDuration, genesisTimestamp, maxChunkCells, maxChunksPerMessage] =
     await Promise.all([
@@ -41,7 +41,7 @@ export async function getContractConfig(
 }
 
 export async function getPendingRewards(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   epoch: bigint | number | string,
   agent: string
 ): Promise<bigint> {
@@ -49,7 +49,7 @@ export async function getPendingRewards(
 }
 
 export async function getEpochUsage(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   epoch: bigint | number | string,
   agent: string
 ): Promise<EpochUsage> {
@@ -71,7 +71,7 @@ export async function getEpochUsage(
 }
 
 export async function getEpochSummary(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   epoch: bigint | number | string
 ): Promise<EpochSummary> {
   const [totalUsageUnits, rewardPool, claimedAmount, claimedUsageUnits] =
@@ -86,7 +86,7 @@ export async function getEpochSummary(
 }
 
 export async function claimRewards(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   request: ClaimRewardsRequest
 ): Promise<ClaimRewardsResult> {
   const callResult = await client.contract.claimRewards.staticCall(request.epoch);
@@ -100,7 +100,7 @@ export async function claimRewards(
 }
 
 export async function fundEpoch(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   request: FundEpochRequest
 ): Promise<string> {
   const tx = await client.contract.fundEpoch(request.epoch, {

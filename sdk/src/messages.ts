@@ -10,7 +10,7 @@ import type {
   SendMessageRequest,
   SendMessageResult
 } from "./types.js";
-import { PrivateAgentMessagingClient } from "./client.js";
+import { PrivateMessagingClient } from "./client.js";
 
 export const DEFAULT_MAX_MESSAGE_CHUNK_BYTES = 24;
 export const DEFAULT_MULTIPART_GAS_BUFFER_BPS = 2_000;
@@ -34,7 +34,7 @@ function applyGasBuffer(estimatedGas: bigint, gasBufferBps: number): bigint {
 }
 
 async function resolveMultipartGasLimit(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   to: string,
   encryptedChunks: any[],
   requestedGasLimit: bigint | number | string | undefined,
@@ -127,7 +127,7 @@ function splitPlaintextIntoChunks(
 }
 
 async function encryptChunkInput(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   plaintext: string,
   functionSelector: string
 ) {
@@ -151,7 +151,7 @@ async function encryptChunkInput(
 }
 
 async function maybeDecryptMessage(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   chunks: CtString[],
   decrypt: boolean
 ): Promise<string | undefined> {
@@ -176,7 +176,7 @@ async function maybeDecryptMessage(
   return undefined;
 }
 
-function extractMessageId(client: PrivateAgentMessagingClient, receipt: any): bigint | undefined {
+function extractMessageId(client: PrivateMessagingClient, receipt: any): bigint | undefined {
   for (const log of receipt?.logs ?? []) {
     try {
       const parsed = client.contract.interface.parseLog(log);
@@ -192,14 +192,14 @@ function extractMessageId(client: PrivateAgentMessagingClient, receipt: any): bi
 }
 
 export async function encryptMessageInput(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   plaintext: string
 ) {
   return encryptChunkInput(client, plaintext, client.sendMessageSelector);
 }
 
 export async function sendMessage(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   request: SendMessageRequest
 ): Promise<SendMessageResult> {
   const plaintextChunks = splitPlaintextIntoChunks(
@@ -244,7 +244,7 @@ export async function sendMessage(
 }
 
 export async function readMessage(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   request: ReadMessageRequest
 ): Promise<ReadMessageResult> {
   const raw = await client.contract.getMessage(request.messageId);
@@ -266,14 +266,14 @@ export async function readMessage(
 }
 
 export async function getMessageMetadata(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   messageId: bigint | number | string
 ): Promise<MessageMetadata> {
   return normalizeMessageMetadata(await client.contract.getMessageMetadata(messageId));
 }
 
 async function listMessageIds(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   direction: "getInboxPage" | "getSentPage",
   request: ListMessagesRequest
 ): Promise<bigint[]> {
@@ -287,7 +287,7 @@ async function listMessageIds(
 }
 
 export async function listInbox(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   request: ListMessagesRequest
 ): Promise<ListMessagesResult> {
   const ids = await listMessageIds(client, "getInboxPage", request);
@@ -300,7 +300,7 @@ export async function listInbox(
 }
 
 export async function getAccountStats(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   account: string
 ): Promise<AccountStats> {
   const [inboxCount, sentCount] = await Promise.all([
@@ -316,7 +316,7 @@ export async function getAccountStats(
 }
 
 export async function listSent(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   request: ListMessagesRequest
 ): Promise<ListMessagesResult> {
   const ids = await listMessageIds(client, "getSentPage", request);

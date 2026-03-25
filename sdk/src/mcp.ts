@@ -1,4 +1,4 @@
-import { PrivateAgentMessagingClient } from "./client.js";
+import { PrivateMessagingClient } from "./client.js";
 import {
   getAccountStats,
   getMessageMetadata,
@@ -38,7 +38,7 @@ const paginationSchema = {
   required: ["account"]
 } as const;
 
-export const PRIVATE_AGENT_MESSAGING_MCP_TOOLS: readonly McpToolDefinition[] = [
+export const PRIVATE_MESSAGING_MCP_TOOLS: readonly McpToolDefinition[] = [
   {
     name: "send_message",
     description: "Encrypt and send a private message body to a public recipient address, chunking long plaintext automatically.",
@@ -306,8 +306,8 @@ function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" ? value : fallback;
 }
 
-export async function invokePrivateAgentMessagingTool(
-  client: PrivateAgentMessagingClient,
+export async function invokePrivateMessagingTool(
+  client: PrivateMessagingClient,
   toolName: McpToolName,
   rawInput: unknown,
   options?: {

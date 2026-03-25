@@ -12,7 +12,7 @@ import {
   getStarterGrantStatus,
   requestStarterGrant
 } from "../src/starter-grants.js";
-import type { PrivateAgentMessagingClient } from "../src/client.js";
+import type { PrivateMessagingClient } from "../src/client.js";
 import type { StarterGrantServiceConfig } from "../src/types.js";
 
 test("starter grant helpers reuse the same install ID and sign the claim payload", async () => {
@@ -27,7 +27,7 @@ test("starter grant helpers reuse the same install ID and sign the claim payload
   const client = {
     getAddress: async () => wallet.address,
     signMessage: async (message: string | Uint8Array) => wallet.signMessage(message)
-  } as PrivateAgentMessagingClient;
+  } as PrivateMessagingClient;
 
   try {
     const challenge = await getStarterGrantChallenge(
@@ -102,7 +102,7 @@ test("starter grant helper can request status and solve the trivial prompt in on
   const client = {
     getAddress: async () => wallet.address,
     signMessage: async (message: string | Uint8Array) => wallet.signMessage(message)
-  } as PrivateAgentMessagingClient;
+  } as PrivateMessagingClient;
 
   try {
     const status = await getStarterGrantStatus(

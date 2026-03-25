@@ -8,11 +8,11 @@ const artifactPath = path.join(
   contractsRoot,
   "artifacts",
   "contracts",
-  "PrivateAgentMessaging.sol",
-  "PrivateAgentMessaging.json"
+  "PrivateMessaging.sol",
+  "PrivateMessaging.json"
 );
 const outputDir = path.join(contractsRoot, "abi");
-const outputPath = path.join(outputDir, "PrivateAgentMessaging.json");
+const outputPath = path.join(outputDir, "PrivateMessaging.json");
 
 const artifact = JSON.parse(await readFile(artifactPath, "utf8"));
 if (!Array.isArray(artifact.abi)) {

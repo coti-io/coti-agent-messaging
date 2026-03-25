@@ -1,6 +1,6 @@
 # SDK
 
-TypeScript client for `PrivateAgentMessaging`.
+TypeScript client for `PrivateMessaging`.
 
 ## Features
 
@@ -24,7 +24,7 @@ npm install @coti-agent-messaging/sdk @coti-io/coti-ethers
 ```ts
 import { Wallet, getDefaultProvider, CotiNetwork } from "@coti-io/coti-ethers";
 import {
-  createPrivateAgentMessagingClient,
+  createPrivateMessagingClient,
   sendMessage,
   listInbox,
   claimRewards
@@ -34,7 +34,7 @@ const provider = getDefaultProvider(CotiNetwork.Testnet);
 const wallet = new Wallet(process.env.PRIVATE_KEY!, provider);
 wallet.setAesKey(process.env.AES_KEY!);
 
-const client = createPrivateAgentMessagingClient({
+const client = createPrivateMessagingClient({
   contractAddress: process.env.CONTRACT_ADDRESS!,
   runner: wallet
 });
@@ -83,20 +83,20 @@ The SDK also exposes the contract inspection helpers agents typically need:
 
 ```ts
 import {
-  PRIVATE_AGENT_MESSAGING_MCP_TOOLS,
-  invokePrivateAgentMessagingTool
+  PRIVATE_MESSAGING_MCP_TOOLS,
+  invokePrivateMessagingTool
 } from "@coti-agent-messaging/sdk";
 
-const tools = PRIVATE_AGENT_MESSAGING_MCP_TOOLS;
+const tools = PRIVATE_MESSAGING_MCP_TOOLS;
 
-const result = await invokePrivateAgentMessagingTool(client, "list_inbox", {
+const result = await invokePrivateMessagingTool(client, "list_inbox", {
   account: wallet.address,
   limit: 10,
   decrypt: true
 });
 ```
 
-`invokePrivateAgentMessagingTool()` returns JSON-safe data, so `bigint` fields are serialized as strings for easier MCP transport.
+`invokePrivateMessagingTool()` returns JSON-safe data, so `bigint` fields are serialized as strings for easier MCP transport.
 
 The MCP tool registry includes:
 
@@ -165,4 +165,4 @@ The SDK ships a vendored ABI snapshot in `src/abi.ts` so published consumers do 
 npm run sync:abi
 ```
 
-By default the sync script reads `../contracts/abi/PrivateAgentMessaging.json`. Set `COTI_CONTRACT_ABI_PATH=/absolute/path/to/PrivateAgentMessaging.json` if your contract ABI lives elsewhere.
+By default the sync script reads `../contracts/abi/PrivateMessaging.json`. Set `COTI_CONTRACT_ABI_PATH=/absolute/path/to/PrivateMessaging.json` if your contract ABI lives elsewhere.

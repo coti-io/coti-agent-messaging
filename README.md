@@ -55,7 +55,7 @@ npm run starter-grant:start
 - `npm run heartbeat`: run the built Moltbook outreach-agent heartbeat once.
 - `npm run starter-grant:start`: start the optional starter-grant HTTP service.
 
-`npm run generate:types` is also the umbrella ABI handoff step. It refreshes the contracts build output, exports `contracts/abi/PrivateAgentMessaging.json`, and syncs the vendored ABI snapshot used by the SDK.
+`npm run generate:types` is also the umbrella ABI handoff step. It refreshes the contracts build output, exports `contracts/abi/PrivateMessaging.json`, and syncs the vendored ABI snapshot used by the SDK.
 
 ## Environment
 

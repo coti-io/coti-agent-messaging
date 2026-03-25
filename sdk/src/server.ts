@@ -10,9 +10,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { createPrivateAgentMessagingClient } from "./client.js";
-import { invokePrivateAgentMessagingTool } from "./mcp.js";
-import { PRIVATE_AGENT_MESSAGING_MCP_TOOLS } from "./mcp.js";
+import { createPrivateMessagingClient } from "./client.js";
+import { invokePrivateMessagingTool } from "./mcp.js";
+import { PRIVATE_MESSAGING_MCP_TOOLS } from "./mcp.js";
 import type { StarterGrantServiceConfig } from "./types.js";
 
 function getRequiredEnv(name: string): string {
@@ -77,7 +77,7 @@ function buildClient() {
   const wallet = new Wallet(getRequiredEnv("PRIVATE_KEY"), provider);
   wallet.setAesKey(getRequiredEnv("AES_KEY"));
 
-  return createPrivateAgentMessagingClient({
+  return createPrivateMessagingClient({
     contractAddress: getRequiredEnv("CONTRACT_ADDRESS"),
     runner: wallet
   });
@@ -114,7 +114,7 @@ export async function startMcpServer() {
     "send_message",
     {
       title: "Send Message",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find((tool) => tool.name === "send_message")
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find((tool) => tool.name === "send_message")
         ?.description,
       inputSchema: {
         to: z.string().min(1),
@@ -125,7 +125,7 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "send_message", args, {
+      const result = await invokePrivateMessagingTool(client, "send_message", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -136,7 +136,7 @@ export async function startMcpServer() {
     "read_message",
     {
       title: "Read Message",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find((tool) => tool.name === "read_message")
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find((tool) => tool.name === "read_message")
         ?.description,
       inputSchema: {
         messageId: z.union([z.string(), z.number().int().nonnegative()]),
@@ -144,7 +144,7 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "read_message", args, {
+      const result = await invokePrivateMessagingTool(client, "read_message", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -162,12 +162,12 @@ export async function startMcpServer() {
     "list_inbox",
     {
       title: "List Inbox",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find((tool) => tool.name === "list_inbox")
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find((tool) => tool.name === "list_inbox")
         ?.description,
       inputSchema: listSchema
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "list_inbox", args, {
+      const result = await invokePrivateMessagingTool(client, "list_inbox", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -178,12 +178,12 @@ export async function startMcpServer() {
     "list_sent",
     {
       title: "List Sent",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find((tool) => tool.name === "list_sent")
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find((tool) => tool.name === "list_sent")
         ?.description,
       inputSchema: listSchema
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "list_sent", args, {
+      const result = await invokePrivateMessagingTool(client, "list_sent", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -194,12 +194,12 @@ export async function startMcpServer() {
     "get_contract_config",
     {
       title: "Get Contract Config",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "get_contract_config"
       )?.description
     },
     async () => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_contract_config", {}, {
+      const result = await invokePrivateMessagingTool(client, "get_contract_config", {}, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -210,7 +210,7 @@ export async function startMcpServer() {
     "get_account_stats",
     {
       title: "Get Account Stats",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "get_account_stats"
       )?.description,
       inputSchema: {
@@ -218,7 +218,7 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_account_stats", args, {
+      const result = await invokePrivateMessagingTool(client, "get_account_stats", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -229,7 +229,7 @@ export async function startMcpServer() {
     "get_message_metadata",
     {
       title: "Get Message Metadata",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "get_message_metadata"
       )?.description,
       inputSchema: {
@@ -237,7 +237,7 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_message_metadata", args, {
+      const result = await invokePrivateMessagingTool(client, "get_message_metadata", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -248,12 +248,12 @@ export async function startMcpServer() {
     "get_current_epoch",
     {
       title: "Get Current Epoch",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "get_current_epoch"
       )?.description
     },
     async () => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_current_epoch", {}, {
+      const result = await invokePrivateMessagingTool(client, "get_current_epoch", {}, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -268,7 +268,7 @@ export async function startMcpServer() {
     "get_epoch_for_timestamp",
     {
       title: "Get Epoch For Timestamp",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "get_epoch_for_timestamp"
       )?.description,
       inputSchema: {
@@ -276,7 +276,7 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(
+      const result = await invokePrivateMessagingTool(
         client,
         "get_epoch_for_timestamp",
         args,
@@ -290,7 +290,7 @@ export async function startMcpServer() {
     "get_epoch_usage",
     {
       title: "Get Epoch Usage",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "get_epoch_usage"
       )?.description,
       inputSchema: {
@@ -299,7 +299,7 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_epoch_usage", args, {
+      const result = await invokePrivateMessagingTool(client, "get_epoch_usage", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -310,13 +310,13 @@ export async function startMcpServer() {
     "get_epoch_summary",
     {
       title: "Get Epoch Summary",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "get_epoch_summary"
       )?.description,
       inputSchema: epochSchema
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_epoch_summary", args, {
+      const result = await invokePrivateMessagingTool(client, "get_epoch_summary", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -327,7 +327,7 @@ export async function startMcpServer() {
     "get_pending_rewards",
     {
       title: "Get Pending Rewards",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "get_pending_rewards"
       )?.description,
       inputSchema: {
@@ -336,7 +336,7 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "get_pending_rewards", args, {
+      const result = await invokePrivateMessagingTool(client, "get_pending_rewards", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -347,13 +347,13 @@ export async function startMcpServer() {
     "claim_rewards",
     {
       title: "Claim Rewards",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "claim_rewards"
       )?.description,
       inputSchema: epochSchema
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "claim_rewards", args, {
+      const result = await invokePrivateMessagingTool(client, "claim_rewards", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -364,7 +364,7 @@ export async function startMcpServer() {
     "fund_epoch",
     {
       title: "Fund Epoch",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find((tool) => tool.name === "fund_epoch")
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find((tool) => tool.name === "fund_epoch")
         ?.description,
       inputSchema: {
         epoch: z.union([z.string(), z.number().int().nonnegative()]),
@@ -372,7 +372,7 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "fund_epoch", args, {
+      const result = await invokePrivateMessagingTool(client, "fund_epoch", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -383,12 +383,12 @@ export async function startMcpServer() {
     "get_starter_grant_challenge",
     {
       title: "Get Starter Grant Challenge",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "get_starter_grant_challenge"
       )?.description
     },
     async () => {
-      const result = await invokePrivateAgentMessagingTool(
+      const result = await invokePrivateMessagingTool(
         client,
         "get_starter_grant_challenge",
         {},
@@ -402,12 +402,12 @@ export async function startMcpServer() {
     "get_starter_grant_status",
     {
       title: "Get Starter Grant Status",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "get_starter_grant_status"
       )?.description
     },
     async () => {
-      const result = await invokePrivateAgentMessagingTool(
+      const result = await invokePrivateMessagingTool(
         client,
         "get_starter_grant_status",
         {},
@@ -421,7 +421,7 @@ export async function startMcpServer() {
     "claim_starter_grant",
     {
       title: "Claim Starter Grant",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "claim_starter_grant"
       )?.description,
       inputSchema: {
@@ -431,7 +431,7 @@ export async function startMcpServer() {
       }
     },
     async (args) => {
-      const result = await invokePrivateAgentMessagingTool(client, "claim_starter_grant", args, {
+      const result = await invokePrivateMessagingTool(client, "claim_starter_grant", args, {
         starterGrantConfig
       });
       return { content: formatToolContent(result) };
@@ -442,12 +442,12 @@ export async function startMcpServer() {
     "request_starter_grant",
     {
       title: "Request Starter Grant",
-      description: PRIVATE_AGENT_MESSAGING_MCP_TOOLS.find(
+      description: PRIVATE_MESSAGING_MCP_TOOLS.find(
         (tool) => tool.name === "request_starter_grant"
       )?.description
     },
     async () => {
-      const result = await invokePrivateAgentMessagingTool(
+      const result = await invokePrivateMessagingTool(
         client,
         "request_starter_grant",
         {},

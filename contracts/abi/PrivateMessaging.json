@@ -538,7 +538,7 @@
             "type": "tuple"
           }
         ],
-        "internalType": "struct PrivateAgentMessaging.MessageView",
+        "internalType": "struct PrivateMessaging.MessageView",
         "name": "messageView",
         "type": "tuple"
       }

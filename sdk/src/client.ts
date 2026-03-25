@@ -1,14 +1,14 @@
 import { Contract } from "@coti-io/coti-ethers";
 
-import { PRIVATE_AGENT_MESSAGING_ABI } from "./abi.js";
-import type { PrivateAgentMessagingClientConfig } from "./types.js";
+import { PRIVATE_MESSAGING_ABI } from "./abi.js";
+import type { PrivateMessagingClientConfig } from "./types.js";
 
-export class PrivateAgentMessagingClient {
+export class PrivateMessagingClient {
   readonly contractAddress: string;
   readonly runner: any;
   readonly contract: any;
 
-  constructor(config: PrivateAgentMessagingClientConfig) {
+  constructor(config: PrivateMessagingClientConfig) {
     this.contractAddress = config.contractAddress;
     this.runner = config.runner;
 
@@ -18,7 +18,7 @@ export class PrivateAgentMessagingClient {
 
     this.contract = new Contract(
       config.contractAddress,
-      PRIVATE_AGENT_MESSAGING_ABI,
+      PRIVATE_MESSAGING_ABI,
       this.runner
     );
   }
@@ -52,8 +52,8 @@ export class PrivateAgentMessagingClient {
   }
 }
 
-export function createPrivateAgentMessagingClient(
-  config: PrivateAgentMessagingClientConfig
-): PrivateAgentMessagingClient {
-  return new PrivateAgentMessagingClient(config);
+export function createPrivateMessagingClient(
+  config: PrivateMessagingClientConfig
+): PrivateMessagingClient {
+  return new PrivateMessagingClient(config);
 }

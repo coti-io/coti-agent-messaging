@@ -51,7 +51,7 @@ async function main() {
   }
 
   const deployOverrides = await buildDeployOverrides(initialFundingWei);
-  const factory = await ethers.getContractFactory("PrivateAgentMessaging");
+  const factory = await ethers.getContractFactory("PrivateMessaging");
   const contract = await factory.deploy(epochDurationSeconds, deployOverrides);
 
   await contract.waitForDeployment();
@@ -59,7 +59,7 @@ async function main() {
   const address = await contract.getAddress();
   const network = await ethers.provider.getNetwork();
 
-  console.log("PrivateAgentMessaging deployed");
+  console.log("PrivateMessaging deployed");
   console.log(`network: ${network.name} (${network.chainId})`);
   console.log(`address: ${address}`);
   console.log(`epochDurationSeconds: ${epochDurationSeconds}`);

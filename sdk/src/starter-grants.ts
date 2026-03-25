@@ -1,4 +1,4 @@
-import type { PrivateAgentMessagingClient } from "./client.js";
+import type { PrivateMessagingClient } from "./client.js";
 import { getOrCreateInstallId } from "./install-state.js";
 import type {
   ClaimStarterGrantRequest,
@@ -52,7 +52,7 @@ async function postJson<T>(
 }
 
 export async function getStarterGrantChallenge(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   configInput: StarterGrantServiceConfig | undefined,
   fetchImpl?: typeof fetch
 ): Promise<GetStarterGrantChallengeResult> {
@@ -72,7 +72,7 @@ export async function getStarterGrantChallenge(
 }
 
 export async function getStarterGrantStatus(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   configInput: StarterGrantServiceConfig | undefined,
   fetchImpl?: typeof fetch
 ): Promise<GetStarterGrantStatusResult> {
@@ -92,7 +92,7 @@ export async function getStarterGrantStatus(
 }
 
 export async function claimStarterGrant(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   configInput: StarterGrantServiceConfig | undefined,
   input: ClaimStarterGrantRequest,
   fetchImpl?: typeof fetch
@@ -136,7 +136,7 @@ function solveStarterGrantPrompt(prompt: string): string {
 }
 
 export async function requestStarterGrant(
-  client: PrivateAgentMessagingClient,
+  client: PrivateMessagingClient,
   configInput: StarterGrantServiceConfig | undefined,
   fetchImpl?: typeof fetch
 ): Promise<RequestStarterGrantResult> {

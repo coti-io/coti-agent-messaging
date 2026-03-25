@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "./PrivateAgentMessaging.sol";
+import "./PrivateMessaging.sol";
 
-contract PrivateAgentMessagingHarness is PrivateAgentMessaging {
-    constructor(uint64 epochDurationSeconds) PrivateAgentMessaging(epochDurationSeconds) {}
+contract PrivateMessagingHarness is PrivateMessaging {
+    constructor(uint64 epochDurationSeconds) PrivateMessaging(epochDurationSeconds) {}
 
     function recordSyntheticMessage(
         address from,

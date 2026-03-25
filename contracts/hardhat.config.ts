@@ -17,21 +17,7 @@ const privateKey = process.env.PRIVATE_KEY;
 const accounts = privateKey ? [privateKey] : [];
 
 const config: HardhatUserConfig = {
-  solidity: {
-    version: "0.8.19",
-    settings: {
-      optimizer: {
-        enabled: true,
-        runs: 200
-      }
-    }
-  },
-  paths: {
-    sources: "./contracts",
-    tests: "./test",
-    cache: "./cache",
-    artifacts: "./artifacts"
-  },
+  solidity: "0.8.19",
   networks: {
     cotiTestnet: {
       url: process.env.COTI_TESTNET_RPC_URL ?? "",

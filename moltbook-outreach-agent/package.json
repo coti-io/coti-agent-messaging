@@ -16,7 +16,7 @@
     "test": "npm run build && node --test dist/test/*.test.js"
   },
   "dependencies": {
-    "@coti-agent-messaging/sdk": "0.1.0",
+    "@coti-io/coti-sdk-private-messaging": "git+https://github.com/coti-io/coti-sdk-private-messaging.git#main",
     "@coti-io/coti-ethers": "^1.0.5",
     "dotenv": "^16.6.1"
   },

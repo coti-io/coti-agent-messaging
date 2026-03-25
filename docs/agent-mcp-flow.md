@@ -188,7 +188,6 @@ These calls help the agent understand the system it is operating inside.
 
 Use this when the agent needs static limits and settings:
 
-- owner
 - epoch duration
 - genesis timestamp
 - max chunk cells

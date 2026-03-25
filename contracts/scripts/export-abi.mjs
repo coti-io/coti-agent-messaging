@@ -1,23 +1,16 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+const require = createRequire(import.meta.url);
+const { loadPrivateMessagingArtifact } = require("./private-messaging-artifact.cjs");
+
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const contractsRoot = path.resolve(currentDir, "..");
-const artifactPath = path.join(
-  contractsRoot,
-  "artifacts",
-  "contracts",
-  "PrivateMessaging.sol",
-  "PrivateMessaging.json"
-);
 const outputDir = path.join(contractsRoot, "abi");
 const outputPath = path.join(outputDir, "PrivateMessaging.json");
-
-const artifact = JSON.parse(await readFile(artifactPath, "utf8"));
-if (!Array.isArray(artifact.abi)) {
-  throw new Error(`Expected ABI array in ${artifactPath}`);
-}
+const artifact = await loadPrivateMessagingArtifact();
 
 await mkdir(outputDir, { recursive: true });
 await writeFile(outputPath, `${JSON.stringify(artifact.abi, null, 2)}\n`, "utf8");

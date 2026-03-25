@@ -10,7 +10,7 @@ import {
   Wallet,
   getDefaultProvider
 } from "@coti-io/coti-ethers";
-import { createPrivateMessagingClient } from "@coti-agent-messaging/sdk";
+import { createPrivateMessagingClient } from "@coti-io/coti-sdk-private-messaging";
 import {
   createBridgeJsonLlmProvider,
   createHttpJsonLlmProvider,

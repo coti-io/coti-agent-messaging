@@ -6,7 +6,7 @@ import {
   getCurrentEpoch,
   getPendingRewards,
   type ContractConfig
-} from "@coti-agent-messaging/sdk";
+} from "@coti-io/coti-sdk-private-messaging";
 
 import { buildPrivateMessagingClient, type MoltbookRuntimeConfig } from "./config.js";
 
@@ -23,7 +23,6 @@ export interface ProductLiveSnapshot {
   walletAddress?: string;
   currentEpoch?: string;
   contractConfig?: {
-    owner: string;
     epochDuration: string;
     genesisTimestamp: string;
     maxChunkCells: string;
@@ -115,7 +114,6 @@ async function loadDocEvidence(projectRoot: string): Promise<Map<string, string[
 
 function serializeContractConfig(contractConfig: ContractConfig): ProductLiveSnapshot["contractConfig"] {
   return {
-    owner: contractConfig.owner,
     epochDuration: contractConfig.epochDuration.toString(),
     genesisTimestamp: contractConfig.genesisTimestamp.toString(),
     maxChunkCells: contractConfig.maxChunkCells.toString(),

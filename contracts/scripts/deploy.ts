@@ -1,4 +1,9 @@
+import type { InterfaceAbi } from "ethers";
 import { ethers } from "hardhat";
+
+const { loadPrivateMessagingArtifact } = require("./private-messaging-artifact.cjs") as {
+  loadPrivateMessagingArtifact: () => Promise<{ abi: InterfaceAbi; bytecode: string }>;
+};
 
 const DEFAULT_EPOCH_DURATION = 14 * 24 * 60 * 60;
 const DEFAULT_REMOTE_GAS_LIMIT = 12_000_000n;
@@ -51,7 +56,9 @@ async function main() {
   }
 
   const deployOverrides = await buildDeployOverrides(initialFundingWei);
-  const factory = await ethers.getContractFactory("PrivateMessaging");
+  const [deployer] = await ethers.getSigners();
+  const { abi, bytecode } = await loadPrivateMessagingArtifact();
+  const factory = new ethers.ContractFactory(abi, bytecode, deployer);
   const contract = await factory.deploy(epochDurationSeconds, deployOverrides);
 
   await contract.waitForDeployment();

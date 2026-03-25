@@ -246,7 +246,6 @@ Example result:
 
 ```json
 {
-  "owner": "0x...",
   "epochDuration": "1209600",
   "genesisTimestamp": "1772999495",
   "maxChunkCells": "3",

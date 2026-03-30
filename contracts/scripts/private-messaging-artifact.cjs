@@ -62,6 +62,7 @@ async function loadPrivateMessagingArtifact() {
         enabled: true,
         runs: 10000
       },
+      evmVersion: "paris",
       metadata: {
         bytecodeHash: "none"
       },

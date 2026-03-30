@@ -7,6 +7,7 @@ import type {
   StarterGrantClaimResponse,
   StarterGrantChallengeRecord,
   StarterGrantFunder,
+  StarterGrantFundingAvailability,
   StarterGrantPayoutJob,
   StarterGrantPayoutQueue,
   StarterGrantStore
@@ -45,6 +46,13 @@ export class SerialStarterGrantPayoutQueue implements StarterGrantPayoutQueue {
     private readonly store: StarterGrantStore,
     private readonly funder: StarterGrantFunder
   ) {}
+
+  getFundingAvailability(
+    amountWei: bigint,
+    reservedPendingAmountWei: bigint
+  ): Promise<StarterGrantFundingAvailability> {
+    return this.funder.getFundingAvailability(amountWei, reservedPendingAmountWei);
+  }
 
   enqueue(job: StarterGrantPayoutJob): Promise<StarterGrantClaimResponse> {
     const operation = this.queue.catch(() => undefined).then(() => this.process(job));

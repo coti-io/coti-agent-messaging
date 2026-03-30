@@ -2,9 +2,12 @@ import "dotenv/config";
 
 import http from "node:http";
 
+import { formatEther } from "@coti-io/coti-ethers";
+
 import {
   claimStarterGrant,
   consumeStarterGrantRateLimit,
+  getStarterGrantFundingSnapshot,
   getStarterGrantStatus,
   issueStarterGrantChallenge,
   requestKeyFromIp
@@ -13,7 +16,14 @@ import { resolveStarterGrantServiceConfig } from "./config.js";
 import { CotiStarterGrantFunder } from "./funder.js";
 import { SerialStarterGrantPayoutQueue } from "./payout-queue.js";
 import { StarterGrantFileStore } from "./storage.js";
-import type { StarterGrantServiceConfig } from "./types.js";
+import type {
+  StarterGrantFunder,
+  StarterGrantFundingAvailability,
+  StarterGrantFundingSnapshot,
+  StarterGrantPayoutQueue,
+  StarterGrantServiceConfig,
+  StarterGrantStore
+} from "./types.js";
 
 interface JsonResponse {
   status: number;
@@ -33,6 +43,13 @@ class HttpError extends Error {
   ) {
     super(message);
   }
+}
+
+export interface StartStarterGrantServiceDependencies {
+  store?: StarterGrantStore;
+  funder?: StarterGrantFunder;
+  payoutQueue?: StarterGrantPayoutQueue;
+  logger?: Pick<typeof console, "log" | "error">;
 }
 
 async function readJsonBody(
@@ -120,6 +137,10 @@ function mapUnhandledError(error: unknown): HttpError {
     return new HttpError(429, message);
   }
 
+  if (/insufficient native balance|gas price is unavailable|provider is not configured/i.test(message)) {
+    return new HttpError(503, message);
+  }
+
   if (/Expected|JSON|application\/json/i.test(message)) {
     return new HttpError(400, message);
   }
@@ -128,15 +149,55 @@ function mapUnhandledError(error: unknown): HttpError {
   return new HttpError(500, "Internal starter grant service error.");
 }
 
-export async function startStarterGrantService(config = resolveStarterGrantServiceConfig()) {
-  const store = new StarterGrantFileStore(config.statePath);
-  const funder = new CotiStarterGrantFunder({
-    funderPrivateKey: config.funderPrivateKey,
-    network: config.network,
-    rpcUrl: config.rpcUrl,
-    confirmTimeoutMs: config.fundingConfirmTimeoutMs
-  });
-  const payoutQueue = new SerialStarterGrantPayoutQueue(store, funder);
+function estimateClaimsRemaining(availability: StarterGrantFundingAvailability): number {
+  const availableBalanceWei = BigInt(availability.availableBalanceWei);
+  const requiredBalanceWei = BigInt(availability.requiredBalanceWei);
+  if (requiredBalanceWei <= 0n || availableBalanceWei <= 0n) {
+    return 0;
+  }
+
+  return Number(availableBalanceWei / requiredBalanceWei);
+}
+
+function toNativeAmount(wei: string): string {
+  return formatEther(BigInt(wei));
+}
+
+function buildFundingHealthBody(snapshot: StarterGrantFundingSnapshot) {
+  const { availability, pendingFundingClaimsCount } = snapshot;
+  return {
+    status: availability.hasSufficientBalance ? "ok" : "degraded",
+    funderAvailable: availability.hasSufficientBalance,
+    reason: availability.hasSufficientBalance ? undefined : "insufficient_funder_balance",
+    funding: {
+      ...availability,
+      pendingFundingClaimsCount,
+      estimatedClaimsRemaining: estimateClaimsRemaining(availability),
+      onChainBalanceNative: toNativeAmount(availability.onChainBalanceWei),
+      reservedPendingAmountNative: toNativeAmount(availability.reservedPendingAmountWei),
+      availableBalanceNative: toNativeAmount(availability.availableBalanceWei),
+      estimatedGasCostNative: toNativeAmount(availability.estimatedGasCostWei),
+      requiredBalanceNative: toNativeAmount(availability.requiredBalanceWei)
+    }
+  };
+}
+
+export async function startStarterGrantService(
+  config = resolveStarterGrantServiceConfig(),
+  dependencies: StartStarterGrantServiceDependencies = {}
+) {
+  const logger = dependencies.logger ?? console;
+  const store = dependencies.store ?? new StarterGrantFileStore(config.statePath);
+  const funder =
+    dependencies.funder ??
+    new CotiStarterGrantFunder({
+      funderPrivateKey: config.funderPrivateKey,
+      network: config.network,
+      rpcUrl: config.rpcUrl,
+      confirmTimeoutMs: config.fundingConfirmTimeoutMs
+    });
+  const payoutQueue =
+    dependencies.payoutQueue ?? new SerialStarterGrantPayoutQueue(store, funder);
 
   const server = http.createServer(async (request, response) => {
     try {
@@ -147,7 +208,15 @@ export async function startStarterGrantService(config = resolveStarterGrantServi
       const url = new URL(request.url, `http://${config.host}:${config.port}`);
 
       if (request.method === "GET" && url.pathname === config.healthRoute) {
-        writeJsonResponse(response, jsonResponse(200, { status: "ok" }));
+        const fundingSnapshot = await getStarterGrantFundingSnapshot(
+          store,
+          payoutQueue,
+          config.starterAmountWei
+        );
+        writeJsonResponse(response, {
+          status: fundingSnapshot.availability.hasSufficientBalance ? 200 : 503,
+          body: buildFundingHealthBody(fundingSnapshot)
+        });
         return;
       }
 
@@ -282,6 +351,8 @@ export async function startStarterGrantService(config = resolveStarterGrantServi
   return {
     server,
     config,
+    getFundingSnapshot: () =>
+      getStarterGrantFundingSnapshot(store, payoutQueue, config.starterAmountWei),
     close: async () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => {
@@ -308,10 +379,27 @@ const isDirectExecution = process.argv[1]?.endsWith("/server.js");
 
 if (isDirectExecution) {
   startStarterGrantService()
-    .then(({ config }) => {
+    .then(async ({ config, getFundingSnapshot }) => {
       console.log(
         `Starter grant service listening on http://${config.host}:${config.port}${config.challengeRoute}`
       );
+      try {
+        const snapshot = await getFundingSnapshot();
+        const availability = snapshot.availability;
+        console.log(
+          `Starter grant funder ${availability.funderAddress} has ${toNativeAmount(
+            availability.onChainBalanceWei
+          )} COTI on-chain, ${toNativeAmount(
+            availability.availableBalanceWei
+          )} COTI available after reserving ${toNativeAmount(
+            availability.reservedPendingAmountWei
+          )} COTI across ${snapshot.pendingFundingClaimsCount} pending claims, and can cover approximately ${estimateClaimsRemaining(
+            availability
+          )} more claims at ${toNativeAmount(availability.requiredBalanceWei)} COTI each`
+        );
+      } catch (error) {
+        console.error("Failed to compute starter grant funding availability", error);
+      }
     })
     .catch((error) => {
       console.error(error);

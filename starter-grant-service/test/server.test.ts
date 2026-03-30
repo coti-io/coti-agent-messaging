@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { Wallet } from "@coti-io/coti-ethers";
 
-import { startStarterGrantService } from "../src/server.js";
+import { startStarterGrantService, type StartStarterGrantServiceDependencies } from "../src/server.js";
 import type { StarterGrantServiceConfig } from "../src/types.js";
 
 function createConfig(overrides: Partial<StarterGrantServiceConfig> = {}): StarterGrantServiceConfig {
@@ -40,8 +40,11 @@ function createConfig(overrides: Partial<StarterGrantServiceConfig> = {}): Start
   };
 }
 
-async function startTestServer(overrides: Partial<StarterGrantServiceConfig> = {}) {
-  const service = await startStarterGrantService(createConfig(overrides));
+async function startTestServer(
+  overrides: Partial<StarterGrantServiceConfig> = {},
+  dependencies: StartStarterGrantServiceDependencies = {}
+) {
+  const service = await startStarterGrantService(createConfig(overrides), dependencies);
   const address = service.server.address();
   assert.ok(address && typeof address === "object");
 
@@ -160,5 +163,87 @@ test("x-forwarded-for only affects throttling when trustProxy is enabled", async
     assert.equal(second.status, 200);
   } finally {
     await trusted.close();
+  }
+});
+
+test("health route returns funding capacity details when funder is healthy", async () => {
+  const service = await startTestServer(
+    {},
+    {
+      funder: {
+        async getFundingAvailability() {
+          return {
+            funderAddress: "0xfunder",
+            onChainBalanceWei: "1000",
+            reservedPendingAmountWei: "100",
+            availableBalanceWei: "900",
+            estimatedGasCostWei: "50",
+            requiredBalanceWei: "150",
+            hasSufficientBalance: true
+          };
+        },
+        async createStarterGrantTransfer() {
+          return {
+            transactionHash: "0xgrant",
+            waitForConfirmation: async () => undefined
+          };
+        }
+      }
+    }
+  );
+
+  try {
+    const response = await fetch(`${service.baseUrl}/health`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.status, "ok");
+    assert.equal(body.funderAvailable, true);
+    assert.equal(body.funding.funderAddress, "0xfunder");
+    assert.equal(body.funding.pendingFundingClaimsCount, 0);
+    assert.equal(body.funding.estimatedClaimsRemaining, 6);
+    assert.equal(body.funding.onChainBalanceNative, "0.000000000000001");
+    assert.equal(body.funding.availableBalanceNative, "0.0000000000000009");
+  } finally {
+    await service.close();
+  }
+});
+
+test("health route reports degraded when funder cannot cover another claim", async () => {
+  const service = await startTestServer(
+    {},
+    {
+      funder: {
+        async getFundingAvailability() {
+          return {
+            funderAddress: "0xfunder",
+            onChainBalanceWei: "120",
+            reservedPendingAmountWei: "0",
+            availableBalanceWei: "120",
+            estimatedGasCostWei: "50",
+            requiredBalanceWei: "150",
+            hasSufficientBalance: false
+          };
+        },
+        async createStarterGrantTransfer() {
+          return {
+            transactionHash: "0xgrant",
+            waitForConfirmation: async () => undefined
+          };
+        }
+      }
+    }
+  );
+
+  try {
+    const response = await fetch(`${service.baseUrl}/health`);
+    assert.equal(response.status, 503);
+    const body = await response.json();
+    assert.equal(body.status, "degraded");
+    assert.equal(body.reason, "insufficient_funder_balance");
+    assert.equal(body.funding.pendingFundingClaimsCount, 0);
+    assert.equal(body.funding.estimatedClaimsRemaining, 0);
+    assert.equal(body.funding.requiredBalanceNative, "0.00000000000000015");
+  } finally {
+    await service.close();
   }
 });

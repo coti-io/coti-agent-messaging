@@ -6,6 +6,7 @@ import { Wallet } from "@coti-io/coti-ethers";
 import {
   claimStarterGrant,
   consumeStarterGrantRateLimit,
+  getStarterGrantFundingAvailability,
   getStarterGrantStatus,
   issueStarterGrantChallenge
 } from "../src/claims.js";
@@ -63,6 +64,15 @@ function createClaimOptions() {
 function createQueue(
   store: StarterGrantStore,
   input?: {
+    onAvailability?: (amountWei: bigint, reservedPendingAmountWei: bigint) => Promise<{
+      funderAddress: string;
+      onChainBalanceWei: string;
+      reservedPendingAmountWei: string;
+      availableBalanceWei: string;
+      estimatedGasCostWei: string;
+      requiredBalanceWei: string;
+      hasSufficientBalance: boolean;
+    }>;
     onCreate?: (walletAddress: string, amountWei: bigint) => Promise<{
       transactionHash: string;
       waitForConfirmation(): Promise<void>;
@@ -71,6 +81,21 @@ function createQueue(
 ) {
   const funderCalls: Array<{ walletAddress: string; amountWei: bigint }> = [];
   const funder: StarterGrantFunder = {
+    async getFundingAvailability(amountWei: bigint, reservedPendingAmountWei: bigint) {
+      if (input?.onAvailability) {
+        return input.onAvailability(amountWei, reservedPendingAmountWei);
+      }
+
+      return {
+        funderAddress: "0xfunder",
+        onChainBalanceWei: "1000000000000000000",
+        reservedPendingAmountWei: reservedPendingAmountWei.toString(),
+        availableBalanceWei: "1000000000000000000",
+        estimatedGasCostWei: "21000",
+        requiredBalanceWei: (amountWei + 21_000n).toString(),
+        hasSufficientBalance: true
+      };
+    },
     async createStarterGrantTransfer(walletAddress: string, amountWei: bigint) {
       funderCalls.push({ walletAddress, amountWei });
       if (input?.onCreate) {
@@ -413,12 +438,108 @@ test("starter grant claim returns pending funding when confirmation times out", 
   assert.equal(status.claim?.transactionHash, "0xpendinggrant");
 });
 
+test("starter grant claim is rejected before queueing when funder balance is insufficient", async () => {
+  const store = new InMemoryStore();
+  const wallet = Wallet.createRandom();
+  const { queue, funderCalls } = createQueue(store, {
+    onAvailability: async () => ({
+      funderAddress: "0xfunder",
+      onChainBalanceWei: "100",
+      reservedPendingAmountWei: "0",
+      availableBalanceWei: "100",
+      estimatedGasCostWei: "25",
+      requiredBalanceWei: "125",
+      hasSufficientBalance: false
+    })
+  });
+
+  const challenge = await issueStarterGrantChallenge(store, {
+    walletAddress: wallet.address,
+    installId: "install-alpha",
+    ttlMs: 60_000,
+    maxOutstandingChallengesPerIdentity: 3,
+    now: new Date("2026-03-17T10:00:00.000Z")
+  });
+  const signature = await wallet.signMessage(challenge.claimPayload);
+
+  await assert.rejects(
+    () =>
+      claimStarterGrant(store, queue, {
+        challengeId: challenge.challengeId,
+        walletAddress: wallet.address,
+        installId: challenge.installId,
+        challengeAnswer: solvePrompt(challenge.prompt),
+        claimPayload: challenge.claimPayload,
+        signature,
+        amountWei: 25n,
+        now: new Date("2026-03-17T10:00:05.000Z"),
+        ...createClaimOptions()
+      }),
+    /insufficient native balance/
+  );
+
+  assert.equal(funderCalls.length, 0);
+  assert.equal(store.state.claims.length, 0);
+  assert.equal(store.state.challenges[0]?.status, "issued");
+});
+
+test("funding availability subtracts pending queued payouts from available balance", async () => {
+  const store = new InMemoryStore();
+  store.state.claims.push({
+    id: "claim-1",
+    challengeId: "challenge-1",
+    walletAddress: Wallet.createRandom().address,
+    installId: "install-alpha",
+    status: "pending_funding",
+    amountWei: "25",
+    createdAt: new Date("2026-03-17T10:00:00.000Z").toISOString()
+  });
+  store.state.claims.push({
+    id: "claim-2",
+    challengeId: "challenge-2",
+    walletAddress: Wallet.createRandom().address,
+    installId: "install-beta",
+    status: "pending_funding",
+    amountWei: "30",
+    createdAt: new Date("2026-03-17T10:00:01.000Z").toISOString()
+  });
+
+  const { queue } = createQueue(store, {
+    onAvailability: async (_amountWei, reservedPendingAmountWei) => ({
+      funderAddress: "0xfunder",
+      onChainBalanceWei: "1000",
+      reservedPendingAmountWei: reservedPendingAmountWei.toString(),
+      availableBalanceWei: (1000n - reservedPendingAmountWei).toString(),
+      estimatedGasCostWei: "50",
+      requiredBalanceWei: "150",
+      hasSufficientBalance: 1000n - reservedPendingAmountWei >= 150n
+    })
+  });
+
+  const availability = await getStarterGrantFundingAvailability(store, queue, 100n);
+
+  assert.equal(availability.reservedPendingAmountWei, "55");
+  assert.equal(availability.availableBalanceWei, "945");
+  assert.equal(availability.hasSufficientBalance, true);
+});
+
 test("payout queue processes grants serially", async () => {
   const store = new InMemoryStore();
   let releaseFirstTransfer!: () => void;
   const started: string[] = [];
 
   const queue = new SerialStarterGrantPayoutQueue(store, {
+    async getFundingAvailability(amountWei: bigint, reservedPendingAmountWei: bigint) {
+      return {
+        funderAddress: "0xfunder",
+        onChainBalanceWei: "1000000000000000000",
+        reservedPendingAmountWei: reservedPendingAmountWei.toString(),
+        availableBalanceWei: "1000000000000000000",
+        estimatedGasCostWei: "21000",
+        requiredBalanceWei: (amountWei + 21_000n).toString(),
+        hasSufficientBalance: true
+      };
+    },
     async createStarterGrantTransfer(walletAddress: string) {
       started.push(walletAddress);
       if (started.length === 1) {

@@ -10,6 +10,8 @@ import type {
   StarterGrantChallengeResponse,
   StarterGrantClaimRecord,
   StarterGrantClaimResponse,
+  StarterGrantFundingAvailability,
+  StarterGrantFundingSnapshot,
   StarterGrantPayoutQueue,
   StarterGrantStatusResponse,
   StarterGrantStore
@@ -215,6 +217,20 @@ function countRecentRejectedClaims(
   }).length;
 }
 
+function pendingFundingReservedAmountWei(state: PersistedStarterGrantState): bigint {
+  return state.claims.reduce((total, claim) => {
+    if (claim.status !== "pending_funding") {
+      return total;
+    }
+
+    return total + BigInt(claim.amountWei ?? "0");
+  }, 0n);
+}
+
+function pendingFundingClaimsCount(state: PersistedStarterGrantState): number {
+  return state.claims.filter((claim) => claim.status === "pending_funding").length;
+}
+
 function rejectClaimAttempt(
   state: PersistedStarterGrantState,
   input: {
@@ -358,6 +374,14 @@ export async function claimStarterGrant(
     const priorClaimReason = existingClaimReason(state, walletAddress, input.installId);
     if (priorClaimReason) {
       throw new Error(priorClaimReason);
+    }
+
+    const fundingAvailability = await payoutQueue.getFundingAvailability(
+      input.amountWei,
+      pendingFundingReservedAmountWei(state)
+    );
+    if (!fundingAvailability.hasSufficientBalance) {
+      throw new Error("starter grant funder has insufficient native balance");
     }
 
     if (
@@ -513,6 +537,30 @@ export async function claimStarterGrant(
   });
 
   return payoutQueue.enqueue(queued);
+}
+
+export async function getStarterGrantFundingAvailability(
+  store: StarterGrantStore,
+  payoutQueue: StarterGrantPayoutQueue,
+  amountWei: bigint
+): Promise<StarterGrantFundingAvailability> {
+  return store.transact((state) =>
+    payoutQueue.getFundingAvailability(amountWei, pendingFundingReservedAmountWei(state))
+  );
+}
+
+export async function getStarterGrantFundingSnapshot(
+  store: StarterGrantStore,
+  payoutQueue: StarterGrantPayoutQueue,
+  amountWei: bigint
+): Promise<StarterGrantFundingSnapshot> {
+  return store.transact(async (state) => ({
+    availability: await payoutQueue.getFundingAvailability(
+      amountWei,
+      pendingFundingReservedAmountWei(state)
+    ),
+    pendingFundingClaimsCount: pendingFundingClaimsCount(state)
+  }));
 }
 
 export async function getStarterGrantStatus(

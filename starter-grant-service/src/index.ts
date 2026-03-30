@@ -2,6 +2,8 @@ export { buildStarterGrantChallenge, normalizeChallengeAnswer, verifyChallengeAn
 export {
   claimStarterGrant,
   consumeStarterGrantRateLimit,
+  getStarterGrantFundingAvailability,
+  getStarterGrantFundingSnapshot,
   getStarterGrantStatus,
   issueStarterGrantChallenge,
   requestKeyFromIp

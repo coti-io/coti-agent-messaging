@@ -105,6 +105,21 @@ export interface StarterGrantClaimResponse {
   amountWei: string;
 }
 
+export interface StarterGrantFundingAvailability {
+  funderAddress: string;
+  onChainBalanceWei: string;
+  reservedPendingAmountWei: string;
+  availableBalanceWei: string;
+  estimatedGasCostWei: string;
+  requiredBalanceWei: string;
+  hasSufficientBalance: boolean;
+}
+
+export interface StarterGrantFundingSnapshot {
+  availability: StarterGrantFundingAvailability;
+  pendingFundingClaimsCount: number;
+}
+
 export interface StarterGrantStatusResponse {
   status: "eligible" | "challenge_pending" | "funding_pending" | "claimed";
   walletAddress: string;
@@ -141,9 +156,17 @@ export interface StarterGrantPayoutJob {
 
 export interface StarterGrantPayoutQueue {
   enqueue(job: StarterGrantPayoutJob): Promise<StarterGrantClaimResponse>;
+  getFundingAvailability(
+    amountWei: bigint,
+    reservedPendingAmountWei: bigint
+  ): Promise<StarterGrantFundingAvailability>;
 }
 
 export interface StarterGrantFunder {
+  getFundingAvailability(
+    amountWei: bigint,
+    reservedPendingAmountWei: bigint
+  ): Promise<StarterGrantFundingAvailability>;
   createStarterGrantTransfer(
     walletAddress: string,
     amountWei: bigint

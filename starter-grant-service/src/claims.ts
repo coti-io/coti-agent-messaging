@@ -10,7 +10,7 @@ import type {
   StarterGrantChallengeResponse,
   StarterGrantClaimRecord,
   StarterGrantClaimResponse,
-  StarterGrantFunder,
+  StarterGrantPayoutQueue,
   StarterGrantStatusResponse,
   StarterGrantStore
 } from "./types.js";
@@ -31,7 +31,29 @@ function appendAuditEvent(state: PersistedStarterGrantState, event: Omit<Starter
   });
 }
 
-function alreadyClaimed(state: PersistedStarterGrantState, walletAddress: string, installId: string): string | undefined {
+function existingClaimReason(
+  state: PersistedStarterGrantState,
+  walletAddress: string,
+  installId: string
+): string | undefined {
+  if (
+    state.claims.some(
+      (claim) =>
+        claim.status === "pending_funding" &&
+        claim.walletAddress.toLowerCase() === walletAddress.toLowerCase()
+    )
+  ) {
+    return "wallet has a starter grant claim pending funding";
+  }
+
+  if (
+    state.claims.some(
+      (claim) => claim.status === "pending_funding" && claim.installId === installId
+    )
+  ) {
+    return "install has a starter grant claim pending funding";
+  }
+
   if (
     state.claims.some(
       (claim) => claim.status === "claimed" && claim.walletAddress.toLowerCase() === walletAddress.toLowerCase()
@@ -105,7 +127,7 @@ function latestClaimForIdentity(
 ): { claim: StarterGrantClaimRecord; matchedOn: "wallet" | "install" } | undefined {
   for (let index = state.claims.length - 1; index >= 0; index -= 1) {
     const claim = state.claims[index];
-    if (claim?.status !== "claimed") {
+    if (!claim || (claim.status !== "claimed" && claim.status !== "pending_funding")) {
       continue;
     }
 
@@ -165,12 +187,41 @@ function countActiveChallengesForIdentity(
   return count;
 }
 
+function countRecentRejectedClaims(
+  state: PersistedStarterGrantState,
+  input: {
+    walletAddress: string;
+    installId: string;
+    requesterKey?: string;
+    now: Date;
+    windowMs: number;
+  }
+): number {
+  const windowStart = input.now.getTime() - input.windowMs;
+  return state.claims.filter((claim) => {
+    if (claim.status !== "rejected" && claim.status !== "funding_failed") {
+      return false;
+    }
+
+    if (Date.parse(claim.createdAt) < windowStart) {
+      return false;
+    }
+
+    return (
+      claim.walletAddress.toLowerCase() === input.walletAddress.toLowerCase() ||
+      claim.installId === input.installId ||
+      (input.requesterKey !== undefined && claim.requesterKey === input.requesterKey)
+    );
+  }).length;
+}
+
 function rejectClaimAttempt(
   state: PersistedStarterGrantState,
   input: {
     challenge: StarterGrantChallengeRecord;
     walletAddress: string;
     installId: string;
+    requesterKey?: string;
     reason: string;
     now: Date;
     challengeStatus?: StarterGrantChallengeRecord["status"];
@@ -183,9 +234,11 @@ function rejectClaimAttempt(
     challengeId: input.challenge.id,
     walletAddress: input.walletAddress,
     installId: input.installId,
+    requesterKey: input.requesterKey,
     status: "rejected",
     reason: input.reason,
-    createdAt: input.now.toISOString()
+    createdAt: input.now.toISOString(),
+    updatedAt: input.now.toISOString()
   });
   appendAuditEvent(state, {
     type: "claim_rejected",
@@ -215,7 +268,7 @@ export async function issueStarterGrantChallenge(
   return store.transact(async (state) => {
     pruneState(state, now);
 
-    const priorClaimReason = alreadyClaimed(state, walletAddress, input.installId);
+    const priorClaimReason = existingClaimReason(state, walletAddress, input.installId);
     if (priorClaimReason) {
       throw new Error(priorClaimReason);
     }
@@ -281,7 +334,7 @@ export async function issueStarterGrantChallenge(
 
 export async function claimStarterGrant(
   store: StarterGrantStore,
-  funder: StarterGrantFunder,
+  payoutQueue: StarterGrantPayoutQueue,
   input: {
     challengeId: string;
     walletAddress: string;
@@ -292,17 +345,31 @@ export async function claimStarterGrant(
     amountWei: bigint;
     requesterKey?: string;
     now?: Date;
+    rejectedClaimsPerWindow: number;
+    rejectedClaimWindowMs: number;
   }
 ): Promise<StarterGrantClaimResponse> {
   const now = input.now ?? new Date();
   const walletAddress = normalizeWalletAddress(input.walletAddress);
 
-  return store.transact(async (state) => {
+  const queued = await store.transact(async (state) => {
     pruneState(state, now);
 
-    const priorClaimReason = alreadyClaimed(state, walletAddress, input.installId);
+    const priorClaimReason = existingClaimReason(state, walletAddress, input.installId);
     if (priorClaimReason) {
       throw new Error(priorClaimReason);
+    }
+
+    if (
+      countRecentRejectedClaims(state, {
+        walletAddress,
+        installId: input.installId,
+        requesterKey: input.requesterKey,
+        now,
+        windowMs: input.rejectedClaimWindowMs
+      }) >= input.rejectedClaimsPerWindow
+    ) {
+      throw new Error("starter grant claim is temporarily locked after repeated failures");
     }
 
     const challenge = findChallenge(state, input.challengeId);
@@ -324,6 +391,7 @@ export async function claimStarterGrant(
         challenge,
         walletAddress,
         installId: input.installId,
+        requesterKey: input.requesterKey,
         reason: `starter grant challenge is no longer claimable (${challenge.status})`,
         now,
         challengeStatus: challenge.status === "expired" ? "expired" : undefined
@@ -335,6 +403,7 @@ export async function claimStarterGrant(
         challenge,
         walletAddress,
         installId: input.installId,
+        requesterKey: input.requesterKey,
         reason: "starter grant challenge has expired",
         now,
         challengeStatus: "expired"
@@ -346,6 +415,7 @@ export async function claimStarterGrant(
         challenge,
         walletAddress,
         installId: input.installId,
+        requesterKey: input.requesterKey,
         reason: "wallet address does not match the issued starter grant challenge",
         now
       });
@@ -356,6 +426,7 @@ export async function claimStarterGrant(
         challenge,
         walletAddress,
         installId: input.installId,
+        requesterKey: input.requesterKey,
         reason: "install ID does not match the issued starter grant challenge",
         now
       });
@@ -366,6 +437,7 @@ export async function claimStarterGrant(
         challenge,
         walletAddress,
         installId: input.installId,
+        requesterKey: input.requesterKey,
         reason: "claim payload does not match the issued starter grant challenge",
         now
       });
@@ -376,6 +448,7 @@ export async function claimStarterGrant(
         challenge,
         walletAddress,
         installId: input.installId,
+        requesterKey: input.requesterKey,
         reason: "starter grant challenge answer is incorrect",
         now
       });
@@ -389,6 +462,7 @@ export async function claimStarterGrant(
         challenge,
         walletAddress,
         installId: input.installId,
+        requesterKey: input.requesterKey,
         reason: "wallet signature could not be verified",
         now
       });
@@ -399,27 +473,28 @@ export async function claimStarterGrant(
         challenge,
         walletAddress,
         installId: input.installId,
+        requesterKey: input.requesterKey,
         reason: "wallet signature does not match the claim wallet",
         now
       });
     }
 
-    const transaction = await funder.fundStarterGrant(walletAddress, input.amountWei);
-    challenge.status = "claimed";
+    challenge.status = "funding";
     challenge.attempts += 1;
     const claimRecord: StarterGrantClaimRecord = {
       id: randomUUID(),
       challengeId: challenge.id,
       walletAddress,
       installId: input.installId,
-      status: "claimed",
-      transactionHash: transaction.transactionHash,
+      requesterKey: input.requesterKey,
+      status: "pending_funding",
       amountWei: input.amountWei.toString(),
-      createdAt: now.toISOString()
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
     };
     state.claims.push(claimRecord);
     appendAuditEvent(state, {
-      type: "claim_succeeded",
+      type: "claim_queued",
       walletAddress,
       installId: input.installId,
       challengeId: challenge.id,
@@ -429,14 +504,15 @@ export async function claimStarterGrant(
     pruneState(state, now);
 
     return {
-      status: "claimed",
+      claimId: claimRecord.id,
+      challengeId: challenge.id,
       walletAddress,
       installId: input.installId,
-      challengeId: challenge.id,
-      transactionHash: transaction.transactionHash,
-      amountWei: input.amountWei.toString()
+      amountWei: input.amountWei
     };
   });
+
+  return payoutQueue.enqueue(queued);
 }
 
 export async function getStarterGrantStatus(
@@ -456,10 +532,11 @@ export async function getStarterGrantStatus(
     const priorClaim = latestClaimForIdentity(state, walletAddress, input.installId);
     if (priorClaim) {
       return {
-        status: "claimed",
+        status: priorClaim.claim.status === "pending_funding" ? "funding_pending" : "claimed",
         walletAddress,
         installId: input.installId,
         claim: {
+          status: priorClaim.claim.status === "pending_funding" ? "pending_funding" : "claimed",
           challengeId: priorClaim.claim.challengeId,
           transactionHash: priorClaim.claim.transactionHash,
           amountWei: priorClaim.claim.amountWei,
@@ -496,15 +573,16 @@ export async function getStarterGrantStatus(
 export async function consumeStarterGrantRateLimit(
   store: StarterGrantStore,
   input: {
+    bucket: string;
     requesterKey?: string;
     now?: Date;
     maxRequests: number;
     windowMs: number;
   }
-): Promise<boolean> {
+): Promise<{ allowed: boolean; retryAfterMs: number }> {
   const now = input.now ?? new Date();
   if (!input.requesterKey) {
-    return false;
+    return { allowed: false, retryAfterMs: input.windowMs };
   }
   const requesterKey = input.requesterKey;
 
@@ -512,23 +590,35 @@ export async function consumeStarterGrantRateLimit(
     const windowStart = now.getTime() - input.windowMs;
     state.rateLimits = state.rateLimits.filter((entry) => Date.parse(entry.createdAt) >= windowStart);
 
-    const recentRequests = state.rateLimits.filter((entry) => entry.key === requesterKey);
+    const recentRequests = state.rateLimits.filter(
+      (entry) => entry.key === requesterKey && entry.bucket === input.bucket
+    );
     if (recentRequests.length >= input.maxRequests) {
+      const earliestAllowedAt =
+        Math.min(...recentRequests.map((entry) => Date.parse(entry.createdAt))) + input.windowMs;
       appendAuditEvent(state, {
         type: "rate_limited",
         requesterKey,
+        reason: input.bucket,
         createdAt: now.toISOString()
       });
       pruneState(state, now);
-      return false;
+      return {
+        allowed: false,
+        retryAfterMs: Math.max(0, earliestAllowedAt - now.getTime())
+      };
     }
 
     state.rateLimits.push({
       key: requesterKey,
+      bucket: input.bucket,
       createdAt: now.toISOString()
     });
     pruneState(state, now);
-    return true;
+    return {
+      allowed: true,
+      retryAfterMs: 0
+    };
   });
 }
 

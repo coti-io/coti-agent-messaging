@@ -24,6 +24,14 @@ function getOptionalEnv(name: string): string | undefined {
   return value && value.length > 0 ? value : undefined;
 }
 
+function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined) {
+    return fallback;
+  }
+
+  return ["1", "true", "yes", "on"].includes(raw.toLowerCase());
+}
+
 function parseNumber(raw: string | undefined, fallback: number): number {
   if (raw === undefined) {
     return fallback;
@@ -46,13 +54,35 @@ export function resolveStarterGrantServiceConfig(): StarterGrantServiceConfig {
       process.env.STARTER_GRANT_SERVICE_STATE_PATH ??
       path.join(packageRoot, ".data", "starter-grants.json"),
     authToken: getOptionalEnv("STARTER_GRANT_SERVICE_AUTH_TOKEN"),
+    trustProxy: parseBoolean(process.env.STARTER_GRANT_SERVICE_TRUST_PROXY, false),
+    maxBodyBytes: parseNumber(process.env.STARTER_GRANT_SERVICE_MAX_BODY_BYTES, 16 * 1024),
+    requestTimeoutMs: parseNumber(process.env.STARTER_GRANT_SERVICE_REQUEST_TIMEOUT_MS, 15_000),
+    headersTimeoutMs: parseNumber(process.env.STARTER_GRANT_SERVICE_HEADERS_TIMEOUT_MS, 10_000),
+    keepAliveTimeoutMs: parseNumber(process.env.STARTER_GRANT_SERVICE_KEEP_ALIVE_TIMEOUT_MS, 5_000),
     challengeTtlMs: parseNumber(process.env.STARTER_GRANT_CHALLENGE_TTL_MS, 5 * 60 * 1000),
     starterAmountWei: BigInt(process.env.STARTER_GRANT_AMOUNT_WEI ?? "1000000000000000"),
-    maxRequestsPerWindow: parseNumber(process.env.STARTER_GRANT_MAX_REQUESTS_PER_WINDOW, 8),
+    challengeMaxRequestsPerWindow: parseNumber(
+      process.env.STARTER_GRANT_CHALLENGE_MAX_REQUESTS_PER_WINDOW,
+      parseNumber(process.env.STARTER_GRANT_MAX_REQUESTS_PER_WINDOW, 8)
+    ),
+    statusMaxRequestsPerWindow: parseNumber(
+      process.env.STARTER_GRANT_STATUS_MAX_REQUESTS_PER_WINDOW,
+      parseNumber(process.env.STARTER_GRANT_MAX_REQUESTS_PER_WINDOW, 8)
+    ),
+    claimMaxRequestsPerWindow: parseNumber(
+      process.env.STARTER_GRANT_CLAIM_MAX_REQUESTS_PER_WINDOW,
+      Math.max(1, Math.floor(parseNumber(process.env.STARTER_GRANT_MAX_REQUESTS_PER_WINDOW, 8) / 2))
+    ),
     rateLimitWindowMs: parseNumber(process.env.STARTER_GRANT_RATE_LIMIT_WINDOW_MS, 10 * 60 * 1000),
     maxOutstandingChallengesPerIdentity: parseNumber(
       process.env.STARTER_GRANT_MAX_OUTSTANDING_CHALLENGES_PER_IDENTITY,
       3
+    ),
+    rejectedClaimsPerWindow: parseNumber(process.env.STARTER_GRANT_REJECTED_CLAIMS_PER_WINDOW, 3),
+    rejectedClaimWindowMs: parseNumber(process.env.STARTER_GRANT_REJECTED_CLAIM_WINDOW_MS, 15 * 60 * 1000),
+    fundingConfirmTimeoutMs: parseNumber(
+      process.env.STARTER_GRANT_FUNDING_CONFIRM_TIMEOUT_MS,
+      45_000
     ),
     network:
       (process.env.COTI_NETWORK ?? "testnet").toLowerCase() === "mainnet" ? "mainnet" : "testnet",

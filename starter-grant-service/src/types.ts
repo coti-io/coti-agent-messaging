@@ -7,11 +7,21 @@ export interface StarterGrantServiceConfig {
   healthRoute: string;
   statePath: string;
   authToken?: string;
+  trustProxy: boolean;
+  maxBodyBytes: number;
+  requestTimeoutMs: number;
+  headersTimeoutMs: number;
+  keepAliveTimeoutMs: number;
   challengeTtlMs: number;
   starterAmountWei: bigint;
-  maxRequestsPerWindow: number;
+  challengeMaxRequestsPerWindow: number;
+  statusMaxRequestsPerWindow: number;
+  claimMaxRequestsPerWindow: number;
   rateLimitWindowMs: number;
   maxOutstandingChallengesPerIdentity: number;
+  rejectedClaimsPerWindow: number;
+  rejectedClaimWindowMs: number;
+  fundingConfirmTimeoutMs: number;
   network: "testnet" | "mainnet";
   rpcUrl?: string;
   funderPrivateKey: string;
@@ -27,7 +37,7 @@ export interface StarterGrantChallengeRecord {
   issuedAt: string;
   expiresAt: string;
   requesterKey?: string;
-  status: "issued" | "claimed" | "expired" | "rejected";
+  status: "issued" | "funding" | "claimed" | "expired" | "rejected";
   attempts: number;
 }
 
@@ -36,11 +46,13 @@ export interface StarterGrantClaimRecord {
   challengeId: string;
   walletAddress: string;
   installId: string;
-  status: "claimed" | "rejected";
+  requesterKey?: string;
+  status: "pending_funding" | "claimed" | "rejected" | "funding_failed";
   reason?: string;
   transactionHash?: string;
   amountWei?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface StarterGrantAuditEvent {
@@ -48,7 +60,10 @@ export interface StarterGrantAuditEvent {
   type:
     | "challenge_issued"
     | "claim_attempted"
+    | "claim_queued"
     | "claim_rejected"
+    | "funding_broadcast"
+    | "funding_failed"
     | "claim_succeeded"
     | "rate_limited";
   walletAddress?: string;
@@ -61,6 +76,7 @@ export interface StarterGrantAuditEvent {
 
 export interface StarterGrantRateLimitEntry {
   key: string;
+  bucket: string;
   createdAt: string;
 }
 
@@ -81,16 +97,16 @@ export interface StarterGrantChallengeResponse {
 }
 
 export interface StarterGrantClaimResponse {
-  status: "claimed";
+  status: "pending_funding" | "claimed";
   walletAddress: string;
   installId: string;
   challengeId: string;
-  transactionHash: string;
+  transactionHash?: string;
   amountWei: string;
 }
 
 export interface StarterGrantStatusResponse {
-  status: "eligible" | "challenge_pending" | "claimed";
+  status: "eligible" | "challenge_pending" | "funding_pending" | "claimed";
   walletAddress: string;
   installId: string;
   challenge?: {
@@ -101,6 +117,7 @@ export interface StarterGrantStatusResponse {
     expiresAt: string;
   };
   claim?: {
+    status: "pending_funding" | "claimed";
     challengeId: string;
     transactionHash?: string;
     amountWei?: string;
@@ -109,8 +126,28 @@ export interface StarterGrantStatusResponse {
   };
 }
 
+export interface StarterGrantPendingTransfer {
+  transactionHash: string;
+  waitForConfirmation(): Promise<void>;
+}
+
+export interface StarterGrantPayoutJob {
+  claimId: string;
+  challengeId: string;
+  walletAddress: string;
+  installId: string;
+  amountWei: bigint;
+}
+
+export interface StarterGrantPayoutQueue {
+  enqueue(job: StarterGrantPayoutJob): Promise<StarterGrantClaimResponse>;
+}
+
 export interface StarterGrantFunder {
-  fundStarterGrant(walletAddress: string, amountWei: bigint): Promise<{ transactionHash: string }>;
+  createStarterGrantTransfer(
+    walletAddress: string,
+    amountWei: bigint
+  ): Promise<StarterGrantPendingTransfer>;
 }
 
 export interface StarterGrantStore {

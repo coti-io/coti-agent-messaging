@@ -15,6 +15,9 @@
     "lint": "npm run lint --workspaces --if-present",
     "deploy:testnet": "npm run deploy:testnet -w contracts",
     "deploy:mainnet": "npm run deploy:mainnet -w contracts",
+    "starter-grant:docker:up": "npm run docker:up -w @coti-agent-messaging/starter-grant-service",
+    "starter-grant:docker:down": "npm run docker:down -w @coti-agent-messaging/starter-grant-service",
+    "starter-grant:deploy:rsync": "npm run deploy:rsync -w @coti-agent-messaging/starter-grant-service",
     "heartbeat": "node moltbook-outreach-agent/dist/src/index.js heartbeat",
     "starter-grant:start": "npm run start -w @coti-agent-messaging/starter-grant-service"
   }

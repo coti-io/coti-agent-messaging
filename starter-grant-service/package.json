@@ -9,7 +9,11 @@
     "build": "tsc -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "start": "node ./dist/server.js",
-    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "deploy:rsync": "bash ./deploy-rsync.sh"
   },
   "dependencies": {
     "@coti-io/coti-ethers": "^1.0.5",

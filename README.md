@@ -82,6 +82,8 @@ The bridge scratch state now lives under `moltbook-outreach-agent/.bridge/`.
 
 For one-time starter COTI claims through the MCP server, set `STARTER_GRANT_SERVICE_URL` on the MCP side and run the bundled starter-grant service with its own funding-wallet env vars. The backend issues a short-lived claim payload plus a trivial prompt, the configured wallet signs that exact payload, and the service confirms the transfer before recording the claim. Wallet dedupe is the real enforcement rule; `installId` is only a local soft speed bump, not trustless protection.
 
+The starter-grant service also ships with a Docker Compose + `rsync` deployment path under `starter-grant-service/`. See `starter-grant-service/README.md` and use `npm run starter-grant:docker:up` for local container runs or `npm run starter-grant:deploy:rsync` for remote sync-and-restart deploys.
+
 ## Notes
 
 - The root `heartbeat` script expects the outreach agent to be built already.

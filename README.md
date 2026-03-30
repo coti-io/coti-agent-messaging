@@ -80,9 +80,9 @@ npm run bridge:stop -w @coti-agent-messaging/moltbook-outreach-agent
 
 The bridge scratch state now lives under `moltbook-outreach-agent/.bridge/`.
 
-For one-time starter COTI claims through the MCP server, set `STARTER_GRANT_SERVICE_URL` on the MCP side and run the bundled starter-grant service with its own funding-wallet env vars. The backend issues a short-lived claim payload plus a trivial prompt, the configured wallet signs that exact payload, and the service confirms the transfer before recording the claim. Wallet dedupe is the real enforcement rule; `installId` is only a local soft speed bump, not trustless protection.
+For one-time starter COTI claims through the MCP server, set `STARTER_GRANT_SERVICE_URL` on the MCP side and run the bundled starter-grant service with its own funding-wallet env vars. The minimum service config is just `STARTER_GRANT_FUNDER_PRIVATE_KEY` plus `STARTER_GRANT_AMOUNT_COTI`; `COTI_NETWORK` defaults to `testnet`, `STARTER_GRANT_RPC_URL` falls back to the public network RPC, and the HTTP service binds to `0.0.0.0` by default. The backend issues a short-lived claim payload plus a trivial prompt, the configured wallet signs that exact payload, and the service confirms the transfer before recording the claim. Wallet dedupe is the real enforcement rule; `installId` is only a local soft speed bump, not trustless protection.
 
-The starter-grant service also ships with a Docker Compose + `rsync` deployment path under `starter-grant-service/`. See `starter-grant-service/README.md` and use `npm run starter-grant:docker:up` for local container runs or `npm run starter-grant:deploy:rsync` for remote sync-and-restart deploys.
+The starter-grant service also ships with a Docker Compose + `rsync` deployment path under `starter-grant-service/`. Use `npm run starter-grant:docker:up` for local container runs or `npm run starter-grant:deploy:rsync` for remote sync-and-restart deploys to the SSH config host `grant`. The deploy script defaults to `/home/ubuntu/starter-grant-service` and can bootstrap Docker on an Ubuntu host when needed. See `starter-grant-service/README.md` for the exact env surface.
 
 ## Notes
 

@@ -10,6 +10,19 @@ Create a runtime env file:
 cp starter-grant-service/.env.example starter-grant-service/.env
 ```
 
+Minimum runtime env:
+
+```bash
+STARTER_GRANT_FUNDER_PRIVATE_KEY=0x...
+STARTER_GRANT_AMOUNT_COTI=0.001
+```
+
+Defaults now cover the common case:
+
+- `STARTER_GRANT_SERVICE_HOST=0.0.0.0`
+- `COTI_NETWORK=testnet`
+- `STARTER_GRANT_RPC_URL` falls back to the public COTI RPC for the selected network
+
 Then start the service:
 
 ```bash
@@ -26,20 +39,26 @@ The container stores its file-backed state in `starter-grant-service/.data/`.
 
 ## Rsync Deploy
 
-The package includes `starter-grant-service/deploy-rsync.sh`, which syncs the package directory to a remote host and runs `docker compose up -d --build`.
+The package includes `starter-grant-service/deploy-rsync.sh`, which syncs the package directory to the SSH config host `grant` and starts the service remotely.
 
-Required deploy env vars:
+Default remote settings:
+
+- SSH host alias: `grant`
+- Deploy path: `/home/ubuntu/starter-grant-service`
+- Public host: resolved from `ssh -G grant`
+
+The deploy script also bootstraps Docker on Ubuntu when missing, enables the Docker service, and uses `sudo` for remote Docker commands so first-time server setup is minimal.
+
+No deploy env vars are required for the default path. Run:
 
 ```bash
-export STARTER_GRANT_DEPLOY_HOST=your.server
-export STARTER_GRANT_DEPLOY_USER=deploy
-export STARTER_GRANT_DEPLOY_PATH=/srv/coti/starter-grant-service
+npm run starter-grant:deploy:rsync
 ```
 
 Optional deploy env vars:
 
 ```bash
-export STARTER_GRANT_DEPLOY_PORT=22
+export STARTER_GRANT_DEPLOY_PATH=/home/ubuntu/starter-grant-service
 export STARTER_GRANT_DEPLOY_ENV_FILE=/path/to/starter-grant-service.env
 export STARTER_GRANT_DEPLOY_DELETE=1
 export STARTER_GRANT_PUBLIC_URL=https://grants.example.com
@@ -47,12 +66,6 @@ export STARTER_GRANT_PUBLIC_URL=https://grants.example.com
 export STARTER_GRANT_PUBLIC_HOST=grants.example.com
 export STARTER_GRANT_PUBLIC_SCHEME=https
 export STARTER_GRANT_PUBLIC_PORT=443
-```
-
-Run the deploy:
-
-```bash
-npm run starter-grant:deploy:rsync
 ```
 
 After a successful deploy, the script prints:
@@ -65,8 +78,8 @@ That is the value you can drop directly into the SDK or MCP env.
 
 The remote target should have:
 
-- Docker with `docker compose`
-- a writable deploy path
+- an SSH config entry named `grant`
+- passwordless `sudo` for the remote user
 - a valid `.env` file synced or created at `<deploy-path>/.env`
 
 The deploy script excludes local build outputs, `node_modules`, `.data`, and `.env`, then optionally syncs the env file separately.

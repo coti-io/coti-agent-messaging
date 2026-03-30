@@ -20,11 +20,11 @@ const config: HardhatUserConfig = {
   solidity: "0.8.19",
   networks: {
     cotiTestnet: {
-      url: process.env.COTI_TESTNET_RPC_URL ?? "",
+      url: process.env.COTI_TESTNET_RPC_URL ?? "https://testnet.coti.io/rpc",
       accounts
     },
     cotiMainnet: {
-      url: process.env.COTI_MAINNET_RPC_URL ?? "",
+      url: process.env.COTI_MAINNET_RPC_URL ?? "https://mainnet.coti.io/rpc",
       accounts
     }
   }

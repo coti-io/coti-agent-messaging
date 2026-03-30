@@ -41,10 +41,33 @@ function parseNumber(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseCotiAmountToWei(raw: string | undefined, fallbackCoti: string): bigint {
+  const value = (raw ?? fallbackCoti).trim();
+  if (!/^\d+(\.\d+)?$/.test(value)) {
+    throw new Error(
+      `Invalid STARTER_GRANT_AMOUNT_COTI value '${value}'. Expected a positive decimal COTI amount.`
+    );
+  }
+
+  const [wholePart, fractionalPart = ""] = value.split(".");
+  if (fractionalPart.length > 18) {
+    throw new Error("STARTER_GRANT_AMOUNT_COTI supports at most 18 decimal places.");
+  }
+
+  return BigInt(`${wholePart}${fractionalPart.padEnd(18, "0")}`);
+}
+
 export function resolveStarterGrantServiceConfig(): StarterGrantServiceConfig {
   const packageRoot = getPackageRoot();
+  const network =
+    (process.env.COTI_NETWORK ?? "testnet").toLowerCase() === "mainnet" ? "mainnet" : "testnet";
+  const rpcUrl =
+    getOptionalEnv("STARTER_GRANT_RPC_URL") ??
+    getOptionalEnv("COTI_RPC_URL") ??
+    (network === "mainnet" ? "https://mainnet.coti.io/rpc" : "https://testnet.coti.io/rpc");
+
   return {
-    host: process.env.STARTER_GRANT_SERVICE_HOST ?? "127.0.0.1",
+    host: process.env.STARTER_GRANT_SERVICE_HOST ?? "0.0.0.0",
     port: parseNumber(process.env.STARTER_GRANT_SERVICE_PORT, 8787),
     challengeRoute: process.env.STARTER_GRANT_SERVICE_CHALLENGE_ROUTE ?? "/challenge",
     claimRoute: process.env.STARTER_GRANT_SERVICE_CLAIM_ROUTE ?? "/claim",
@@ -60,7 +83,10 @@ export function resolveStarterGrantServiceConfig(): StarterGrantServiceConfig {
     headersTimeoutMs: parseNumber(process.env.STARTER_GRANT_SERVICE_HEADERS_TIMEOUT_MS, 10_000),
     keepAliveTimeoutMs: parseNumber(process.env.STARTER_GRANT_SERVICE_KEEP_ALIVE_TIMEOUT_MS, 5_000),
     challengeTtlMs: parseNumber(process.env.STARTER_GRANT_CHALLENGE_TTL_MS, 5 * 60 * 1000),
-    starterAmountWei: BigInt(process.env.STARTER_GRANT_AMOUNT_WEI ?? "1000000000000000"),
+    starterAmountWei:
+      process.env.STARTER_GRANT_AMOUNT_COTI !== undefined
+        ? parseCotiAmountToWei(process.env.STARTER_GRANT_AMOUNT_COTI, "0.001")
+        : BigInt(process.env.STARTER_GRANT_AMOUNT_WEI ?? "1000000000000000"),
     challengeMaxRequestsPerWindow: parseNumber(
       process.env.STARTER_GRANT_CHALLENGE_MAX_REQUESTS_PER_WINDOW,
       parseNumber(process.env.STARTER_GRANT_MAX_REQUESTS_PER_WINDOW, 8)
@@ -84,9 +110,8 @@ export function resolveStarterGrantServiceConfig(): StarterGrantServiceConfig {
       process.env.STARTER_GRANT_FUNDING_CONFIRM_TIMEOUT_MS,
       45_000
     ),
-    network:
-      (process.env.COTI_NETWORK ?? "testnet").toLowerCase() === "mainnet" ? "mainnet" : "testnet",
-    rpcUrl: getOptionalEnv("STARTER_GRANT_RPC_URL") ?? getOptionalEnv("COTI_RPC_URL"),
+    network,
+    rpcUrl,
     funderPrivateKey: getRequiredEnv("STARTER_GRANT_FUNDER_PRIVATE_KEY")
   };
 }

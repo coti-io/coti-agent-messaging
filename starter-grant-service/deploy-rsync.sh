@@ -133,5 +133,5 @@ EOF
 
 echo
 echo "Starter grant service deployed."
-echo "SDK URL:"
+echo "Use this in SDK/MCP env:"
 echo "STARTER_GRANT_SERVICE_URL=$PUBLIC_URL"

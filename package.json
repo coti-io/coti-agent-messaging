@@ -19,6 +19,11 @@
     "starter-grant:docker:down": "npm run docker:down -w @coti-agent-messaging/starter-grant-service",
     "starter-grant:deploy:rsync": "npm run deploy:rsync -w @coti-agent-messaging/starter-grant-service",
     "outreach:deploy:rsync": "npm run deploy:rsync -w @coti-agent-messaging/moltbook-outreach-agent",
+    "outreach:remote:inspect": "npm run remote:inspect -w @coti-agent-messaging/moltbook-outreach-agent",
+    "outreach:remote:status": "npm run remote:status -w @coti-agent-messaging/moltbook-outreach-agent",
+    "outreach:remote:logs": "npm run remote:logs -w @coti-agent-messaging/moltbook-outreach-agent",
+    "outreach:remote:logs:follow": "npm run remote:logs:follow -w @coti-agent-messaging/moltbook-outreach-agent",
+    "outreach:remote:run-now": "npm run remote:run-now -w @coti-agent-messaging/moltbook-outreach-agent",
     "heartbeat": "node moltbook-outreach-agent/dist/src/index.js heartbeat",
     "starter-grant:start": "npm run start -w @coti-agent-messaging/starter-grant-service"
   }

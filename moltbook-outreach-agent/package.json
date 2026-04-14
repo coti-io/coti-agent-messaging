@@ -14,6 +14,11 @@
     "bridge:stop": "node dist/src/bridge-stop.js",
     "heartbeat": "node dist/src/index.js heartbeat",
     "deploy:rsync": "bash ./deploy-rsync.sh",
+    "remote:inspect": "bash ./inspect-remote.sh inspect",
+    "remote:status": "bash ./inspect-remote.sh status",
+    "remote:logs": "bash ./inspect-remote.sh logs",
+    "remote:logs:follow": "bash ./inspect-remote.sh follow",
+    "remote:run-now": "bash ./inspect-remote.sh run-now",
     "lint": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test dist/test/*.test.js"
   },

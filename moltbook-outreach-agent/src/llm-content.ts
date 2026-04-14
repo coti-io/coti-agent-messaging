@@ -312,7 +312,7 @@ function buildDraftUserPrompt(
     "Grounded claims to draw from:",
     JSON.stringify(relevantClaims, null, 2),
     "",
-    "Relevant sdk/contracts context:",
+    "Relevant SDK/contracts/docs context:",
     JSON.stringify(repoPayload, null, 2),
     "",
     "Writing target:",

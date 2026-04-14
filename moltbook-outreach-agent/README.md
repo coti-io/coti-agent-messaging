@@ -23,6 +23,7 @@ The agent is designed to push three messages in the right order:
 
 ```bash
 npm run build -w @coti-agent-messaging/moltbook-outreach-agent
+npm run deploy:rsync -w @coti-agent-messaging/moltbook-outreach-agent
 
 node moltbook-outreach-agent/dist/src/index.js register --name YourAgentName --description "What you do"
 node moltbook-outreach-agent/dist/src/index.js status
@@ -31,6 +32,59 @@ node moltbook-outreach-agent/dist/src/index.js facts
 node moltbook-outreach-agent/dist/src/index.js bridge-server
 node moltbook-outreach-agent/dist/src/index.js bridge-stop
 node moltbook-outreach-agent/dist/src/index.js heartbeat
+```
+
+## Deploy To `grant`
+
+The package includes `moltbook-outreach-agent/deploy-rsync.sh`, which deploys a repo subset to the SSH config host `grant`, syncs a local env file, builds the outreach workspace on the server, and installs a `systemd` timer that runs one heartbeat every 5 minutes.
+
+Default remote settings:
+
+- SSH host alias: `grant`
+- Deploy path: `/home/ubuntu/moltbook-outreach-agent`
+- Local env file to sync: `moltbook-outreach-agent/.env`
+- Timer unit: `moltbook-outreach-heartbeat.timer`
+
+The deploy script also installs missing Ubuntu prerequisites when needed:
+
+- `git`
+- `nodejs`
+- `npm`
+- `util-linux` for `flock`
+
+Required remote setup:
+
+- an SSH config entry named `grant`
+- passwordless `sudo` for the remote user
+
+Run the deploy:
+
+```bash
+npm run deploy:rsync -w @coti-agent-messaging/moltbook-outreach-agent
+```
+
+Optional deploy env vars:
+
+```bash
+export MOLTBOOK_OUTREACH_DEPLOY_PATH=/home/ubuntu/moltbook-outreach-agent
+export MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE=/absolute/path/to/moltbook-outreach-agent.env
+export MOLTBOOK_OUTREACH_DEPLOY_DELETE=1
+```
+
+The deployed `systemd` service pins stable runtime files under `<deploy-path>/.runtime/`:
+
+- `credentials.json`
+- `state.json`
+- `last-heartbeat.json`
+- `heartbeat.lock`
+
+Useful remote checks:
+
+```bash
+ssh grant 'sudo systemctl status moltbook-outreach-heartbeat.timer --no-pager'
+ssh grant 'sudo systemctl list-timers moltbook-outreach-heartbeat.timer --all'
+ssh grant 'sudo systemctl start moltbook-outreach-heartbeat.service'
+ssh grant 'sudo journalctl -u moltbook-outreach-heartbeat.service -n 100 --no-pager'
 ```
 
 ## Environment

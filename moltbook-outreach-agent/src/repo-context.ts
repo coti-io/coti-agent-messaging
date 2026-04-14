@@ -1,4 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 export interface RepoContextBundle {
@@ -20,12 +21,42 @@ interface RepoCorpus {
   chunks: RepoChunk[];
 }
 
+interface RepoEntry {
+  path: string;
+  content: string;
+}
+
 const CORPUS_CACHE = new Map<string, Promise<RepoCorpus>>();
-const INCLUDED_EXTENSIONS = new Set([".ts", ".sol", ".md"]);
+const REMOTE_DOCS_CACHE = new Map<string, Promise<RepoEntry[]>>();
+const require = createRequire(import.meta.url);
+const INCLUDED_EXTENSIONS = new Set([".ts", ".js", ".sol", ".md"]);
 const IGNORED_DIRS = new Set(["node_modules", "dist", "artifacts", "cache", ".git"]);
 const MAX_SUMMARY_LINES = 4;
 const MAX_CHUNK_LENGTH = 900;
 const CHUNK_OVERLAP = 180;
+const REMOTE_DOC_FETCH_TIMEOUT_MS = 2_500;
+const PRIVATE_MESSAGING_DOCS: ReadonlyArray<{ path: string; url: string }> = [
+  {
+    path: "coti-docs/private-messaging/README.md",
+    url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/README.md"
+  },
+  {
+    path: "coti-docs/private-messaging/typescript-sdk.md",
+    url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/typescript-sdk.md"
+  },
+  {
+    path: "coti-docs/private-messaging/messages.md",
+    url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/messages.md"
+  },
+  {
+    path: "coti-docs/private-messaging/rewards.md",
+    url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/rewards.md"
+  },
+  {
+    path: "coti-docs/private-messaging/starter-grant.md",
+    url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/starter-grant.md"
+  }
+];
 
 export async function buildRepoContext(
   projectRoot: string,
@@ -62,20 +93,12 @@ async function loadRepoCorpus(projectRoot: string): Promise<RepoCorpus> {
 }
 
 async function buildRepoCorpus(projectRoot: string): Promise<RepoCorpus> {
-  const directories = [path.join(projectRoot, "sdk"), path.join(projectRoot, "contracts")];
-  const filePaths = (
-    await Promise.all(directories.map((directory) => collectFiles(directory)))
-  ).flat();
-
-  const entries = await Promise.all(
-    filePaths.map(async (filePath) => {
-      const content = await readFile(filePath, "utf8");
-      return {
-        path: path.relative(projectRoot, filePath),
-        content
-      };
-    })
-  );
+  const [projectEntries, dependencyEntries, remoteDocEntries] = await Promise.all([
+    loadProjectEntries(projectRoot),
+    loadDependencyEntries(),
+    loadRemoteDocEntries()
+  ]);
+  const entries = [...projectEntries, ...dependencyEntries, ...remoteDocEntries];
 
   const baseSummary = entries
     .map((entry) => `${entry.path}: ${summarizeFile(entry.content)}`)
@@ -88,8 +111,87 @@ async function buildRepoCorpus(projectRoot: string): Promise<RepoCorpus> {
   };
 }
 
+async function loadProjectEntries(projectRoot: string): Promise<RepoEntry[]> {
+  const directories = [path.join(projectRoot, "contracts"), path.join(projectRoot, "docs")];
+  const filePaths = (await Promise.all(directories.map((directory) => collectFiles(directory)))).flat();
+  return readRepoEntries(filePaths, projectRoot);
+}
+
+async function loadDependencyEntries(): Promise<RepoEntry[]> {
+  const sdkRoot = resolvePrivateMessagingSdkRoot();
+  if (!sdkRoot) {
+    return [];
+  }
+
+  const filePaths = await collectFiles(sdkRoot);
+  return readRepoEntries(filePaths, sdkRoot, "sdk-package");
+}
+
+async function loadRemoteDocEntries(): Promise<RepoEntry[]> {
+  const cacheKey = PRIVATE_MESSAGING_DOCS.map((entry) => entry.path).join("|");
+  if (!REMOTE_DOCS_CACHE.has(cacheKey)) {
+    REMOTE_DOCS_CACHE.set(cacheKey, fetchRemoteDocEntries(PRIVATE_MESSAGING_DOCS));
+  }
+
+  return REMOTE_DOCS_CACHE.get(cacheKey)!;
+}
+
+async function fetchRemoteDocEntries(
+  documents: ReadonlyArray<{ path: string; url: string }>
+): Promise<RepoEntry[]> {
+  return (
+    await Promise.all(
+      documents.map(async (document) => {
+        const content = await fetchText(document.url);
+        if (!content) {
+          return undefined;
+        }
+
+        return {
+          path: document.path,
+          content
+        };
+      })
+    )
+  ).filter((entry): entry is RepoEntry => Boolean(entry));
+}
+
+function resolvePrivateMessagingSdkRoot(): string | undefined {
+  try {
+    const packageJsonPath = require.resolve("@coti-io/coti-sdk-private-messaging/package.json");
+    return path.dirname(packageJsonPath);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readRepoEntries(
+  filePaths: readonly string[],
+  rootPath: string,
+  pathPrefix?: string
+): Promise<RepoEntry[]> {
+  return Promise.all(
+    filePaths.map(async (filePath) => {
+      const relativePath = path.relative(rootPath, filePath);
+      return {
+        path: pathPrefix ? path.posix.join(pathPrefix, normalizePath(relativePath)) : normalizePath(relativePath),
+        content: await readFile(filePath, "utf8")
+      };
+    })
+  );
+}
+
 async function collectFiles(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
+  }
   const files = await Promise.all(
     entries.map(async (entry) => {
       const fullPath = path.join(directory, entry.name);
@@ -110,6 +212,30 @@ async function collectFiles(directory: string): Promise<string[]> {
   );
 
   return files.flat();
+}
+
+async function fetchText(url: string): Promise<string | undefined> {
+  if (typeof fetch !== "function") {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REMOTE_DOC_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return undefined;
+    }
+
+    return await response.text();
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function summarizeFile(content: string): string {
@@ -154,4 +280,8 @@ function scoreChunk(chunk: RepoChunk, queryTerms: readonly string[]): number {
   return queryTerms.reduce((score, term) => {
     return chunk.searchText.includes(term) ? score + Math.min(term.length, 8) : score;
   }, 0);
+}
+
+function normalizePath(relativePath: string): string {
+  return relativePath.split(path.sep).join(path.posix.sep);
 }

@@ -12,6 +12,8 @@
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "bridge:start": "node dist/src/bridge-server.js",
     "bridge:stop": "node dist/src/bridge-stop.js",
+    "heartbeat": "node dist/src/index.js heartbeat",
+    "deploy:rsync": "bash ./deploy-rsync.sh",
     "lint": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test dist/test/*.test.js"
   },

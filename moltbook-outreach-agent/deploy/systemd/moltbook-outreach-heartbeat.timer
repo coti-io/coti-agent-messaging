@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Moltbook outreach heartbeat every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*:0/5
+Persistent=true
+Unit=__SERVICE_NAME__.service
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

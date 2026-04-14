@@ -56,6 +56,55 @@ const MAX_PENDING_WRITES = 10;
 const MAX_STORED_ARTIFACT_TITLE_LENGTH = 140;
 const MAX_STORED_ARTIFACT_CONTENT_LENGTH = 700;
 const MAX_STORED_ARTIFACT_TARGET_SUMMARY_LENGTH = 280;
+const REPLY_GENERIC_PRAISE_PATTERNS = [
+  /\b(?:great|nice|cool|awesome|amazing|love|loving)\b.{0,24}\b(?:project|work|post|ecosystem|community)\b/i,
+  /\b(?:bullish|based|gm|wagmi|lfgo|lfg)\b/i,
+  /\bthanks for sharing\b/i,
+  /\bkeep it up\b/i
+] as const;
+const REPLY_SPAM_PATTERNS = [
+  /\bspam\b/i,
+  /\bairdrop\b/i,
+  /\bgiveaway\b/i,
+  /\bpromo(?:tion)?\b/i,
+  /\b(?:dm|pm)\b.{0,12}\b(?:me|for)\b/i,
+  /\bcheck (?:my|our) profile\b/i
+] as const;
+const REPLY_OVERLAP_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "but",
+  "by",
+  "for",
+  "from",
+  "how",
+  "i",
+  "in",
+  "into",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "our",
+  "so",
+  "that",
+  "the",
+  "their",
+  "this",
+  "to",
+  "us",
+  "we",
+  "what",
+  "with",
+  "you",
+  "your"
+]);
 
 export type PlannedAction =
   | {
@@ -456,43 +505,100 @@ function commentAuthorName(comment: MoltbookComment): string | undefined {
   return comment.author_name ?? comment.author?.name;
 }
 
-export function chooseReplyTarget(input: {
+function tokenizeReplyText(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter((token) => token.length >= 4 && !REPLY_OVERLAP_STOP_WORDS.has(token));
+}
+
+function overlapCount(left: readonly string[], right: readonly string[]): number {
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+
+  const rightTokens = new Set(right);
+  return left.reduce((count, token) => count + (rightTokens.has(token) ? 1 : 0), 0);
+}
+
+function isReplyWorthyComment(comment: MoltbookComment, postTitle: string): boolean {
+  const content = comment.content.trim();
+  if (!content) {
+    return false;
+  }
+
+  if (REPLY_SPAM_PATTERNS.some((pattern) => pattern.test(content))) {
+    return false;
+  }
+
+  const normalized = content.toLowerCase();
+  const hasQuestion = normalized.includes("?");
+  const wordCount = tokenizeReplyText(content).length;
+  const titleOverlap = overlapCount(tokenizeReplyText(content), tokenizeReplyText(postTitle));
+  const hasGenericPraise = REPLY_GENERIC_PRAISE_PATTERNS.some((pattern) => pattern.test(content));
+  const hasMeaningfulLength = content.length >= 45 || wordCount >= 6;
+
+  if (hasGenericPraise && !hasQuestion && titleOverlap === 0) {
+    return false;
+  }
+
+  if (!hasQuestion && !hasMeaningfulLength) {
+    return false;
+  }
+
+  if (!hasQuestion && titleOverlap === 0 && wordCount < 8) {
+    return false;
+  }
+
+  return true;
+}
+
+export function listReplyTargets(input: {
   postId: string;
+  postTitle: string;
   comments: readonly MoltbookComment[];
   state: OutreachAgentState;
   agentName: string;
-}): ReplyTarget | undefined {
+}): ReplyTarget[] {
   const pendingReplyTargetIds = new Set(
     input.state.pendingWrites
       .filter((entry) => entry.type === "reply" && entry.targetCommentId)
       .map((entry) => entry.targetCommentId!)
   );
-  const candidates = flattenComments(input.comments)
+  return flattenComments(input.comments)
     .filter((comment) => {
       const author = commentAuthorName(comment);
       if (author && author === input.agentName) {
         return false;
       }
 
-      return !input.state.repliedCommentIds.includes(comment.id) && !pendingReplyTargetIds.has(comment.id);
+      return (
+        !input.state.repliedCommentIds.includes(comment.id) &&
+        !pendingReplyTargetIds.has(comment.id) &&
+        isReplyWorthyComment(comment, input.postTitle)
+      );
     })
     .sort((left, right) => {
       const leftTime = Date.parse(left.created_at ?? "") || 0;
       const rightTime = Date.parse(right.created_at ?? "") || 0;
       return rightTime - leftTime;
-    });
+    })
+    .map((target) => ({
+      commentId: target.id,
+      postId: input.postId,
+      authorName: commentAuthorName(target),
+      content: target.content
+    }));
+}
 
-  const target = candidates[0];
-  if (!target) {
-    return undefined;
-  }
-
-  return {
-    commentId: target.id,
-    postId: input.postId,
-    authorName: commentAuthorName(target),
-    content: target.content
-  };
+export function chooseReplyTarget(input: {
+  postId: string;
+  postTitle: string;
+  comments: readonly MoltbookComment[];
+  state: OutreachAgentState;
+  agentName: string;
+}): ReplyTarget | undefined {
+  return listReplyTargets(input)[0];
 }
 
 export function applyActionResult(

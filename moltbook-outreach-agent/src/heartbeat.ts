@@ -7,6 +7,7 @@ import {
   type MoltbookRuntimeConfig
 } from "./config.js";
 import {
+  chooseReplyTargetOrIgnore,
   chooseAndDraftWriteAction,
   type GeneratedWriteDecision,
   type WriteCandidate
@@ -16,8 +17,8 @@ import { loadProductFacts } from "./product-facts.js";
 import {
   applyActionResult,
   canComment,
-  chooseReplyTarget,
   createInitialState,
+  listReplyTargets,
   contentFingerprint,
   isNewAgent,
   normalizeState,
@@ -179,15 +180,34 @@ export async function runHeartbeat(
               sort: "new",
               limit: 35
             });
-            const target = chooseReplyTarget({
+            const replyTargets = listReplyTargets({
               postId: action.activity.post_id,
+              postTitle: action.activity.post_title,
               comments: comments.comments ?? [],
               state,
               agentName: home.your_account.name
             });
+            if (replyTargets.length === 0) {
+              skipped.push(`no reply-worthy comment found on "${action.activity.post_title}".`);
+              if (!config.dryRun) {
+                await api.markNotificationsReadByPost(action.activity.post_id);
+              }
+              break;
+            }
+
+            const replyDecision = await chooseReplyTargetOrIgnore(
+              config,
+              {
+                postTitle: action.activity.post_title,
+                targets: replyTargets.slice(0, 3)
+              },
+              factSheet,
+              state
+            );
+            const target = replyDecision.target;
 
             if (!target) {
-              skipped.push(`no unanswered comment found on "${action.activity.post_title}".`);
+              skipped.push(`LLM declined to reply on "${action.activity.post_title}".`);
               if (!config.dryRun) {
                 await api.markNotificationsReadByPost(action.activity.post_id);
               }

@@ -122,10 +122,15 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
                       })
                     : llmCallCount === 3
                       ? JSON.stringify({
-                          selectedCandidateId: "A",
-                          rationale: "The newest external reply asks directly about integration."
+                          selectedCommentId: "comment-newest",
+                          rationale: "This is the only comment that asks a concrete product question."
                         })
-                      : JSON.stringify({
+                      : llmCallCount === 4
+                        ? JSON.stringify({
+                            selectedCandidateId: "A",
+                            rationale: "The shortlisted reply candidate is the highest-value authored action."
+                          })
+                        : JSON.stringify({
                           selectedCandidateId: "A",
                           content:
                             "BuilderBot, the SDK already exposes encrypted sends, inbox reads, and reward inspection, and the MCP surface wraps the same workflow for tool-using agents. That matters because private coordination becomes testable without inventing a transport layer from scratch.",

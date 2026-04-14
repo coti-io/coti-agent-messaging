@@ -34,6 +34,11 @@ export interface GeneratedWriteDecision {
   fingerprint: string;
 }
 
+interface LlmReplyGateResponse {
+  selectedCommentId: string;
+  rationale?: string;
+}
+
 interface LlmSelectionResponse {
   selectedCandidateId: string;
   rationale?: string;
@@ -62,6 +67,97 @@ const REPLY_PERSONALITY = [
   "Start by meeting the other person's actual point, then sharpen or reframe it.",
   "Do not posture. Do not rant. Do not sound like a pitch deck."
 ].join(" ");
+
+export async function chooseReplyTargetOrIgnore(
+  config: MoltbookRuntimeConfig,
+  input: {
+    postTitle: string;
+    targets: readonly ReplyTarget[];
+  },
+  factSheet: ProductFactSheet,
+  state: OutreachAgentState,
+  fetchImpl?: typeof fetch
+): Promise<{
+  target?: ReplyTarget;
+  rationale: string;
+}> {
+  if (input.targets.length === 0) {
+    return {
+      rationale: "No reply candidates were available."
+    };
+  }
+
+  const llmProvider = buildMainLlmProvider(config, fetchImpl);
+  if (!llmProvider) {
+    return {
+      target: input.targets[0],
+      rationale: "No LLM provider configured; falling back to the highest-ranked reply candidate."
+    };
+  }
+
+  const relevantClaims = selectRelevantClaims(
+    factSheet,
+    `${input.postTitle}\n${input.targets.map((target) => target.content).join("\n")}`
+  );
+  const response = await llmProvider.createJsonCompletion<LlmReplyGateResponse>([
+    {
+      role: "system",
+      content: [
+        `Prompt version: ${PROMPT_VERSION}.`,
+        BASE_PERSONALITY,
+        "You are gating reply candidates on our own Moltbook thread.",
+        "Your job is to decide whether to reply at all, and if so choose the single best comment to reply to.",
+        "Ignore generic praise, hype, ecosystem slogans, drive-by compliments, obvious spam, and comments that do not engage the post's actual topic.",
+        "Reply only when a comment asks a concrete question, makes a substantive on-topic claim, raises a useful objection, or creates a real opening for a sharp response.",
+        'Return strict JSON with keys: selectedCommentId, rationale. Use "ignore" exactly when none of the candidates deserve a reply.'
+      ].join(" ")
+    },
+    {
+      role: "user",
+      content: [
+        "Post title:",
+        input.postTitle,
+        "",
+        "Reply candidates:",
+        JSON.stringify(
+          input.targets.map((target) => ({
+            commentId: target.commentId,
+            authorName: target.authorName ?? "commenter",
+            content: target.content
+          })),
+          null,
+          2
+        ),
+        "",
+        "Grounded product claims that may matter if the comment is actually relevant:",
+        JSON.stringify(relevantClaims, null, 2),
+        "",
+        "Recent authored history to avoid echoing too closely:",
+        buildRecentHistorySummary(state)
+      ].join("\n")
+    }
+  ]);
+
+  if (response.selectedCommentId === "ignore") {
+    return {
+      rationale: response.rationale?.trim() || "LLM judged every reply candidate too low-signal to answer."
+    };
+  }
+
+  const target = input.targets.find((entry) => entry.commentId === response.selectedCommentId);
+  if (!target) {
+    throw new Error(
+      `LLM selected an unknown reply target: ${response.selectedCommentId}. Valid ids: ${input.targets
+        .map((entry) => entry.commentId)
+        .join(", ")}`
+    );
+  }
+
+  return {
+    target,
+    rationale: response.rationale?.trim() || "LLM selected the most reply-worthy candidate."
+  };
+}
 
 export async function chooseAndDraftWriteAction(
   config: MoltbookRuntimeConfig,

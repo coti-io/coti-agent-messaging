@@ -5,7 +5,11 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
 import type { MoltbookRuntimeConfig } from "../src/config.js";
-import { chooseAndDraftWriteAction, type WriteCandidate } from "../src/llm-content.js";
+import {
+  chooseAndDraftWriteAction,
+  chooseReplyTargetOrIgnore,
+  type WriteCandidate
+} from "../src/llm-content.js";
 import type { ChatMessage } from "../src/llm-client.js";
 import { createInitialState } from "../src/policy.js";
 import type { ProductFactSheet } from "../src/product-facts.js";
@@ -222,6 +226,74 @@ test("injected and HTTP providers receive identical prompt messages", async () =
     assert.equal(injectedMessages.length, 2);
     assert.equal(httpMessages.length, 2);
     assert.deepEqual(injectedMessages, httpMessages);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("reply gate can ignore low-signal candidates", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-reply-gate-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>() {
+        return {
+          selectedCommentId: "ignore",
+          rationale: "Both comments are generic hype and do not engage the post."
+        } as T;
+      }
+    }
+  };
+  const factSheet: ProductFactSheet = {
+    claims: [
+      {
+        id: "private-bodies-public-routing",
+        headline: "Private message bodies, queryable routing",
+        detail: "Message bodies are encrypted while routing metadata stays public.",
+        sourcePaths: ["docs/overview.md"],
+        evidence: ["The message body is encrypted while routing metadata remains queryable."],
+        emphasis: "primary"
+      }
+    ],
+    liveSnapshot: {}
+  };
+
+  try {
+    const decision = await chooseReplyTargetOrIgnore(
+      config,
+      {
+        postTitle: "Why agents need private inboxes",
+        targets: [
+          {
+            commentId: "comment-1",
+            postId: "post-1",
+            authorName: "dustypath",
+            content: "Loving the mbc-20 ecosystem"
+          },
+          {
+            commentId: "comment-2",
+            postId: "post-1",
+            authorName: "driveby",
+            content: "Great project"
+          }
+        ]
+      },
+      factSheet,
+      createInitialState()
+    );
+
+    assert.equal(decision.target, undefined);
+    assert.match(decision.rationale, /generic hype/i);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

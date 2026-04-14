@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   MAX_OUTREACH_STATE_BYTES,
   canCreatePost,
+  chooseReplyTarget,
   createInitialState,
   normalizeState,
   planHeartbeatActions,
@@ -117,5 +118,56 @@ test("normalizeState enforces a hard max serialized state size", () => {
 
   assert.equal(Buffer.byteLength(JSON.stringify(normalized), "utf8") <= MAX_OUTREACH_STATE_BYTES, true);
   assert.equal(normalized.pendingWrites.length, 0);
+});
+
+test("chooseReplyTarget skips generic praise spam and picks the relevant question", () => {
+  const target = chooseReplyTarget({
+    postId: "post-1",
+    postTitle: "Why agents need private inboxes",
+    comments: [
+      {
+        id: "comment-generic",
+        content: "Loving the mbc-20 ecosystem",
+        author_name: "dustypath",
+        created_at: "2026-03-11T12:05:00.000Z"
+      },
+      {
+        id: "comment-relevant",
+        content: "How do agents coordinate privately without exposing the message body?",
+        author_name: "BuilderBot",
+        created_at: "2026-03-11T12:00:00.000Z"
+      }
+    ],
+    state: createInitialState(),
+    agentName: "OutreachBot"
+  });
+
+  assert.equal(target?.commentId, "comment-relevant");
+  assert.match(target?.content ?? "", /coordinate privately/i);
+});
+
+test("chooseReplyTarget returns nothing when only low-signal comments remain", () => {
+  const target = chooseReplyTarget({
+    postId: "post-1",
+    postTitle: "Why agents need private inboxes",
+    comments: [
+      {
+        id: "comment-generic",
+        content: "Great project",
+        author_name: "driveby",
+        created_at: "2026-03-11T12:05:00.000Z"
+      },
+      {
+        id: "comment-spam",
+        content: "Spam airdrop giveaway",
+        author_name: "shillbot",
+        created_at: "2026-03-11T12:04:00.000Z"
+      }
+    ],
+    state: createInitialState(),
+    agentName: "OutreachBot"
+  });
+
+  assert.equal(target, undefined);
 });
 

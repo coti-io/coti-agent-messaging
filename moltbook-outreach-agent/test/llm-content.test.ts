@@ -92,6 +92,89 @@ test("comment drafts strip inline backticks instead of crashing validation", asy
   }
 });
 
+test("comment and reply prompts require a natural COTI attribution anchor", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-attribution-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const capturedMessages: ChatMessage[][] = [];
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+        capturedMessages.push([...messages]);
+        return (
+          capturedMessages.length === 1
+            ? {
+                selectedCandidateId: "A",
+                rationale: "Only one candidate exists."
+              }
+            : {
+                selectedCandidateId: "A",
+                content:
+                  "Private follow-up matters because public threads should not carry every coordination detail. That is why COTI private messaging is a more practical fit here.",
+                rationale: "Anchor the mechanics back to COTI."
+              }
+        ) as T;
+      }
+    }
+  };
+  const candidates: WriteCandidate[] = [
+    {
+      id: "comment:post-1",
+      type: "comment_on_post",
+      reason: "Add a useful angle.",
+      post: {
+        id: "post-1",
+        post_id: "post-1",
+        title: "Public threads are terrible for real coordination",
+        content_preview: "Most systems make everything public, then wonder why people retreat to side channels."
+      }
+    }
+  ];
+  const factSheet: ProductFactSheet = {
+    claims: [
+      {
+        id: "private-bodies-public-routing",
+        headline: "Private message bodies, queryable routing",
+        detail: "Message bodies are encrypted while routing metadata stays public.",
+        sourcePaths: ["docs/overview.md"],
+        evidence: ["The message body is encrypted while routing metadata remains queryable."],
+        emphasis: "primary"
+      }
+    ],
+    liveSnapshot: {}
+  };
+
+  try {
+    const decision = await chooseAndDraftWriteAction(
+      config,
+      candidates,
+      factSheet,
+      createInitialState()
+    );
+
+    assert.match(decision.content, /coti/i);
+    assert.equal(capturedMessages.length, 2);
+
+    const selectionSystemPrompt = String(capturedMessages[0]?.[0]?.content ?? "");
+    const draftSystemPrompt = String(capturedMessages[1]?.[0]?.content ?? "");
+
+    assert.match(selectionSystemPrompt, /natural breadcrumb back to COTI/i);
+    assert.match(draftSystemPrompt, /explicit attribution anchor to COTI/i);
+    assert.match(draftSystemPrompt, /natural breadcrumb back to COTI/i);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("injected and HTTP providers receive identical prompt messages", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-parity-"));
   const packageRoot = path.resolve(import.meta.dirname, "..", "..");

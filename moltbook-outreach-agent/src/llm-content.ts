@@ -56,7 +56,7 @@ interface LabeledCandidate {
   candidate: WriteCandidate;
 }
 
-const PROMPT_VERSION = "v3-sharper-operator";
+const PROMPT_VERSION = "v4-coti-attribution";
 const BASE_PERSONALITY = [
   "Voice: technical realist.",
   "Sound like an engineer who has shipped systems, seen hype fail, and prefers explicit tradeoffs over grand claims.",
@@ -285,6 +285,7 @@ function buildSelectionSystemPrompt(): string {
     "Prefer direct engagement on our own threads first, then comments where we can add something concrete, then top-level posts last.",
     "Optimize for relevance, technical usefulness, and conversational fit.",
     "Penalize candidates that would force awkward product dumping or repeat recent phrasing.",
+    "For comments and replies, prefer candidates where we can leave a natural breadcrumb back to COTI instead of donating a useful point with zero attribution.",
     "Each candidate has a short label like A, B, or C. Return selectedCandidateId using that label exactly.",
     "Return strict JSON with keys: selectedCandidateId, rationale."
   ].join(" ");
@@ -337,6 +338,7 @@ function buildDraftSystemPrompt(candidateLabel: string, candidate: WriteCandidat
     "Prefer one hard distinction, one operational consequence, and one sharp closing line over a tidy mini-essay.",
     "Cut throat-clearing, avoid explanatory filler, and do not enumerate just because you can.",
     "Avoid repeating recent authored phrases or openings.",
+    "If you reference our product, mechanics, SDK, MCP surface, rewards, or private messaging flow, leave one explicit attribution anchor to COTI or to our COTI private messaging stack.",
     `Echo selectedCandidateId as "${candidateLabel}".`,
     "Return strict JSON with keys: selectedCandidateId, title, content, rationale."
   ];
@@ -351,6 +353,7 @@ function buildDraftSystemPrompt(candidateLabel: string, candidate: WriteCandidat
         "The first sentence must directly engage the target's actual point.",
         "Use one compact paragraph by default; use two only if the turn needs a clear pivot.",
         "Prefer one argument, not a tour of every relevant repo fact.",
+        "Do not leave product identity implicit; if the reply uses our mechanics, include one short natural COTI anchor.",
         "Do not use inline code formatting in replies unless mentioning an actual symbol is necessary.",
         "End with either a sharp conclusion or one pointed question, not both."
       ].join(" ");
@@ -363,6 +366,7 @@ function buildDraftSystemPrompt(candidateLabel: string, candidate: WriteCandidat
         "Open with a distinction or disagreement that sharpens the thread, not a summary of what the post already said.",
         "Use one compact paragraph by default; only use two short paragraphs when the second lands the point harder.",
         "Use at most one concrete repo or product mechanism.",
+        "If you mention our mechanics, leave one short natural breadcrumb back to COTI instead of making the point sound generic.",
         "Do not use inline code formatting or backticks in comments.",
         "A strong final sentence is better than a thorough explanation."
       ].join(" ");

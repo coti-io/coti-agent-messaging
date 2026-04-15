@@ -19,7 +19,9 @@ import {
   canComment,
   createInitialState,
   contentFingerprint,
+  getDailyCommentBreakdown,
   getCommentReadiness,
+  getPostReadiness,
   isNewAgent,
   listReplyTargets,
   normalizeState,
@@ -114,19 +116,45 @@ function formatSummary(performed: string[], skipped: string[]): string {
 function describeCommentBlockReason(
   state: OutreachAgentState,
   isNew: boolean,
+  policy: MoltbookRuntimeConfig["policy"],
   targetLabel: string
 ): string {
-  const readiness = getCommentReadiness(state, isNew);
+  const readiness = getCommentReadiness(state, isNew, policy);
+  const breakdown = getDailyCommentBreakdown(state);
+  const usage = `${readiness.usedCount}/${readiness.limitPerDay}`;
+  const detail = `comments ${breakdown.topLevelComments}, replies ${breakdown.replies}`;
   if (readiness.reason === "daily_limit") {
-    return `daily comment cap reached; skipped "${targetLabel}" until the next UTC day.`;
+    return `daily comment cap reached (${usage}; ${detail}); skipped "${targetLabel}" until the next UTC day.`;
   }
 
   if (readiness.reason === "paced_cooldown") {
     const waitMinutes = Math.max(1, Math.ceil(readiness.waitMs / 60_000));
-    return `comment pacing blocked "${targetLabel}" for about ${waitMinutes} more minute${waitMinutes === 1 ? "" : "s"}.`;
+    return `comment pacing blocked "${targetLabel}" at ${usage} (${detail}) for about ${waitMinutes} more minute${waitMinutes === 1 ? "" : "s"}.`;
   }
 
   return `comment gating blocked "${targetLabel}".`;
+}
+
+function describePostBlockReason(
+  state: OutreachAgentState,
+  isNew: boolean,
+  policy: MoltbookRuntimeConfig["policy"]
+): string | undefined {
+  const readiness = getPostReadiness(state, isNew, policy);
+  if (readiness.allowed) {
+    return undefined;
+  }
+
+  if (readiness.reason === "daily_limit" && readiness.limitPerDay !== undefined) {
+    return `daily post cap reached (${readiness.usedCount}/${readiness.limitPerDay}); skipped create_post until the next UTC day.`;
+  }
+
+  if (readiness.reason === "cooldown") {
+    const waitMinutes = Math.max(1, Math.ceil(readiness.waitMs / 60_000));
+    return `post cooldown blocked create_post after ${readiness.usedCount}${readiness.limitPerDay !== undefined ? `/${readiness.limitPerDay}` : ""} posts today for about ${waitMinutes} more minute${waitMinutes === 1 ? "" : "s"}.`;
+  }
+
+  return undefined;
 }
 
 export async function runHeartbeat(
@@ -180,18 +208,26 @@ export async function runHeartbeat(
       home,
       exploreFeed,
       state,
+      policy: config.policy,
       factSheet,
       profileCreatedAt: me.agent?.created_at
     });
     report.plannedActions = planned.map((entry) => entry.type);
+    const plannedActionTypes = new Set(report.plannedActions);
+    const postBlockReason = describePostBlockReason(state, newAgent, config.policy);
+    if (!plannedActionTypes.has("create_post") && postBlockReason) {
+      skipped.push(postBlockReason);
+    }
     const writeCandidates: WriteCandidate[] = [];
 
     for (const action of planned) {
       try {
         switch (action.type) {
           case "reply_to_activity": {
-            if (!canComment(state, newAgent)) {
-              skipped.push(describeCommentBlockReason(state, newAgent, action.activity.post_title));
+            if (!canComment(state, newAgent, config.policy)) {
+              skipped.push(
+                describeCommentBlockReason(state, newAgent, config.policy, action.activity.post_title)
+              );
               break;
             }
 
@@ -274,8 +310,10 @@ export async function runHeartbeat(
             performed.push(`Followed ${action.agentName}.`);
             break;
           case "comment_on_post": {
-            if (!canComment(state, newAgent)) {
-              skipped.push(describeCommentBlockReason(state, newAgent, action.post.title));
+            if (!canComment(state, newAgent, config.policy)) {
+              skipped.push(
+                describeCommentBlockReason(state, newAgent, config.policy, action.post.title)
+              );
               break;
             }
 
@@ -545,14 +583,16 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
         type: "create_post",
         fingerprint: pendingWrite.fingerprint,
         title: pendingWrite.title ?? "Untitled post",
-        content: pendingWrite.content
+        content: pendingWrite.content,
+        createdAt: pendingWrite.createdAt
       });
     case "comment":
       return applyActionResult(state, {
         type: "comment",
         commentId: `post:${pendingWrite.postId ?? pendingWrite.id}`,
         content: pendingWrite.content,
-        targetSummary: pendingWrite.targetSummary
+        targetSummary: pendingWrite.targetSummary,
+        createdAt: pendingWrite.createdAt
       });
     case "reply":
       return applyActionResult(state, {
@@ -560,7 +600,8 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
         commentId: pendingWrite.targetCommentId ?? pendingWrite.id,
         content: pendingWrite.content,
         targetSummary: pendingWrite.targetSummary,
-        replyToAuthor: pendingWrite.replyToAuthor
+        replyToAuthor: pendingWrite.replyToAuthor,
+        createdAt: pendingWrite.createdAt
       });
   }
 }

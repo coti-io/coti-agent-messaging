@@ -545,11 +545,6 @@ export function solveVerificationChallenge(challengeText: string): string {
   throw new Error(`Unable to solve verification challenge: ${challengeText}`);
 }
 
-function shouldPreferLlmVerification(challengeText: string): boolean {
-  const normalized = normalizeChallengeText(challengeText);
-  return /([a-z])\1{2,}/.test(normalized);
-}
-
 function selectOperands(numbers: readonly number[]): [number, number] {
   if (numbers.length <= 2) {
     return [numbers[0]!, numbers[1]!];
@@ -566,17 +561,28 @@ function selectOperands(numbers: readonly number[]): [number, number] {
 
 async function solveVerificationChallengeWithLlm(
   challengeText: string,
-  verificationLlmProvider: JsonLlmProvider
+  verificationLlmProvider: JsonLlmProvider,
+  options: {
+    rejectedAnswers?: readonly string[];
+    verificationHint?: string;
+  } = {}
 ): Promise<VerificationLlmResult> {
+  const rejectedAnswers = [...new Set((options.rejectedAnswers ?? []).filter(Boolean))];
+  const retryContext =
+    rejectedAnswers.length > 0 || options.verificationHint
+      ? `\nPreviously rejected answers: ${
+          rejectedAnswers.length > 0 ? rejectedAnswers.join(", ") : "none"
+        }\nVerification feedback: ${options.verificationHint ?? "none"}`
+      : "";
   const payload = await verificationLlmProvider.createJsonCompletion<{ answer: string }>([
     {
       role: "system",
       content:
-        "You solve distorted arithmetic verification challenges. The text often repeats letters or injects noise. Recover the intended two operands and operation, ignore incidental counts, do the arithmetic, and return strict JSON like {\"answer\":\"15.00\"}."
+        "You solve distorted arithmetic verification challenges. The text often repeats letters or injects noise. Recover exactly two operands and one operation from the challenge text, prefer explicit arithmetic words like total, sum, plus, minus, slows by, gains, and ignore incidental counts. If earlier answers were rejected, do not repeat them. Return strict JSON like {\"answer\":\"15.00\"}."
     },
     {
       role: "user",
-      content: `Raw challenge: ${challengeText}\nNormalized challenge: ${normalizeChallengeText(challengeText)}\nDenoised challenge: ${denoiseChallengeText(challengeText)}`
+      content: `Raw challenge: ${challengeText}\nNormalized challenge: ${normalizeChallengeText(challengeText)}\nDenoised challenge: ${denoiseChallengeText(challengeText)}${retryContext}`
     }
   ]);
 
@@ -625,17 +631,6 @@ export async function solveVerificationChallengeWithFallback(
           options.fetchImpl ?? fetch
         )
       : undefined);
-
-  if (verificationLlmProvider && shouldPreferLlmVerification(challengeText)) {
-    const result = await solveVerificationChallengeWithLlm(
-      challengeText,
-      verificationLlmProvider
-    );
-    return {
-      ...result,
-      confidence: "low"
-    };
-  }
 
   try {
     return {
@@ -961,21 +956,57 @@ export class MoltbookApiClient {
     const solved = await solveVerificationChallengeWithFallback(challengeText, {
       verificationLlmProvider: this.verificationLlmProvider
     });
+    const rejectedAnswers = new Set<string>();
     try {
       await this.verify(carrier.value.verification.verification_code, solved.answer);
     } catch (error) {
-      if (
-        solved.provider === "deterministic" &&
-        this.verificationLlmProvider &&
-        isIncorrectVerificationAnswer(error)
-      ) {
-        const llmSolved = await solveVerificationChallengeWithLlm(challengeText, this.verificationLlmProvider);
+      if (this.verificationLlmProvider && isIncorrectVerificationAnswer(error)) {
+        rejectedAnswers.add(solved.answer);
+        const firstHint = String(
+          (error.payload as Record<string, unknown> | undefined)?.hint ??
+            (error.payload as Record<string, unknown> | undefined)?.message ??
+            ""
+        );
+        const llmSolved = await solveVerificationChallengeWithLlm(
+          challengeText,
+          this.verificationLlmProvider,
+          {
+            rejectedAnswers: [...rejectedAnswers],
+            verificationHint: firstHint
+          }
+        );
         try {
           await this.verify(carrier.value.verification.verification_code, llmSolved.answer);
           return payload;
         } catch (llmError) {
+          if (isIncorrectVerificationAnswer(llmError)) {
+            rejectedAnswers.add(llmSolved.answer);
+            const secondHint = String(
+              (llmError.payload as Record<string, unknown> | undefined)?.hint ??
+                (llmError.payload as Record<string, unknown> | undefined)?.message ??
+                ""
+            );
+            const secondLlmSolved = await solveVerificationChallengeWithLlm(
+              challengeText,
+              this.verificationLlmProvider,
+              {
+                rejectedAnswers: [...rejectedAnswers],
+                verificationHint: secondHint
+              }
+            );
+            try {
+              await this.verify(carrier.value.verification.verification_code, secondLlmSolved.answer);
+              return payload;
+            } catch (secondLlmError) {
+              throw new Error(
+                `Failed to auto-verify ${carrier.type} challenge "${challengeText}" after answers "${[...rejectedAnswers, secondLlmSolved.answer].join('", "')}" via deterministic plus two LLM retries.`,
+                { cause: secondLlmError }
+              );
+            }
+          }
+
           throw new Error(
-            `Failed to auto-verify ${carrier.type} challenge "${challengeText}" after deterministic answer "${solved.answer}" and LLM retry "${llmSolved.answer}" via ${llmSolved.provider}.`,
+            `Failed to auto-verify ${carrier.type} challenge "${challengeText}" after deterministic answer "${solved.answer}" and first LLM retry "${llmSolved.answer}" via ${llmSolved.provider}.`,
             { cause: llmError }
           );
         }

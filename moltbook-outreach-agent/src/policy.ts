@@ -5,6 +5,7 @@ import type {
   MoltbookHomeResponse,
   MoltbookPost
 } from "./moltbook-api.js";
+import type { MoltbookOutreachPolicyConfig } from "./config.js";
 import type { ProductFactSheet } from "./product-facts.js";
 
 export interface RecentGeneratedArtifact {
@@ -36,8 +37,12 @@ export interface OutreachAgentState {
   lastHeartbeatAt?: string;
   lastPostAt?: string;
   lastCommentAt?: string;
+  dailyPostDate?: string;
+  dailyPostCount: number;
   dailyCommentDate?: string;
   dailyCommentCount: number;
+  dailyTopLevelCommentCount: number;
+  dailyReplyCount: number;
   upvotedPostIds: string[];
   followedAgentNames: string[];
   repliedCommentIds: string[];
@@ -149,7 +154,10 @@ export interface ReplyTarget {
 
 export function createInitialState(): OutreachAgentState {
   return {
+    dailyPostCount: 0,
     dailyCommentCount: 0,
+    dailyTopLevelCommentCount: 0,
+    dailyReplyCount: 0,
     upvotedPostIds: [],
     followedAgentNames: [],
     repliedCommentIds: [],
@@ -241,8 +249,13 @@ export function normalizeState(
     lastHeartbeatAt: state?.lastHeartbeatAt,
     lastPostAt: state?.lastPostAt,
     lastCommentAt: state?.lastCommentAt,
+    dailyPostDate: state?.dailyPostDate,
+    dailyPostCount: state?.dailyPostCount ?? initial.dailyPostCount,
     dailyCommentDate: state?.dailyCommentDate,
     dailyCommentCount: state?.dailyCommentCount ?? initial.dailyCommentCount,
+    dailyTopLevelCommentCount:
+      state?.dailyTopLevelCommentCount ?? initial.dailyTopLevelCommentCount,
+    dailyReplyCount: state?.dailyReplyCount ?? initial.dailyReplyCount,
     upvotedPostIds: state?.upvotedPostIds ?? initial.upvotedPostIds,
     followedAgentNames: state?.followedAgentNames ?? initial.followedAgentNames,
     repliedCommentIds: state?.repliedCommentIds ?? initial.repliedCommentIds,
@@ -252,9 +265,16 @@ export function normalizeState(
   };
 
   const today = now.toISOString().slice(0, 10);
+  if (normalized.dailyPostDate !== today) {
+    normalized.dailyPostDate = today;
+    normalized.dailyPostCount = 0;
+  }
+
   if (normalized.dailyCommentDate !== today) {
     normalized.dailyCommentDate = today;
     normalized.dailyCommentCount = 0;
+    normalized.dailyTopLevelCommentCount = 0;
+    normalized.dailyReplyCount = 0;
   }
 
   normalized.upvotedPostIds = uniqueRecent(normalized.upvotedPostIds, MAX_UPVOTED_POST_IDS);
@@ -313,8 +333,36 @@ export function commentCooldownMs(isNew: boolean): number {
   return (isNew ? 60 : 20) * 1_000;
 }
 
-export function commentLimitPerDay(isNew: boolean): number {
-  return isNew ? 20 : 50;
+function resolveOutreachPolicyConfig(
+  policy?: Partial<MoltbookOutreachPolicyConfig>
+): MoltbookOutreachPolicyConfig {
+  return {
+    commentLimitNewAgentPerDay:
+      policy?.commentLimitNewAgentPerDay ?? DEFAULT_OUTREACH_POLICY_CONFIG.commentLimitNewAgentPerDay,
+    commentLimitEstablishedPerDay:
+      policy?.commentLimitEstablishedPerDay ??
+      DEFAULT_OUTREACH_POLICY_CONFIG.commentLimitEstablishedPerDay,
+    postLimitNewAgentPerDay:
+      policy?.postLimitNewAgentPerDay ?? DEFAULT_OUTREACH_POLICY_CONFIG.postLimitNewAgentPerDay,
+    postLimitEstablishedPerDay:
+      policy?.postLimitEstablishedPerDay ?? DEFAULT_OUTREACH_POLICY_CONFIG.postLimitEstablishedPerDay
+  };
+}
+
+export function commentLimitPerDay(
+  isNew: boolean,
+  policy?: Partial<MoltbookOutreachPolicyConfig>
+): number {
+  const resolved = resolveOutreachPolicyConfig(policy);
+  return isNew ? resolved.commentLimitNewAgentPerDay : resolved.commentLimitEstablishedPerDay;
+}
+
+export function postLimitPerDay(
+  isNew: boolean,
+  policy?: Partial<MoltbookOutreachPolicyConfig>
+): number | undefined {
+  const resolved = resolveOutreachPolicyConfig(policy);
+  return isNew ? resolved.postLimitNewAgentPerDay : resolved.postLimitEstablishedPerDay;
 }
 
 export interface CommentReadiness {
@@ -322,8 +370,32 @@ export interface CommentReadiness {
   reason?: "daily_limit" | "paced_cooldown";
   waitMs: number;
   minimumIntervalMs: number;
+  limitPerDay: number;
+  usedCount: number;
   remainingComments: number;
 }
+
+export interface DailyCommentBreakdown {
+  total: number;
+  topLevelComments: number;
+  replies: number;
+}
+
+export interface PostReadiness {
+  allowed: boolean;
+  reason?: "daily_limit" | "cooldown";
+  waitMs: number;
+  cooldownMs: number;
+  limitPerDay?: number;
+  usedCount: number;
+}
+
+export const DEFAULT_OUTREACH_POLICY_CONFIG: MoltbookOutreachPolicyConfig = {
+  commentLimitNewAgentPerDay: 20,
+  commentLimitEstablishedPerDay: 50,
+  postLimitNewAgentPerDay: undefined,
+  postLimitEstablishedPerDay: undefined
+};
 
 export function postCooldownMs(isNew: boolean): number {
   return (isNew ? 120 : 30) * 60 * 1_000;
@@ -336,9 +408,10 @@ function msUntilNextUtcDay(now: Date): number {
 export function commentMinimumIntervalMs(
   state: OutreachAgentState,
   isNew: boolean,
+  policy?: Partial<MoltbookOutreachPolicyConfig>,
   now = new Date()
 ): number {
-  const remainingComments = Math.max(commentLimitPerDay(isNew) - state.dailyCommentCount, 0);
+  const remainingComments = Math.max(commentLimitPerDay(isNew, policy) - state.dailyCommentCount, 0);
   if (remainingComments === 0) {
     return Number.POSITIVE_INFINITY;
   }
@@ -350,20 +423,24 @@ export function commentMinimumIntervalMs(
 export function getCommentReadiness(
   state: OutreachAgentState,
   isNew: boolean,
+  policy?: Partial<MoltbookOutreachPolicyConfig>,
   now = new Date()
 ): CommentReadiness {
-  const remainingComments = Math.max(commentLimitPerDay(isNew) - state.dailyCommentCount, 0);
+  const limitPerDay = commentLimitPerDay(isNew, policy);
+  const remainingComments = Math.max(limitPerDay - state.dailyCommentCount, 0);
   if (remainingComments === 0) {
     return {
       allowed: false,
       reason: "daily_limit",
       waitMs: msUntilNextUtcDay(now),
       minimumIntervalMs: Number.POSITIVE_INFINITY,
+      limitPerDay,
+      usedCount: state.dailyCommentCount,
       remainingComments
     };
   }
 
-  const minimumIntervalMs = commentMinimumIntervalMs(state, isNew, now);
+  const minimumIntervalMs = commentMinimumIntervalMs(state, isNew, policy, now);
   const sinceLastCommentMs =
     (hoursSince(state.lastCommentAt, now) ?? Number.POSITIVE_INFINITY) * 3_600_000;
 
@@ -372,6 +449,8 @@ export function getCommentReadiness(
       allowed: true,
       waitMs: 0,
       minimumIntervalMs,
+      limitPerDay,
+      usedCount: state.dailyCommentCount,
       remainingComments
     };
   }
@@ -381,29 +460,87 @@ export function getCommentReadiness(
     reason: "paced_cooldown",
     waitMs: Math.max(minimumIntervalMs - sinceLastCommentMs, 0),
     minimumIntervalMs,
+    limitPerDay,
+    usedCount: state.dailyCommentCount,
     remainingComments
+  };
+}
+
+export function getDailyCommentBreakdown(state: OutreachAgentState): DailyCommentBreakdown {
+  return {
+    total: state.dailyCommentCount,
+    topLevelComments: state.dailyTopLevelCommentCount,
+    replies: state.dailyReplyCount
+  };
+}
+
+export function getPostReadiness(
+  state: OutreachAgentState,
+  isNew: boolean,
+  policy?: Partial<MoltbookOutreachPolicyConfig>,
+  now = new Date()
+): PostReadiness {
+  const limitPerDay = postLimitPerDay(isNew, policy);
+  if (limitPerDay !== undefined && state.dailyPostCount >= limitPerDay) {
+    return {
+      allowed: false,
+      reason: "daily_limit",
+      waitMs: msUntilNextUtcDay(now),
+      cooldownMs: postCooldownMs(isNew),
+      limitPerDay,
+      usedCount: state.dailyPostCount
+    };
+  }
+
+  const sinceLastPostHours = hoursSince(state.lastPostAt, now);
+  if (sinceLastPostHours === undefined) {
+    return {
+      allowed: true,
+      waitMs: 0,
+      cooldownMs: postCooldownMs(isNew),
+      limitPerDay,
+      usedCount: state.dailyPostCount
+    };
+  }
+
+  const cooldownMs = postCooldownMs(isNew);
+  const sinceLastPostMs = sinceLastPostHours * 3_600_000;
+  if (sinceLastPostMs >= cooldownMs) {
+    return {
+      allowed: true,
+      waitMs: 0,
+      cooldownMs,
+      limitPerDay,
+      usedCount: state.dailyPostCount
+    };
+  }
+
+  return {
+    allowed: false,
+    reason: "cooldown",
+    waitMs: Math.max(cooldownMs - sinceLastPostMs, 0),
+    cooldownMs,
+    limitPerDay,
+    usedCount: state.dailyPostCount
   };
 }
 
 export function canCreatePost(
   state: OutreachAgentState,
   isNew: boolean,
+  policy?: Partial<MoltbookOutreachPolicyConfig>,
   now = new Date()
 ): boolean {
-  const sinceLastPostHours = hoursSince(state.lastPostAt, now);
-  if (sinceLastPostHours === undefined) {
-    return true;
-  }
-
-  return sinceLastPostHours * 3_600_000 >= postCooldownMs(isNew);
+  return getPostReadiness(state, isNew, policy, now).allowed;
 }
 
 export function canComment(
   state: OutreachAgentState,
   isNew: boolean,
+  policy?: Partial<MoltbookOutreachPolicyConfig>,
   now = new Date()
 ): boolean {
-  return getCommentReadiness(state, isNew, now).allowed;
+  return getCommentReadiness(state, isNew, policy, now).allowed;
 }
 
 function scorePost(post: MoltbookPost): number {
@@ -441,6 +578,7 @@ export function planHeartbeatActions(input: {
   followingFeed?: MoltbookFeedResponse;
   exploreFeed?: MoltbookFeedResponse;
   state: OutreachAgentState;
+  policy?: Partial<MoltbookOutreachPolicyConfig>;
   factSheet: ProductFactSheet;
   profileCreatedAt?: string;
   now?: Date;
@@ -449,7 +587,7 @@ export function planHeartbeatActions(input: {
   const state = normalizeState(input.state, now);
   const actions: PlannedAction[] = [];
   const newAgent = isNewAgent(input.profileCreatedAt, state, now);
-  const commentReadiness = getCommentReadiness(state, newAgent, now);
+  const commentReadiness = getCommentReadiness(state, newAgent, input.policy, now);
   const pendingCommentPostIds = new Set(
     state.pendingWrites.filter((entry) => entry.type === "comment" && entry.postId).map((entry) => entry.postId!)
   );
@@ -530,8 +668,7 @@ export function planHeartbeatActions(input: {
       input.home.activity_on_your_posts.length === 0 ||
       commentReadiness.reason === "daily_limit"
     ) &&
-    canCreatePost(state, newAgent, now) &&
-    state.createdPostFingerprints.length < 50 &&
+    canCreatePost(state, newAgent, input.policy, now) &&
     !hasPendingPost
   ) {
     actions.push({
@@ -676,6 +813,7 @@ export function applyActionResult(
         fingerprint: string;
         title: string;
         content: string;
+        createdAt?: string;
       }
     | {
         type: "comment";
@@ -683,6 +821,7 @@ export function applyActionResult(
         content: string;
         targetSummary?: string;
         replyToAuthor?: string;
+        createdAt?: string;
       }
     | { type: "upvote_post"; postId: string }
     | { type: "follow_agent"; agentName: string },
@@ -690,10 +829,35 @@ export function applyActionResult(
 ): OutreachAgentState {
   const nextState = normalizeState(state, now);
   nextState.lastHeartbeatAt = now.toISOString();
+  const actionTimestamp =
+    "createdAt" in action && action.createdAt ? Date.parse(action.createdAt) : Number.NaN;
+  const actionTime = Number.isNaN(actionTimestamp) ? now : new Date(actionTimestamp);
+  const actionDay = actionTime.toISOString().slice(0, 10);
+  const today = now.toISOString().slice(0, 10);
+
+  const updateLastTimestamp = (
+    currentValue: string | undefined,
+    candidateValue: string
+  ): string => {
+    if (!currentValue) {
+      return candidateValue;
+    }
+
+    const currentTimestamp = Date.parse(currentValue);
+    const candidateTimestamp = Date.parse(candidateValue);
+    if (Number.isNaN(currentTimestamp) || Number.isNaN(candidateTimestamp)) {
+      return candidateValue;
+    }
+
+    return candidateTimestamp > currentTimestamp ? candidateValue : currentValue;
+  };
 
   switch (action.type) {
     case "create_post":
-      nextState.lastPostAt = now.toISOString();
+      nextState.lastPostAt = updateLastTimestamp(nextState.lastPostAt, actionTime.toISOString());
+      if (actionDay === today) {
+        nextState.dailyPostCount += 1;
+      }
       nextState.createdPostFingerprints = uniqueRecent(
         [...nextState.createdPostFingerprints, action.fingerprint],
         MAX_CREATED_POST_FINGERPRINTS
@@ -703,7 +867,7 @@ export function applyActionResult(
         type: "post",
         title: action.title,
         content: action.content,
-        createdAt: now.toISOString()
+        createdAt: actionTime.toISOString()
       };
       nextState.recentGeneratedArtifacts = [
         ...nextState.recentGeneratedArtifacts,
@@ -711,8 +875,15 @@ export function applyActionResult(
       ].slice(-MAX_RECENT_GENERATED_ARTIFACTS);
       return nextState;
     case "comment":
-      nextState.lastCommentAt = now.toISOString();
-      nextState.dailyCommentCount += 1;
+      nextState.lastCommentAt = updateLastTimestamp(nextState.lastCommentAt, actionTime.toISOString());
+      if (actionDay === today) {
+        nextState.dailyCommentCount += 1;
+        if (action.replyToAuthor) {
+          nextState.dailyReplyCount += 1;
+        } else {
+          nextState.dailyTopLevelCommentCount += 1;
+        }
+      }
       nextState.repliedCommentIds = uniqueRecent(
         [...nextState.repliedCommentIds, action.commentId],
         MAX_REPLIED_COMMENT_IDS
@@ -723,7 +894,7 @@ export function applyActionResult(
         content: action.content,
         targetId: action.commentId,
         targetSummary: action.targetSummary,
-        createdAt: now.toISOString()
+        createdAt: actionTime.toISOString()
       };
       nextState.recentGeneratedArtifacts = [
         ...nextState.recentGeneratedArtifacts,

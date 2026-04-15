@@ -404,7 +404,7 @@ test("heartbeat falls back to a post when the daily comment cap is exhausted", a
   try {
     const result = await runHeartbeat(config);
     assert.equal(createdPost?.id, "created-post-cap");
-    assert.match(result.summary, /daily comment cap reached/i);
+    assert.match(result.summary, /daily comment cap reached \(50\/50; comments 0, replies 0\)/i);
     assert.match(result.summary, /Posted "Private coordination beats public theater"/);
 
     const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
@@ -414,8 +414,107 @@ test("heartbeat falls back to a post when the daily comment cap is exhausted", a
       errors?: unknown[];
     };
     assert.equal(savedReport.status, "ok");
-    assert.equal(savedReport.skipped?.some((entry) => /daily comment cap reached/i.test(entry)), true);
+    assert.equal(
+      savedReport.skipped?.some((entry) =>
+        /daily comment cap reached \(50\/50; comments 0, replies 0\)/i.test(entry)
+      ),
+      true
+    );
     assert.equal(savedReport.performed?.some((entry) => /Posted/.test(entry)), true);
+    assert.deepEqual(savedReport.errors, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat reports the daily post cap with explicit usage", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-post-cap-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const today = new Date().toISOString().slice(0, 10);
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false,
+    policy: {
+      commentLimitNewAgentPerDay: 20,
+      commentLimitEstablishedPerDay: 50,
+      postLimitNewAgentPerDay: 1,
+      postLimitEstablishedPerDay: 1
+    }
+  };
+  await writeFile(
+    config.statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        dailyPostDate: today,
+        dailyPostCount: 1,
+        lastPostAt: `${today}T08:00:00.000Z`
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: []
+      });
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    const result = await runHeartbeat(config);
+    assert.match(result.summary, /daily post cap reached \(1\/1\)/i);
+
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      status?: string;
+      skipped?: string[];
+      errors?: unknown[];
+    };
+    assert.equal(savedReport.status, "ok");
+    assert.equal(
+      savedReport.skipped?.some((entry) => /daily post cap reached \(1\/1\)/i.test(entry)),
+      true
+    );
     assert.deepEqual(savedReport.errors, []);
   } finally {
     globalThis.fetch = originalFetch;
@@ -447,7 +546,13 @@ test("heartbeat reconciles pending writes from remote profile and avoids duplica
     defaultSubmolt: "general",
     apiKey: "test-api-key",
     dryRun: false,
-    autoVerify: false
+    autoVerify: false,
+    policy: {
+      commentLimitNewAgentPerDay: 20,
+      commentLimitEstablishedPerDay: 50,
+      postLimitNewAgentPerDay: 0,
+      postLimitEstablishedPerDay: 0
+    }
   };
   const initialState = {
     ...createInitialState(),
@@ -588,6 +693,118 @@ test("heartbeat reconciles pending writes from remote profile and avoids duplica
   }
 });
 
+test("heartbeat recovery preserves the original day for older replies", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-reconcile-old-day-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const replyContent =
+    "Recovered reply body about MCP tooling and earlier integration work.";
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false,
+    policy: {
+      commentLimitNewAgentPerDay: 20,
+      commentLimitEstablishedPerDay: 50,
+      postLimitNewAgentPerDay: 0,
+      postLimitEstablishedPerDay: 0
+    }
+  };
+  const initialState = {
+    ...createInitialState(),
+    pendingWrites: [
+      {
+        id: "reply:created-post-1:comment-old",
+        type: "reply" as const,
+        fingerprint: contentFingerprint(replyContent),
+        content: replyContent,
+        postId: "created-post-1",
+        targetCommentId: "comment-old",
+        targetSummary: "Old question",
+        replyToAuthor: "BuilderBot",
+        createdAt: "2026-03-15T13:49:00.000Z"
+      }
+    ]
+  };
+  await writeFile(config.statePath, JSON.stringify(initialState, null, 2), "utf8");
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/profile" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: { name: "OutreachBot" },
+        recentPosts: [],
+        recentComments: [
+          {
+            id: "remote-comment-old",
+            post_id: "created-post-1",
+            parent_id: "comment-old",
+            content: replyContent
+          }
+        ]
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: []
+      });
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    await runHeartbeat(config);
+    const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
+      pendingWrites?: unknown[];
+      dailyCommentCount?: number;
+      dailyReplyCount?: number;
+      lastCommentAt?: string;
+    };
+
+    assert.deepEqual(savedState.pendingWrites, []);
+    assert.equal(savedState.dailyCommentCount, 0);
+    assert.equal(savedState.dailyReplyCount, 0);
+    assert.equal(savedState.lastCommentAt, "2026-03-15T13:49:00.000Z");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("heartbeat reconciles pending comments by scanning the target thread when profile recents miss", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-thread-reconcile-"));
   const packageRoot = path.resolve(import.meta.dirname, "..", "..");
@@ -603,7 +820,13 @@ test("heartbeat reconciles pending comments by scanning the target thread when p
     defaultSubmolt: "general",
     apiKey: "test-api-key",
     dryRun: false,
-    autoVerify: false
+    autoVerify: false,
+    policy: {
+      commentLimitNewAgentPerDay: 20,
+      commentLimitEstablishedPerDay: 50,
+      postLimitNewAgentPerDay: 0,
+      postLimitEstablishedPerDay: 0
+    }
   };
   await writeFile(
     config.statePath,
@@ -732,7 +955,13 @@ test("heartbeat reconciles pending posts via search fallback when profile recent
     defaultSubmolt: "general",
     apiKey: "test-api-key",
     dryRun: false,
-    autoVerify: false
+    autoVerify: false,
+    policy: {
+      commentLimitNewAgentPerDay: 20,
+      commentLimitEstablishedPerDay: 50,
+      postLimitNewAgentPerDay: 0,
+      postLimitEstablishedPerDay: 0
+    }
   };
   await writeFile(
     config.statePath,

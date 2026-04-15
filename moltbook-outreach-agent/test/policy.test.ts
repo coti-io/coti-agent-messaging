@@ -3,11 +3,14 @@ import assert from "node:assert/strict";
 
 import {
   MAX_OUTREACH_STATE_BYTES,
+  applyActionResult,
   canCreatePost,
   commentMinimumIntervalMs,
   chooseReplyTarget,
   createInitialState,
+  getDailyCommentBreakdown,
   getCommentReadiness,
+  getPostReadiness,
   normalizeState,
   planHeartbeatActions,
   type OutreachAgentState
@@ -89,7 +92,54 @@ test("recent posts block new post creation during cooldown", () => {
     lastPostAt: "2026-03-11T11:50:00.000Z"
   };
 
-  assert.equal(canCreatePost(state, false, new Date("2026-03-11T12:00:00.000Z")), false);
+  assert.equal(canCreatePost(state, false, undefined, new Date("2026-03-11T12:00:00.000Z")), false);
+});
+
+test("daily post cap blocks new post creation once the limit is reached", () => {
+  const state: OutreachAgentState = {
+    ...createInitialState(),
+    dailyPostDate: "2026-03-11",
+    dailyPostCount: 2,
+    lastPostAt: "2026-03-11T10:00:00.000Z"
+  };
+
+  assert.equal(
+    canCreatePost(
+      state,
+      false,
+      {
+        commentLimitNewAgentPerDay: 30,
+        commentLimitEstablishedPerDay: 100,
+        postLimitNewAgentPerDay: 2,
+        postLimitEstablishedPerDay: 2
+      },
+      new Date("2026-03-11T12:00:00.000Z")
+    ),
+    false
+  );
+});
+
+test("post readiness reports explicit daily usage", () => {
+  const readiness = getPostReadiness(
+    {
+      ...createInitialState(),
+      dailyPostDate: "2026-03-11",
+      dailyPostCount: 1
+    },
+    false,
+    {
+      commentLimitNewAgentPerDay: 30,
+      commentLimitEstablishedPerDay: 50,
+      postLimitNewAgentPerDay: 1,
+      postLimitEstablishedPerDay: 1
+    },
+    new Date("2026-03-11T12:00:00.000Z")
+  );
+
+  assert.equal(readiness.allowed, false);
+  assert.equal(readiness.reason, "daily_limit");
+  assert.equal(readiness.usedCount, 1);
+  assert.equal(readiness.limitPerDay, 1);
 });
 
 test("comment readiness paces authored replies across the remaining day", () => {
@@ -101,11 +151,85 @@ test("comment readiness paces authored replies across the remaining day", () => 
     lastCommentAt: "2026-03-11T12:00:00.000Z"
   };
 
-  const readiness = getCommentReadiness(state, false, now);
+  const readiness = getCommentReadiness(state, false, undefined, now);
 
   assert.equal(readiness.allowed, false);
   assert.equal(readiness.reason, "paced_cooldown");
-  assert.equal(commentMinimumIntervalMs(state, false, now) > 10 * 60 * 1_000, true);
+  assert.equal(readiness.usedCount, 1);
+  assert.equal(readiness.limitPerDay, 50);
+  assert.equal(commentMinimumIntervalMs(state, false, undefined, now) > 10 * 60 * 1_000, true);
+});
+
+test("applyActionResult tracks top-level comments and replies separately", () => {
+  const now = new Date("2026-03-11T12:10:00.000Z");
+  let state = applyActionResult(
+    createInitialState(),
+    {
+      type: "comment",
+      commentId: "comment-1",
+      content: "Top-level comment"
+    },
+    now
+  );
+  state = applyActionResult(
+    state,
+    {
+      type: "comment",
+      commentId: "reply-1",
+      content: "Reply",
+      replyToAuthor: "BuilderBot"
+    },
+    now
+  );
+
+  assert.deepEqual(getDailyCommentBreakdown(state), {
+    total: 2,
+    topLevelComments: 1,
+    replies: 1
+  });
+});
+
+test("recovering an older comment does not inflate today's comment cap", () => {
+  const now = new Date("2026-03-11T12:10:00.000Z");
+  const state = applyActionResult(
+    createInitialState(),
+    {
+      type: "comment",
+      commentId: "old-comment",
+      content: "Recovered old comment",
+      createdAt: "2026-03-10T23:55:00.000Z"
+    },
+    now
+  );
+
+  assert.deepEqual(getDailyCommentBreakdown(state), {
+    total: 0,
+    topLevelComments: 0,
+    replies: 0
+  });
+  assert.equal(state.lastCommentAt, "2026-03-10T23:55:00.000Z");
+});
+
+test("custom policy config overrides the default daily comment cap", () => {
+  const now = new Date("2026-03-11T12:10:00.000Z");
+  const state: OutreachAgentState = {
+    ...createInitialState(),
+    dailyCommentDate: "2026-03-11",
+    dailyCommentCount: 80,
+    lastCommentAt: "2026-03-11T04:35:26.922Z"
+  };
+
+  const readiness = getCommentReadiness(
+    state,
+    false,
+    {
+      commentLimitNewAgentPerDay: 30,
+      commentLimitEstablishedPerDay: 100
+    },
+    now
+  );
+
+  assert.equal(readiness.allowed, true);
 });
 
 test("planning can create a post when replies are present but the daily cap is exhausted", () => {
@@ -140,6 +264,57 @@ test("planning can create a post when replies are present but the daily cap is e
 
   assert.equal(actions.some((action) => action.type === "reply_to_activity"), true);
   assert.equal(actions.some((action) => action.type === "create_post"), true);
+});
+
+test("planning does not block posts after fifty historical post fingerprints", () => {
+  const actions = planHeartbeatActions({
+    home: {
+      your_account: { name: "OutreachBot" },
+      activity_on_your_posts: [],
+      your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+      posts_from_accounts_you_follow: { posts: [] }
+    },
+    exploreFeed: {
+      posts: []
+    },
+    state: {
+      ...createInitialState(),
+      createdPostFingerprints: Array.from({ length: 50 }, (_, index) => `post-${index}`)
+    },
+    factSheet,
+    now: new Date("2026-03-11T12:10:00.000Z")
+  });
+
+  assert.equal(actions.some((action) => action.type === "create_post"), true);
+});
+
+test("planning skips create_post when the daily post cap is exhausted", () => {
+  const actions = planHeartbeatActions({
+    home: {
+      your_account: { name: "OutreachBot" },
+      activity_on_your_posts: [],
+      your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+      posts_from_accounts_you_follow: { posts: [] }
+    },
+    exploreFeed: {
+      posts: []
+    },
+    state: {
+      ...createInitialState(),
+      dailyPostDate: "2026-03-11",
+      dailyPostCount: 2
+    },
+    policy: {
+      commentLimitNewAgentPerDay: 30,
+      commentLimitEstablishedPerDay: 100,
+      postLimitNewAgentPerDay: 2,
+      postLimitEstablishedPerDay: 2
+    },
+    factSheet,
+    now: new Date("2026-03-11T12:10:00.000Z")
+  });
+
+  assert.equal(actions.some((action) => action.type === "create_post"), false);
 });
 
 test("normalizeState drops unknown persisted keys", () => {

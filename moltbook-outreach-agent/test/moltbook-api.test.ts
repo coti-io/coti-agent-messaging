@@ -193,11 +193,11 @@ test("uses an injected verification provider before any HTTP fallback", async ()
   });
 });
 
-test("prefers the LLM for noisy verification challenges", async () => {
+test("still prefers deterministic solving for noisy challenges when it can recover the arithmetic", async () => {
   let llmCalls = 0;
 
   const result = await solveVerificationChallengeWithFallback(
-    "A] lOoObsT-Er^ swImS[ iN~ cOoLmY wAtEr| anD um, cLaW fOrCeS <thIrTy fIvE> + {sEeVeNtEeN} nOoToNs~ duR|inG tErRiToRy fIgHtS, hOw/ mUcH ToTaL fOrCe?",
+    "A] LoOoBb-SsTtEr] V eLlOoOwWcCiItTyY] tW/eNn-TtY] tH/rEe] aNd~ Um] LoO b-SsTtEr] pUuSsHh] oF] sEeVvEeN] NnOoOtToOnNs] }wHaT] iS] tHe] ToTaL] FoRcE/??",
     {
       verificationLlm: {
         apiKey: "llm-secret",
@@ -228,15 +228,15 @@ test("prefers the LLM for noisy verification challenges", async () => {
     }
   );
 
-  assert.equal(llmCalls, 1);
+  assert.equal(llmCalls, 0);
   assert.deepEqual(result, {
-    answer: "52.00",
-    provider: "llm:solver-mini",
-    confidence: "low"
+    answer: "30.00",
+    provider: "deterministic",
+    confidence: "high"
   });
 });
 
-test("auto-verify retries once with the LLM after an incorrect deterministic answer", async () => {
+test("auto-verify retries twice with the LLM after an incorrect deterministic answer", async () => {
   const verifyAnswers: string[] = [];
   let llmCalls = 0;
 
@@ -280,11 +280,12 @@ test("auto-verify retries once with the LLM after an incorrect deterministic ans
       if (requestUrl.pathname === "/api/v1/verify" && method === "POST") {
         const body = JSON.parse(String(init?.body ?? "{}")) as { answer?: string };
         verifyAnswers.push(body.answer ?? "");
-        if (verifyAnswers.length === 1) {
+        if (verifyAnswers.length <= 2) {
           return new Response(
             JSON.stringify({
               success: false,
-              message: "Incorrect answer"
+              message: "Incorrect answer",
+              hint: 'Your answer was incorrect. Double-check your math — answers must be to 2 decimal places (e.g., "15.00").'
             }),
             {
               status: 400,
@@ -312,7 +313,7 @@ test("auto-verify retries once with the LLM after an incorrect deterministic ans
           choices: [
             {
               message: {
-                content: JSON.stringify({ answer: "42.00" })
+                content: JSON.stringify({ answer: llmCalls === 1 ? "42.00" : "43.00" })
               }
             }
           ]
@@ -329,7 +330,7 @@ test("auto-verify retries once with the LLM after an incorrect deterministic ans
 
   const result = await client.createComment("post-1", { content: "hello" });
   assert.equal(result.success, true);
-  assert.deepEqual(verifyAnswers, ["15.00", "42.00"]);
-  assert.equal(llmCalls, 1);
+  assert.deepEqual(verifyAnswers, ["15.00", "42.00", "43.00"]);
+  assert.equal(llmCalls, 2);
 });
 

@@ -34,12 +34,20 @@ export interface RuntimePaths {
   heartbeatReportPath: string;
 }
 
+export interface MoltbookOutreachPolicyConfig {
+  commentLimitNewAgentPerDay: number;
+  commentLimitEstablishedPerDay: number;
+  postLimitNewAgentPerDay?: number;
+  postLimitEstablishedPerDay?: number;
+}
+
 export interface MoltbookRuntimeConfig extends RuntimePaths {
   moltbookBaseUrl: string;
   defaultSubmolt: string;
   apiKey?: string;
   dryRun: boolean;
   autoVerify: boolean;
+  policy?: MoltbookOutreachPolicyConfig;
   forceWriteMode?: "create_post" | "comment_on_post" | "reply_to_activity";
   llm?: ChatClientConfig;
   verificationLlm?: ChatClientConfig;
@@ -89,6 +97,15 @@ function parseNumber(value: string | undefined, fallback: number): number {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseOptionalNumber(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function parseForceWriteMode(
@@ -259,6 +276,20 @@ export async function loadRuntimeConfig(
     apiKey,
     dryRun: parseBoolean(process.env.MOLTBOOK_DRY_RUN, false),
     autoVerify: parseBoolean(process.env.MOLTBOOK_AUTO_VERIFY, true),
+    policy: {
+      commentLimitNewAgentPerDay: parseNumber(
+        process.env.MOLTBOOK_COMMENT_LIMIT_NEW_AGENT_PER_DAY,
+        20
+      ),
+      commentLimitEstablishedPerDay: parseNumber(
+        process.env.MOLTBOOK_COMMENT_LIMIT_ESTABLISHED_PER_DAY,
+        50
+      ),
+      postLimitNewAgentPerDay: parseOptionalNumber(process.env.MOLTBOOK_POST_LIMIT_NEW_AGENT_PER_DAY),
+      postLimitEstablishedPerDay: parseOptionalNumber(
+        process.env.MOLTBOOK_POST_LIMIT_ESTABLISHED_PER_DAY
+      )
+    },
     forceWriteMode: parseForceWriteMode(process.env.MOLTBOOK_FORCE_WRITE_MODE),
     llm,
     llmBridge,

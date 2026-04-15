@@ -317,8 +317,72 @@ export function commentLimitPerDay(isNew: boolean): number {
   return isNew ? 20 : 50;
 }
 
+export interface CommentReadiness {
+  allowed: boolean;
+  reason?: "daily_limit" | "paced_cooldown";
+  waitMs: number;
+  minimumIntervalMs: number;
+  remainingComments: number;
+}
+
 export function postCooldownMs(isNew: boolean): number {
   return (isNew ? 120 : 30) * 60 * 1_000;
+}
+
+function msUntilNextUtcDay(now: Date): number {
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1) - now.getTime();
+}
+
+export function commentMinimumIntervalMs(
+  state: OutreachAgentState,
+  isNew: boolean,
+  now = new Date()
+): number {
+  const remainingComments = Math.max(commentLimitPerDay(isNew) - state.dailyCommentCount, 0);
+  if (remainingComments === 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const pacedIntervalMs = Math.ceil(msUntilNextUtcDay(now) / remainingComments);
+  return Math.max(commentCooldownMs(isNew), pacedIntervalMs);
+}
+
+export function getCommentReadiness(
+  state: OutreachAgentState,
+  isNew: boolean,
+  now = new Date()
+): CommentReadiness {
+  const remainingComments = Math.max(commentLimitPerDay(isNew) - state.dailyCommentCount, 0);
+  if (remainingComments === 0) {
+    return {
+      allowed: false,
+      reason: "daily_limit",
+      waitMs: msUntilNextUtcDay(now),
+      minimumIntervalMs: Number.POSITIVE_INFINITY,
+      remainingComments
+    };
+  }
+
+  const minimumIntervalMs = commentMinimumIntervalMs(state, isNew, now);
+  const sinceLastCommentMs =
+    (hoursSince(state.lastCommentAt, now) ?? Number.POSITIVE_INFINITY) * 3_600_000;
+
+  if (sinceLastCommentMs >= minimumIntervalMs) {
+    return {
+      allowed: true,
+      waitMs: 0,
+      minimumIntervalMs,
+      remainingComments
+    };
+  }
+
+  return {
+    allowed: false,
+    reason: "paced_cooldown",
+    waitMs: Math.max(minimumIntervalMs - sinceLastCommentMs, 0),
+    minimumIntervalMs,
+    remainingComments
+  };
 }
 
 export function canCreatePost(
@@ -339,12 +403,7 @@ export function canComment(
   isNew: boolean,
   now = new Date()
 ): boolean {
-  if (state.dailyCommentCount >= commentLimitPerDay(isNew)) {
-    return false;
-  }
-
-  const sinceLastCommentMs = (hoursSince(state.lastCommentAt, now) ?? Number.POSITIVE_INFINITY) * 3_600_000;
-  return sinceLastCommentMs >= commentCooldownMs(isNew);
+  return getCommentReadiness(state, isNew, now).allowed;
 }
 
 function scorePost(post: MoltbookPost): number {
@@ -390,6 +449,7 @@ export function planHeartbeatActions(input: {
   const state = normalizeState(input.state, now);
   const actions: PlannedAction[] = [];
   const newAgent = isNewAgent(input.profileCreatedAt, state, now);
+  const commentReadiness = getCommentReadiness(state, newAgent, now);
   const pendingCommentPostIds = new Set(
     state.pendingWrites.filter((entry) => entry.type === "comment" && entry.postId).map((entry) => entry.postId!)
   );
@@ -453,7 +513,7 @@ export function planHeartbeatActions(input: {
       Boolean(postId) &&
       !pendingCommentPostIds.has(postId!) &&
       scorePost(post) >= 4 &&
-      canComment(state, newAgent, now)
+      commentReadiness.allowed
     );
   });
 
@@ -466,14 +526,21 @@ export function planHeartbeatActions(input: {
   }
 
   if (
-    input.home.activity_on_your_posts.length === 0 &&
+    (
+      input.home.activity_on_your_posts.length === 0 ||
+      commentReadiness.reason === "daily_limit"
+    ) &&
     canCreatePost(state, newAgent, now) &&
     state.createdPostFingerprints.length < 50 &&
     !hasPendingPost
   ) {
     actions.push({
       type: "create_post",
-      reason: "No urgent replies are waiting and we have room for one substantive outreach post."
+      reason: commentReadiness.reason === "daily_limit"
+        ? "Reply demand exists, but the daily comment budget is spent, so this heartbeat should keep outreach moving with one substantive post."
+        : commentReadiness.allowed
+        ? "No urgent replies are waiting and we have room for one substantive outreach post."
+        : "No urgent replies are waiting and we have room for one substantive outreach post."
     });
   }
 

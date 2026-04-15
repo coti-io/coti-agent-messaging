@@ -18,9 +18,10 @@ import {
   applyActionResult,
   canComment,
   createInitialState,
-  listReplyTargets,
   contentFingerprint,
+  getCommentReadiness,
   isNewAgent,
+  listReplyTargets,
   normalizeState,
   planHeartbeatActions,
   type PendingWrite,
@@ -110,6 +111,24 @@ function formatSummary(performed: string[], skipped: string[]): string {
   return parts.join(" ");
 }
 
+function describeCommentBlockReason(
+  state: OutreachAgentState,
+  isNew: boolean,
+  targetLabel: string
+): string {
+  const readiness = getCommentReadiness(state, isNew);
+  if (readiness.reason === "daily_limit") {
+    return `daily comment cap reached; skipped "${targetLabel}" until the next UTC day.`;
+  }
+
+  if (readiness.reason === "paced_cooldown") {
+    const waitMinutes = Math.max(1, Math.ceil(readiness.waitMs / 60_000));
+    return `comment pacing blocked "${targetLabel}" for about ${waitMinutes} more minute${waitMinutes === 1 ? "" : "s"}.`;
+  }
+
+  return `comment gating blocked "${targetLabel}".`;
+}
+
 export async function runHeartbeat(
   configInput?: MoltbookRuntimeConfig
 ): Promise<HeartbeatResult> {
@@ -172,7 +191,7 @@ export async function runHeartbeat(
         switch (action.type) {
           case "reply_to_activity": {
             if (!canComment(state, newAgent)) {
-              skipped.push(`comment cooldown blocked a reply on "${action.activity.post_title}".`);
+              skipped.push(describeCommentBlockReason(state, newAgent, action.activity.post_title));
               break;
             }
 
@@ -256,7 +275,7 @@ export async function runHeartbeat(
             break;
           case "comment_on_post": {
             if (!canComment(state, newAgent)) {
-              skipped.push(`comment cooldown blocked a reply on "${action.post.title}".`);
+              skipped.push(describeCommentBlockReason(state, newAgent, action.post.title));
               break;
             }
 

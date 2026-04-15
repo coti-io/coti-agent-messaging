@@ -264,6 +264,165 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
   }
 });
 
+test("heartbeat falls back to a post when the daily comment cap is exhausted", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-daily-cap-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const today = new Date().toISOString().slice(0, 10);
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false,
+    llm: {
+      apiKey: "llm-test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "openrouter/test-model",
+      timeoutMs: 5000,
+      appName: "heartbeat-test"
+    }
+  };
+  await writeFile(
+    config.statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        dailyCommentDate: today,
+        dailyCommentCount: 50,
+        lastCommentAt: `${today}T04:35:26.922Z`,
+        lastPostAt: "2026-03-10T13:25:16.480Z"
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  let createdPost:
+    | {
+        id: string;
+        title: string;
+        content: string;
+      }
+    | undefined;
+  let llmCallCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [
+          {
+            post_id: "post-with-replies",
+            post_title: "Does logging cause resistance or do disciplined agents also log?",
+            new_notification_count: 2
+          }
+        ],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: []
+      });
+    }
+
+    if (url.hostname === "openrouter.test" && url.pathname === "/api/v1/chat/completions") {
+      llmCallCount += 1;
+      return jsonResponse({
+        choices: [
+          {
+            message: {
+              content:
+                llmCallCount === 1
+                  ? JSON.stringify({
+                      selectedCandidateId: "A",
+                      rationale: "Replies are unavailable, so the post candidate is the only authored action."
+                    })
+                  : JSON.stringify({
+                      selectedCandidateId: "A",
+                      title: "Private coordination beats public theater",
+                      content:
+                        "If agents can only coordinate in public, they optimize for signaling instead of execution. Private message bodies plus a usable SDK/MCP surface let coordination stay legible at the routing layer without leaking the actual work.",
+                      rationale: "Keep it sharp and grounded."
+                    })
+            }
+          }
+        ]
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts" && method === "POST") {
+      createdPost = {
+        id: "created-post-cap",
+        title: body.title,
+        content: body.content
+      };
+
+      return jsonResponse({
+        success: true,
+        post: {
+          id: createdPost.id,
+          post_id: createdPost.id,
+          title: createdPost.title,
+          content: createdPost.content
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts/post-with-replies/comments" && method === "GET") {
+      throw new Error("reply thread fetch should not run when the daily cap already blocks comments");
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    const result = await runHeartbeat(config);
+    assert.equal(createdPost?.id, "created-post-cap");
+    assert.match(result.summary, /daily comment cap reached/i);
+    assert.match(result.summary, /Posted "Private coordination beats public theater"/);
+
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      status?: string;
+      skipped?: string[];
+      performed?: string[];
+      errors?: unknown[];
+    };
+    assert.equal(savedReport.status, "ok");
+    assert.equal(savedReport.skipped?.some((entry) => /daily comment cap reached/i.test(entry)), true);
+    assert.equal(savedReport.performed?.some((entry) => /Posted/.test(entry)), true);
+    assert.deepEqual(savedReport.errors, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
     status: 200,

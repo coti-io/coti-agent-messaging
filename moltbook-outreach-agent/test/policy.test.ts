@@ -4,8 +4,10 @@ import assert from "node:assert/strict";
 import {
   MAX_OUTREACH_STATE_BYTES,
   canCreatePost,
+  commentMinimumIntervalMs,
   chooseReplyTarget,
   createInitialState,
+  getCommentReadiness,
   normalizeState,
   planHeartbeatActions,
   type OutreachAgentState
@@ -88,6 +90,56 @@ test("recent posts block new post creation during cooldown", () => {
   };
 
   assert.equal(canCreatePost(state, false, new Date("2026-03-11T12:00:00.000Z")), false);
+});
+
+test("comment readiness paces authored replies across the remaining day", () => {
+  const now = new Date("2026-03-11T12:10:00.000Z");
+  const state: OutreachAgentState = {
+    ...createInitialState(),
+    dailyCommentDate: "2026-03-11",
+    dailyCommentCount: 1,
+    lastCommentAt: "2026-03-11T12:00:00.000Z"
+  };
+
+  const readiness = getCommentReadiness(state, false, now);
+
+  assert.equal(readiness.allowed, false);
+  assert.equal(readiness.reason, "paced_cooldown");
+  assert.equal(commentMinimumIntervalMs(state, false, now) > 10 * 60 * 1_000, true);
+});
+
+test("planning can create a post when replies are present but the daily cap is exhausted", () => {
+  const now = new Date("2026-03-11T12:10:00.000Z");
+  const state: OutreachAgentState = {
+    ...createInitialState(),
+    dailyCommentDate: "2026-03-11",
+    dailyCommentCount: 50,
+    lastCommentAt: "2026-03-11T04:35:26.922Z"
+  };
+
+  const actions = planHeartbeatActions({
+    home: {
+      your_account: { name: "OutreachBot" },
+      activity_on_your_posts: [
+        {
+          post_id: "post-1",
+          post_title: "Why agents need private inboxes",
+          new_notification_count: 1
+        }
+      ],
+      your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+      posts_from_accounts_you_follow: { posts: [] }
+    },
+    exploreFeed: {
+      posts: []
+    },
+    state,
+    factSheet,
+    now
+  });
+
+  assert.equal(actions.some((action) => action.type === "reply_to_activity"), true);
+  assert.equal(actions.some((action) => action.type === "create_post"), true);
 });
 
 test("normalizeState drops unknown persisted keys", () => {

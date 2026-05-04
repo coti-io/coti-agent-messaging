@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 
+import { readFile } from "node:fs/promises";
+
 import { runBridgeServerCli } from "./bridge-server.js";
 import { stopBridgeServer } from "./bridge-stop.js";
 import { loadRuntimeConfig, saveStoredCredentials } from "./config.js";
 import { runHeartbeat } from "./heartbeat.js";
 import { MoltbookApiClient } from "./moltbook-api.js";
+import {
+  createInitialState,
+  getEngagementSummary,
+  normalizeState,
+  type OutreachAgentState
+} from "./policy.js";
 import { loadProductFacts } from "./product-facts.js";
 
 function getArg(flag: string): string | undefined {
@@ -20,11 +28,26 @@ function printUsage(): void {
   console.log(`Usage:
   coti-moltbook-outreach-agent register --name NAME --description DESCRIPTION
   coti-moltbook-outreach-agent status
+  coti-moltbook-outreach-agent engagements
   coti-moltbook-outreach-agent delete-post --post-id POST_ID
   coti-moltbook-outreach-agent facts
   coti-moltbook-outreach-agent bridge-server
   coti-moltbook-outreach-agent bridge-stop
   coti-moltbook-outreach-agent heartbeat`);
+}
+
+async function loadLocalState(statePath: string): Promise<OutreachAgentState> {
+  try {
+    const raw = await readFile(statePath, "utf8");
+    return normalizeState(JSON.parse(raw) as Partial<OutreachAgentState>);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      return createInitialState();
+    }
+
+    throw error;
+  }
 }
 
 async function run(): Promise<void> {
@@ -79,6 +102,12 @@ async function run(): Promise<void> {
       });
       const [status, me] = await Promise.all([api.getStatus(), api.getMe()]);
       console.log(JSON.stringify({ status, me }, null, 2));
+      return;
+    }
+    case "engagements": {
+      const config = await loadRuntimeConfig();
+      const state = await loadLocalState(config.statePath);
+      console.log(JSON.stringify(getEngagementSummary(state), null, 2));
       return;
     }
     case "delete-post": {

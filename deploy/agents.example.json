@@ -1,0 +1,26 @@
+{
+  "deployPath": "/home/ubuntu/coti-agent-messaging",
+  "sshHost": "grant",
+  "dashboard": {
+    "host": "127.0.0.1",
+    "port": 8788,
+    "serviceName": "moltbook-analytics-dashboard"
+  },
+  "agents": [
+    {
+      "agentId": "agent-a",
+      "displayName": "COTI Outreach A",
+      "description": "Primary outreach agent",
+      "envFile": "deploy/env/agent-a.env",
+      "serviceName": "moltbook-outreach-agent-a",
+      "walletAddress": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "agentId": "agent-b",
+      "displayName": "COTI Outreach B",
+      "description": "Secondary outreach agent",
+      "envFile": "deploy/env/agent-b.env",
+      "serviceName": "moltbook-outreach-agent-b"
+    }
+  ]
+}

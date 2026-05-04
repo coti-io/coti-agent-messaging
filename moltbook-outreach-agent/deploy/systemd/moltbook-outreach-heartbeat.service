@@ -10,6 +10,7 @@ Group=__REMOTE_USER__
 WorkingDirectory=__PACKAGE_DIR__
 Environment=HOME=/home/__REMOTE_USER__
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=MOLTBOOK_AGENT_ID=__AGENT_ID__
 Environment=MOLTBOOK_CREDENTIALS_PATH=__RUNTIME_DIR__/credentials.json
 Environment=MOLTBOOK_STATE_PATH=__RUNTIME_DIR__/state.json
 Environment=MOLTBOOK_HEARTBEAT_REPORT_PATH=__RUNTIME_DIR__/last-heartbeat.json

@@ -136,6 +136,7 @@ install_unit_from_template() {
     -e "s|__ENV_FILE__|$escaped_env_file|g" \
     -e "s|__LOCK_FILE__|$escaped_lock_file|g" \
     -e "s|__SERVICE_NAME__|$escaped_service_name|g" \
+    -e "s|__AGENT_ID__|moltbook-outreach|g" \
     "$template_path" | sudo -n tee "$output_path" >/dev/null
 }
 

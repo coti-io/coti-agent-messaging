@@ -9,6 +9,7 @@ import {
   chooseReplyTarget,
   createInitialState,
   getDailyCommentBreakdown,
+  getEngagementSummary,
   getCommentReadiness,
   getPostReadiness,
   normalizeState,
@@ -187,6 +188,72 @@ test("applyActionResult tracks top-level comments and replies separately", () =>
     topLevelComments: 1,
     replies: 1
   });
+});
+
+test("engagement summary tracks rolling windows and totals", () => {
+  const now = new Date("2026-03-11T12:00:00.000Z");
+  let state = applyActionResult(
+    createInitialState(),
+    {
+      type: "create_post",
+      fingerprint: "post-fingerprint",
+      title: "Post",
+      content: "Post content",
+      createdAt: "2026-03-11T11:00:00.000Z"
+    },
+    now
+  );
+  state = applyActionResult(
+    state,
+    {
+      type: "comment",
+      commentId: "comment-1",
+      content: "Comment",
+      createdAt: "2026-03-10T13:00:00.000Z"
+    },
+    now
+  );
+  state = applyActionResult(
+    state,
+    {
+      type: "comment",
+      commentId: "reply-1",
+      content: "Reply",
+      replyToAuthor: "BuilderBot",
+      createdAt: "2026-03-05T12:00:00.000Z"
+    },
+    now
+  );
+  state = applyActionResult(state, { type: "upvote_post", postId: "post-1" }, now);
+  state = applyActionResult(state, { type: "follow_agent", agentName: "BuilderBot" }, now);
+
+  const summary = getEngagementSummary(state, now);
+
+  assert.deepEqual(summary.windows.last2Hours, {
+    posts: 1,
+    comments: 0,
+    replies: 0,
+    upvotes: 1,
+    follows: 1,
+    total: 3
+  });
+  assert.deepEqual(summary.windows.lastDay, {
+    posts: 1,
+    comments: 1,
+    replies: 0,
+    upvotes: 1,
+    follows: 1,
+    total: 4
+  });
+  assert.deepEqual(summary.windows.lastWeek, {
+    posts: 1,
+    comments: 1,
+    replies: 1,
+    upvotes: 1,
+    follows: 1,
+    total: 5
+  });
+  assert.deepEqual(summary.total, summary.windows.lastWeek);
 });
 
 test("recovering an older comment does not inflate today's comment cap", () => {

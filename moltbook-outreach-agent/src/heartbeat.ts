@@ -20,12 +20,14 @@ import {
   createInitialState,
   contentFingerprint,
   getDailyCommentBreakdown,
+  getEngagementSummary,
   getCommentReadiness,
   getPostReadiness,
   isNewAgent,
   listReplyTargets,
   normalizeState,
   planHeartbeatActions,
+  type EngagementSummary,
   type PendingWrite,
   type OutreachAgentState,
   type PlannedAction
@@ -44,6 +46,7 @@ interface HeartbeatErrorEntry {
 }
 
 interface HeartbeatReport {
+  agentId?: string;
   startedAt: string;
   finishedAt?: string;
   status: "running" | "ok" | "failed";
@@ -65,6 +68,7 @@ interface HeartbeatReport {
     targetSummary?: string;
   }>;
   selectedWriteDecision?: GeneratedWriteDecision;
+  engagementSummary?: EngagementSummary;
 }
 
 const PENDING_WRITE_MAX_RECONCILIATION_MISSES = 3;
@@ -169,6 +173,7 @@ export async function runHeartbeat(
   });
   const startedAt = new Date().toISOString();
   const report: HeartbeatReport = {
+    agentId: config.agentId,
     startedAt,
     status: "running",
     dryRun: config.dryRun,
@@ -191,7 +196,10 @@ export async function runHeartbeat(
     const exploreFeed = await api.getFeed({ sort: "new", limit: 10 });
     state = normalizeState(storedState);
     const persistState = async (nextState: OutreachAgentState): Promise<void> => {
-      state = normalizeState(nextState);
+      state = normalizeState({
+        ...nextState,
+        agentId: config.agentId ?? nextState.agentId
+      });
       await saveState(config.statePath, state);
     };
     state = await reconcilePendingWrites(
@@ -452,6 +460,7 @@ export async function runHeartbeat(
     state = normalizeState(
       {
         ...state,
+        agentId: config.agentId ?? state.agentId,
         lastHeartbeatAt: new Date().toISOString()
       },
       new Date()
@@ -468,20 +477,21 @@ export async function runHeartbeat(
     report.summary = result.summary;
     report.performed = result.performed;
     report.skipped = result.skipped;
+    report.engagementSummary = getEngagementSummary(state);
     return result;
   } catch (error) {
-    await saveState(
-      config.statePath,
-      normalizeState(
-        {
-          ...state,
-          lastHeartbeatAt: new Date().toISOString()
-        },
-        new Date()
-      )
+    state = normalizeState(
+      {
+        ...state,
+        agentId: config.agentId ?? state.agentId,
+        lastHeartbeatAt: new Date().toISOString()
+      },
+      new Date()
     );
+    await saveState(config.statePath, state);
     report.status = "failed";
     report.errors.push(toHeartbeatError("heartbeat", error));
+    report.engagementSummary = getEngagementSummary(state);
     throw error;
   } finally {
     report.finishedAt = new Date().toISOString();

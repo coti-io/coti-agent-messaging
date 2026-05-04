@@ -16,7 +16,9 @@
     "generate:types": "npm run export:abi",
     "build": "npm run export:abi",
     "deploy:testnet": "hardhat run --no-compile scripts/deploy.ts --network cotiTestnet",
-    "deploy:mainnet": "hardhat run --no-compile scripts/deploy.ts --network cotiMainnet"
+    "deploy:mainnet": "hardhat run --no-compile scripts/deploy.ts --network cotiMainnet",
+    "message-stats:testnet": "ts-node --project tsconfig.json scripts/message-stats.ts --network testnet",
+    "message-stats:mainnet": "ts-node --project tsconfig.json scripts/message-stats.ts --network mainnet"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

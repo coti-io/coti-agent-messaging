@@ -241,22 +241,30 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
       repliedCommentIds?: string[];
       createdPostFingerprints?: string[];
       recentGeneratedArtifacts?: Array<{ type: string }>;
+      engagementTotals?: { posts?: number; replies?: number; total?: number };
     };
     const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
       status?: string;
       performed?: string[];
       selectedWriteDecision?: { selectedCandidateId?: string; content?: string };
       writeCandidates?: Array<{ id?: string }>;
+      engagementSummary?: { total?: { posts?: number; replies?: number; total?: number } };
       errors?: unknown[];
     };
     assert.deepEqual(savedState.repliedCommentIds?.includes("comment-newest"), true);
     assert.equal((savedState.createdPostFingerprints?.length ?? 0) > 0, true);
     assert.equal((savedState.recentGeneratedArtifacts?.length ?? 0) >= 2, true);
+    assert.equal(savedState.engagementTotals?.posts, 1);
+    assert.equal(savedState.engagementTotals?.replies, 1);
+    assert.equal(savedState.engagementTotals?.total, 2);
     assert.equal(savedReport.status, "ok");
     assert.equal((savedReport.performed?.length ?? 0) > 0, true);
     assert.equal(savedReport.selectedWriteDecision?.selectedCandidateId, "reply:created-post-1:comment-newest");
     assert.match(savedReport.selectedWriteDecision?.content ?? "", /SDK|MCP/i);
     assert.equal((savedReport.writeCandidates?.length ?? 0) > 0, true);
+    assert.equal(savedReport.engagementSummary?.total?.posts, 1);
+    assert.equal(savedReport.engagementSummary?.total?.replies, 1);
+    assert.equal(savedReport.engagementSummary?.total?.total, 2);
     assert.deepEqual(savedReport.errors, []);
   } finally {
     globalThis.fetch = originalFetch;

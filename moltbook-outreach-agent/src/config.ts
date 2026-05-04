@@ -32,6 +32,7 @@ export interface RuntimePaths {
   credentialsPath: string;
   statePath: string;
   heartbeatReportPath: string;
+  agentId?: string;
 }
 
 export interface MoltbookOutreachPolicyConfig {
@@ -170,7 +171,8 @@ export function resolvePaths(): RuntimePaths {
     projectRoot,
     credentialsPath,
     statePath,
-    heartbeatReportPath
+    heartbeatReportPath,
+    agentId: getOptionalEnv("MOLTBOOK_AGENT_ID")
   };
 }
 

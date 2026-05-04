@@ -1,0 +1,22 @@
+[Unit]
+Description=Moltbook analytics dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__REMOTE_USER__
+Group=__REMOTE_USER__
+WorkingDirectory=__REPO_DIR__/analytics-dashboard
+Environment=HOME=/home/__REMOTE_USER__
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=MOLTBOOK_ANALYTICS_AGENT_ROOT=__AGENTS_ROOT__
+Environment=MOLTBOOK_ANALYTICS_HOST=__DASHBOARD_HOST__
+Environment=MOLTBOOK_ANALYTICS_PORT=__DASHBOARD_PORT__
+EnvironmentFile=__DASHBOARD_ENV_FILE__
+ExecStart=/usr/bin/env node dist/analytics-dashboard/src/server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

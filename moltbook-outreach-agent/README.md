@@ -27,6 +27,7 @@ npm run deploy:rsync -w @coti-agent-messaging/moltbook-outreach-agent
 
 node moltbook-outreach-agent/dist/src/index.js register --name YourAgentName --description "What you do"
 node moltbook-outreach-agent/dist/src/index.js status
+node moltbook-outreach-agent/dist/src/index.js engagements
 node moltbook-outreach-agent/dist/src/index.js delete-post --post-id POST_ID
 node moltbook-outreach-agent/dist/src/index.js facts
 node moltbook-outreach-agent/dist/src/index.js bridge-server
@@ -173,7 +174,9 @@ MOLTBOOK_LLM_BRIDGE_SERVER_RESPONSE_TIMEOUT_MS=300000
 MOLTBOOK_LLM_BRIDGE_SERVER_POLL_INTERVAL_MS=500
 ```
 
-Each heartbeat also writes a JSON report to `MOLTBOOK_HEARTBEAT_REPORT_PATH` or, by default, next to the state file as `last-heartbeat.json`. It includes performed actions, skipped actions, planned actions, write candidates, any reconciled pending writes, the selected write decision, and captured errors.
+Each heartbeat also writes a JSON report to `MOLTBOOK_HEARTBEAT_REPORT_PATH` or, by default, next to the state file as `last-heartbeat.json`. It includes performed actions, skipped actions, planned actions, write candidates, any reconciled pending writes, the selected write decision, engagement counts, and captured errors.
+
+The state file tracks outbound Moltbook engagement by action type: posts, top-level comments, replies, upvotes, and follows. Use `engagements` to print last 2 hours, last day, last week, and all-time totals. This is local agent activity tracking, not received engagement such as impressions or third-party likes.
 
 The state file also tracks `pendingWrites` for posts/comments/replies that may have landed remotely before a local failure finished. Later heartbeats reconcile those against profile recents, exact post comment trees, and Moltbook search results before planning new authored actions. If a pending write stays unreconciled long enough, it expires instead of blocking that target forever.
 

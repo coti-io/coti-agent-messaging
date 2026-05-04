@@ -5,7 +5,8 @@
   "workspaces": [
     "contracts",
     "starter-grant-service",
-    "moltbook-outreach-agent"
+    "moltbook-outreach-agent",
+    "analytics-dashboard"
   ],
   "scripts": {
     "postinstall": "npm run generate:types",
@@ -24,6 +25,11 @@
     "outreach:remote:logs": "npm run remote:logs -w @coti-agent-messaging/moltbook-outreach-agent",
     "outreach:remote:logs:follow": "npm run remote:logs:follow -w @coti-agent-messaging/moltbook-outreach-agent",
     "outreach:remote:run-now": "npm run remote:run-now -w @coti-agent-messaging/moltbook-outreach-agent",
+    "outreach:engagements": "npm run engagements -w @coti-agent-messaging/moltbook-outreach-agent",
+    "analytics:build": "npm run build -w @coti-agent-messaging/analytics-dashboard",
+    "analytics:start": "npm run start -w @coti-agent-messaging/analytics-dashboard",
+    "analytics:test": "npm run test -w @coti-agent-messaging/analytics-dashboard",
+    "analytics:deploy:rsync": "bash ./deploy-analytics-stack.sh",
     "heartbeat": "node moltbook-outreach-agent/dist/src/index.js heartbeat",
     "starter-grant:start": "npm run start -w @coti-agent-messaging/starter-grant-service"
   }

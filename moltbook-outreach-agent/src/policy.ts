@@ -32,7 +32,37 @@ export interface PendingWrite {
   createdAt: string;
 }
 
+export type EngagementEventType = "post" | "comment" | "reply" | "upvote" | "follow";
+
+export interface EngagementCounts {
+  posts: number;
+  comments: number;
+  replies: number;
+  upvotes: number;
+  follows: number;
+  total: number;
+}
+
+export interface EngagementEvent {
+  id: string;
+  type: EngagementEventType;
+  createdAt: string;
+  targetId?: string;
+  targetSummary?: string;
+}
+
+export interface EngagementSummary {
+  generatedAt: string;
+  windows: {
+    last2Hours: EngagementCounts;
+    lastDay: EngagementCounts;
+    lastWeek: EngagementCounts;
+  };
+  total: EngagementCounts;
+}
+
 export interface OutreachAgentState {
+  agentId?: string;
   firstSeenAt?: string;
   lastHeartbeatAt?: string;
   lastPostAt?: string;
@@ -49,6 +79,8 @@ export interface OutreachAgentState {
   createdPostFingerprints: string[];
   recentGeneratedArtifacts: RecentGeneratedArtifact[];
   pendingWrites: PendingWrite[];
+  engagementEvents: EngagementEvent[];
+  engagementTotals: EngagementCounts;
 }
 
 export const MAX_OUTREACH_STATE_BYTES = 64 * 1024;
@@ -58,6 +90,8 @@ const MAX_REPLIED_COMMENT_IDS = 500;
 const MAX_CREATED_POST_FINGERPRINTS = 50;
 const MAX_RECENT_GENERATED_ARTIFACTS = 20;
 const MAX_PENDING_WRITES = 10;
+const MAX_ENGAGEMENT_EVENTS = 1_000;
+const ENGAGEMENT_EVENT_RETENTION_MS = 8 * 24 * 60 * 60 * 1_000;
 const MAX_STORED_ARTIFACT_TITLE_LENGTH = 140;
 const MAX_STORED_ARTIFACT_CONTENT_LENGTH = 700;
 const MAX_STORED_ARTIFACT_TARGET_SUMMARY_LENGTH = 280;
@@ -163,7 +197,20 @@ export function createInitialState(): OutreachAgentState {
     repliedCommentIds: [],
     createdPostFingerprints: [],
     recentGeneratedArtifacts: [],
-    pendingWrites: []
+    pendingWrites: [],
+    engagementEvents: [],
+    engagementTotals: createEmptyEngagementCounts()
+  };
+}
+
+function createEmptyEngagementCounts(): EngagementCounts {
+  return {
+    posts: 0,
+    comments: 0,
+    replies: 0,
+    upvotes: 0,
+    follows: 0,
+    total: 0
   };
 }
 
@@ -177,6 +224,77 @@ function clampText(value: string | undefined, limit: number): string | undefined
   }
 
   return value.length > limit ? value.slice(0, limit) : value;
+}
+
+function normalizeEngagementCounts(counts: Partial<EngagementCounts> | undefined): EngagementCounts {
+  const normalized = {
+    ...createEmptyEngagementCounts(),
+    ...counts
+  };
+  normalized.total =
+    normalized.posts +
+    normalized.comments +
+    normalized.replies +
+    normalized.upvotes +
+    normalized.follows;
+  return normalized;
+}
+
+function engagementCountKey(type: EngagementEventType): keyof Omit<EngagementCounts, "total"> {
+  switch (type) {
+    case "post":
+      return "posts";
+    case "comment":
+      return "comments";
+    case "reply":
+      return "replies";
+    case "upvote":
+      return "upvotes";
+    case "follow":
+      return "follows";
+  }
+}
+
+function countEngagements(events: readonly EngagementEvent[]): EngagementCounts {
+  const counts = createEmptyEngagementCounts();
+  for (const event of events) {
+    counts[engagementCountKey(event.type)] += 1;
+    counts.total += 1;
+  }
+  return counts;
+}
+
+function trimEngagementEvents(
+  events: readonly EngagementEvent[],
+  now = new Date()
+): EngagementEvent[] {
+  const cutoff = now.getTime() - ENGAGEMENT_EVENT_RETENTION_MS;
+  return events
+    .filter((event) => {
+      const timestamp = Date.parse(event.createdAt);
+      return !Number.isNaN(timestamp) && timestamp >= cutoff;
+    })
+    .slice(-MAX_ENGAGEMENT_EVENTS);
+}
+
+function recordEngagementEvent(
+  state: OutreachAgentState,
+  event: EngagementEvent,
+  now = new Date()
+): OutreachAgentState {
+  if (state.engagementEvents.some((existing) => existing.id === event.id)) {
+    return state;
+  }
+
+  const totals = normalizeEngagementCounts(state.engagementTotals);
+  totals[engagementCountKey(event.type)] += 1;
+  totals.total += 1;
+
+  return {
+    ...state,
+    engagementEvents: trimEngagementEvents([...state.engagementEvents, event], now),
+    engagementTotals: totals
+  };
 }
 
 function approximateStateSizeBytes(state: OutreachAgentState): number {
@@ -225,6 +343,10 @@ function enforceStateSizeLimit(state: OutreachAgentState): OutreachAgentState {
     (current) => ({
       ...current,
       createdPostFingerprints: current.createdPostFingerprints.slice(-25)
+    }),
+    (current) => ({
+      ...current,
+      engagementEvents: current.engagementEvents.slice(-500)
     })
   ];
 
@@ -245,6 +367,7 @@ export function normalizeState(
 ): OutreachAgentState {
   const initial = createInitialState();
   const normalized: OutreachAgentState = {
+    agentId: state?.agentId,
     firstSeenAt: state?.firstSeenAt,
     lastHeartbeatAt: state?.lastHeartbeatAt,
     lastPostAt: state?.lastPostAt,
@@ -261,7 +384,9 @@ export function normalizeState(
     repliedCommentIds: state?.repliedCommentIds ?? initial.repliedCommentIds,
     createdPostFingerprints: state?.createdPostFingerprints ?? initial.createdPostFingerprints,
     recentGeneratedArtifacts: state?.recentGeneratedArtifacts ?? initial.recentGeneratedArtifacts,
-    pendingWrites: state?.pendingWrites ?? initial.pendingWrites
+    pendingWrites: state?.pendingWrites ?? initial.pendingWrites,
+    engagementEvents: state?.engagementEvents ?? initial.engagementEvents,
+    engagementTotals: normalizeEngagementCounts(state?.engagementTotals)
   };
 
   const today = now.toISOString().slice(0, 10);
@@ -298,12 +423,42 @@ export function normalizeState(
       reconciliationMisses: pendingWrite.reconciliationMisses ?? 0
     }))
     .slice(-MAX_PENDING_WRITES);
+  normalized.engagementEvents = trimEngagementEvents(
+    normalized.engagementEvents.map((event) => ({
+      ...event,
+      targetSummary: clampText(event.targetSummary, MAX_STORED_ARTIFACT_TARGET_SUMMARY_LENGTH)
+    })),
+    now
+  );
 
   if (!normalized.firstSeenAt) {
     normalized.firstSeenAt = now.toISOString();
   }
 
   return enforceStateSizeLimit(normalized);
+}
+
+export function getEngagementSummary(
+  state: OutreachAgentState,
+  now = new Date()
+): EngagementSummary {
+  const normalized = normalizeState(state, now);
+  const timestamp = now.getTime();
+  const eventsSince = (durationMs: number) =>
+    normalized.engagementEvents.filter((event) => {
+      const eventTimestamp = Date.parse(event.createdAt);
+      return !Number.isNaN(eventTimestamp) && timestamp - eventTimestamp <= durationMs;
+    });
+
+  return {
+    generatedAt: now.toISOString(),
+    windows: {
+      last2Hours: countEngagements(eventsSince(2 * 60 * 60 * 1_000)),
+      lastDay: countEngagements(eventsSince(24 * 60 * 60 * 1_000)),
+      lastWeek: countEngagements(eventsSince(7 * 24 * 60 * 60 * 1_000))
+    },
+    total: normalizeEngagementCounts(normalized.engagementTotals)
+  };
 }
 
 function hoursSince(isoTimestamp: string | undefined, now: Date): number | undefined {
@@ -873,7 +1028,17 @@ export function applyActionResult(
         ...nextState.recentGeneratedArtifacts,
         artifact
       ].slice(-MAX_RECENT_GENERATED_ARTIFACTS);
-      return nextState;
+      return recordEngagementEvent(
+        nextState,
+        {
+          id: `post:${action.fingerprint}`,
+          type: "post",
+          createdAt: actionTime.toISOString(),
+          targetId: action.fingerprint,
+          targetSummary: action.title
+        },
+        now
+      );
     case "comment":
       nextState.lastCommentAt = updateLastTimestamp(nextState.lastCommentAt, actionTime.toISOString());
       if (actionDay === today) {
@@ -900,19 +1065,47 @@ export function applyActionResult(
         ...nextState.recentGeneratedArtifacts,
         commentArtifact
       ].slice(-MAX_RECENT_GENERATED_ARTIFACTS);
-      return nextState;
+      return recordEngagementEvent(
+        nextState,
+        {
+          id: `comment:${action.commentId}`,
+          type: action.replyToAuthor ? "reply" : "comment",
+          createdAt: actionTime.toISOString(),
+          targetId: action.commentId,
+          targetSummary: action.targetSummary
+        },
+        now
+      );
     case "upvote_post":
       nextState.upvotedPostIds = uniqueRecent(
         [...nextState.upvotedPostIds, action.postId],
         MAX_UPVOTED_POST_IDS
       );
-      return nextState;
+      return recordEngagementEvent(
+        nextState,
+        {
+          id: `upvote:${action.postId}`,
+          type: "upvote",
+          createdAt: now.toISOString(),
+          targetId: action.postId
+        },
+        now
+      );
     case "follow_agent":
       nextState.followedAgentNames = uniqueRecent(
         [...nextState.followedAgentNames, action.agentName],
         MAX_FOLLOWED_AGENT_NAMES
       );
-      return nextState;
+      return recordEngagementEvent(
+        nextState,
+        {
+          id: `follow:${action.agentName}`,
+          type: "follow",
+          createdAt: now.toISOString(),
+          targetId: action.agentName
+        },
+        now
+      );
   }
 }
 

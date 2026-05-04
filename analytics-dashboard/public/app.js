@@ -15,7 +15,7 @@ function formatTime(value) {
 }
 
 function countsLine(counts) {
-  return `${formatNumber(counts.posts)} posts · ${formatNumber(counts.comments)} comments · ${formatNumber(counts.replies)} replies`;
+  return `${formatNumber(counts.posts)} posts · ${formatNumber(counts.comments)} comments · ${formatNumber(counts.replies)} replies · ${formatNumber(counts.upvotes)} upvotes · ${formatNumber(counts.follows)} follows`;
 }
 
 function card(label, value, detail = "") {
@@ -26,6 +26,10 @@ function card(label, value, detail = "") {
       <div class="card-detail">${detail}</div>
     </article>
   `;
+}
+
+function messageWindowLine(windowStats) {
+  return `${formatNumber(windowStats.totalChunks)} chunks · ${formatNumber(windowStats.totalUsageUnits)} usage units`;
 }
 
 function renderEngagementCards(summary) {
@@ -69,16 +73,24 @@ function renderAgents(agents) {
 }
 
 function renderCoti(coti) {
+  const windowCards = document.getElementById("coti-window-cards");
   const cards = document.getElementById("coti-cards");
   const routes = document.getElementById("route-list");
 
   if (coti.error || !coti.stats) {
+    windowCards.innerHTML = "";
     cards.innerHTML = card("COTI stats", "Unavailable", coti.error || "No data");
     routes.innerHTML = "";
     return;
   }
 
   const stats = coti.stats;
+  windowCards.innerHTML = [
+    card("Last 2 hours", formatNumber(stats.windows.last2Hours.messages), messageWindowLine(stats.windows.last2Hours)),
+    card("Last day", formatNumber(stats.windows.lastDay.messages), messageWindowLine(stats.windows.lastDay)),
+    card("Last week", formatNumber(stats.windows.lastWeek.messages), messageWindowLine(stats.windows.lastWeek)),
+    card("All time", formatNumber(stats.windows.allTime.messages), messageWindowLine(stats.windows.allTime))
+  ].join("");
   cards.innerHTML = [
     card("Messages", formatNumber(stats.totals.messages), `${formatNumber(stats.totals.uniqueAgents)} active addresses`),
     card("Senders", formatNumber(stats.totals.uniqueSenders), `${formatNumber(stats.averages.messagesPerSender)} avg messages`),

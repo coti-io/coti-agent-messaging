@@ -213,6 +213,20 @@ async function main() {
   console.log(`First message: ${formatTimestamp(report.coverage.firstMessageAt)}`);
   console.log(`Last message: ${formatTimestamp(report.coverage.lastMessageAt)}`);
   console.log("");
+  console.log("Windows");
+  console.log(
+    `  last 2 hours: ${report.windows.last2Hours.messages} messages | ${report.windows.last2Hours.totalChunks} chunks | ${report.windows.last2Hours.totalUsageUnits} usage units`
+  );
+  console.log(
+    `  last day: ${report.windows.lastDay.messages} messages | ${report.windows.lastDay.totalChunks} chunks | ${report.windows.lastDay.totalUsageUnits} usage units`
+  );
+  console.log(
+    `  last week: ${report.windows.lastWeek.messages} messages | ${report.windows.lastWeek.totalChunks} chunks | ${report.windows.lastWeek.totalUsageUnits} usage units`
+  );
+  console.log(
+    `  all time: ${report.windows.allTime.messages} messages | ${report.windows.allTime.totalChunks} chunks | ${report.windows.allTime.totalUsageUnits} usage units`
+  );
+  console.log("");
   console.log("Averages");
   console.log(`  messages per sender: ${formatNumber(report.averages.messagesPerSender)}`);
   console.log(`  messages per recipient: ${formatNumber(report.averages.messagesPerRecipient)}`);

@@ -92,13 +92,13 @@ The starter-grant service also ships with a Docker Compose + `rsync` deployment 
 
 ## Analytics Dashboard
 
-Copy `deploy/agents.example.json` to `deploy/agents.json`, give each Moltbook agent a stable `agentId`, and point each entry at its own env file. Then run:
+Copy `deploy/agents.example.json` to `deploy/agents.json`. The shipped example is a single-agent setup that mirrors the current `moltbook-outreach-agent` deploy path: one agent, `moltbook-outreach-heartbeat` as the service name, `../moltbook-outreach-agent/.env` as the local env source, `../.env` as the dashboard stats env source, and the existing remote runtime/env paths pinned through `runtimeDir` and `remoteEnvFile`. Add more agent entries only if you actually run more than one. Then run:
 
 ```bash
 npm run analytics:deploy:rsync
 ```
 
-The coordinated deploy installs one heartbeat timer per agent and one dashboard service. By default the dashboard binds to `127.0.0.1:8788`; use an SSH tunnel or explicitly set a different host in the manifest if you want remote browser access.
+The coordinated deploy installs one heartbeat timer per agent and one dashboard service. By default the dashboard binds to `0.0.0.0:8788`, so it is reachable from outside the box if your firewall or cloud security group allows inbound TCP on that port. Override `dashboard.host` in the manifest if you want to keep it private.
 
 ## Notes
 

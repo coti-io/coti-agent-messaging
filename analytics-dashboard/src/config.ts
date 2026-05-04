@@ -1,17 +1,36 @@
 import dotenv from "dotenv";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { resolveMessageStatsRpcUrl, type CotiNetworkName } from "../../contracts/src/message-stats";
 import type { AnalyticsConfig } from "./types";
 
-dotenv.config({
-  path: path.resolve(__dirname, "..", "..", ".env")
-});
+function loadEnvFiles() {
+  const packageRootCandidates = [
+    path.resolve(__dirname, ".."),
+    path.resolve(__dirname, "..", "..", ".."),
+    process.cwd()
+  ];
 
-dotenv.config({
-  path: path.resolve(__dirname, "..", ".env"),
-  override: true
-});
+  const seen = new Set<string>();
+  for (const packageRoot of packageRootCandidates) {
+    const workspaceEnv = path.resolve(packageRoot, "..", ".env");
+    const packageEnv = path.resolve(packageRoot, ".env");
+
+    for (const [envPath, override] of [
+      [workspaceEnv, false],
+      [packageEnv, true]
+    ] as const) {
+      if (seen.has(envPath) || !existsSync(envPath)) {
+        continue;
+      }
+      seen.add(envPath);
+      dotenv.config({ path: envPath, override });
+    }
+  }
+}
+
+loadEnvFiles();
 
 function parsePort(value: string | undefined, fallback: number): number {
   if (!value) {
@@ -48,7 +67,7 @@ export function loadAnalyticsConfig(env: NodeJS.ProcessEnv = process.env): Analy
     agentRoot:
       env.MOLTBOOK_ANALYTICS_AGENT_ROOT ??
       path.resolve(process.cwd(), "moltbook-outreach-agent", ".data", "agents"),
-    host: env.MOLTBOOK_ANALYTICS_HOST ?? "127.0.0.1",
+    host: env.MOLTBOOK_ANALYTICS_HOST ?? "0.0.0.0",
     port: parsePort(env.MOLTBOOK_ANALYTICS_PORT, 8788),
     cotiNetwork,
     cotiRpcUrl: resolveMessageStatsRpcUrl(cotiNetwork, env),

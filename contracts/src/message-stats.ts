@@ -47,6 +47,17 @@ export interface RouteStats {
   messages: number;
 }
 
+export interface MessageWindowStats {
+  messages: number;
+  multipartMessages: number;
+  totalChunks: number;
+  totalUsageUnits: number;
+  uniqueSenders: number;
+  uniqueRecipients: number;
+  uniqueAgents: number;
+  uniqueRoutes: number;
+}
+
 export interface MessageStatsReport {
   network: CotiNetworkName;
   contractAddress: string;
@@ -96,6 +107,12 @@ export interface MessageStatsReport {
   coverage: {
     firstMessageAt: number | null;
     lastMessageAt: number | null;
+  };
+  windows: {
+    last2Hours: MessageWindowStats;
+    lastDay: MessageWindowStats;
+    lastWeek: MessageWindowStats;
+    allTime: MessageWindowStats;
   };
   topAgents: AgentStats[];
   topRoutes: RouteStats[];
@@ -531,6 +548,46 @@ function buildRouteStats(messages: readonly MessageDetails[]): RouteStats[] {
   return [...routes.values()].sort((left, right) => right.messages - left.messages);
 }
 
+function buildWindowStats(messages: readonly MessageDetails[]): MessageWindowStats {
+  const routes = buildRouteStats(messages);
+  const senderSet = new Set(messages.map((message) => message.from));
+  const recipientSet = new Set(messages.map((message) => message.to));
+  const participantSet = new Set([...senderSet, ...recipientSet]);
+  const chunkCounts = messages.map((message) => message.chunkCount);
+  const usageUnits = messages.map((message) => message.usageUnits);
+  const multipartMessages = chunkCounts.filter((chunkCount) => chunkCount > 1).length;
+
+  return {
+    messages: messages.length,
+    multipartMessages,
+    totalChunks: sum(chunkCounts),
+    totalUsageUnits: sum(usageUnits),
+    uniqueSenders: senderSet.size,
+    uniqueRecipients: recipientSet.size,
+    uniqueAgents: participantSet.size,
+    uniqueRoutes: routes.length
+  };
+}
+
+async function fetchBlockTimestamps(
+  provider: ethers.JsonRpcProvider,
+  messages: readonly MessageDetails[],
+  log?: (message: string) => void
+): Promise<Map<number, number>> {
+  const blockNumbers = [...new Set(messages.map((message) => message.blockNumber))].sort(
+    (left, right) => left - right
+  );
+  const entries = await mapWithConcurrency(blockNumbers, DETAIL_CONCURRENCY, async (blockNumber, index) => {
+    log?.(`Resolving block timestamp ${index + 1}/${blockNumbers.length} (${blockNumber})...`);
+    const block = await withRetry(`getBlock(${blockNumber})`, () => provider.getBlock(blockNumber));
+    if (!block) {
+      throw new Error(`Block ${blockNumber} not found.`);
+    }
+    return [blockNumber, block.timestamp] as const;
+  });
+  return new Map(entries);
+}
+
 export async function collectMessageStats(options: MessageStatsOptions): Promise<MessageStatsReport> {
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const top = options.top ?? DEFAULT_TOP;
@@ -587,14 +644,24 @@ export async function collectMessageStats(options: MessageStatsOptions): Promise
       return right.total - left.total;
     });
 
+  const blockTimestamps = await fetchBlockTimestamps(provider, messages, options.log);
   const firstBlockNumber =
     messages.length > 0 ? Math.min(...messages.map((message) => message.blockNumber)) : undefined;
   const lastBlockNumber =
     messages.length > 0 ? Math.max(...messages.map((message) => message.blockNumber)) : undefined;
-  const [firstBlock, lastBlock] = await Promise.all([
-    firstBlockNumber === undefined ? Promise.resolve(null) : provider.getBlock(firstBlockNumber),
-    lastBlockNumber === undefined ? Promise.resolve(null) : provider.getBlock(lastBlockNumber)
-  ]);
+  const nowUnixSeconds = Math.floor(Date.now() / 1_000);
+  const windows = {
+    last2Hours: buildWindowStats(
+      messages.filter((message) => (blockTimestamps.get(message.blockNumber) ?? 0) >= nowUnixSeconds - 7_200)
+    ),
+    lastDay: buildWindowStats(
+      messages.filter((message) => (blockTimestamps.get(message.blockNumber) ?? 0) >= nowUnixSeconds - 86_400)
+    ),
+    lastWeek: buildWindowStats(
+      messages.filter((message) => (blockTimestamps.get(message.blockNumber) ?? 0) >= nowUnixSeconds - 604_800)
+    ),
+    allTime: buildWindowStats(messages)
+  };
 
   return {
     network: options.networkName,
@@ -644,9 +711,12 @@ export async function collectMessageStats(options: MessageStatsOptions): Promise
       }
     },
     coverage: {
-      firstMessageAt: firstBlock?.timestamp ?? null,
-      lastMessageAt: lastBlock?.timestamp ?? null
+      firstMessageAt:
+        firstBlockNumber === undefined ? null : (blockTimestamps.get(firstBlockNumber) ?? null),
+      lastMessageAt:
+        lastBlockNumber === undefined ? null : (blockTimestamps.get(lastBlockNumber) ?? null)
     },
+    windows,
     topAgents: topAgents.slice(0, top),
     topRoutes: routeStats.slice(0, top),
     perEpoch: [...epochCounts.entries()]

@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { summarizeEngagements } from "./engagements";
+import { readSqliteAgentSnapshot } from "./storage";
 import type { AgentMetadata, AgentRuntimePaths, DiscoveredAgent } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -73,6 +74,7 @@ function buildPaths(agentRoot: string, agentId: string): AgentRuntimePaths {
     envPath: path.join(agentDir, ".env"),
     metadataPath: path.join(agentDir, "agent.json"),
     statePath: path.join(runtimeDir, "state.json"),
+    storagePath: path.join(runtimeDir, "state.sqlite"),
     reportPath: path.join(runtimeDir, "last-heartbeat.json")
   };
 }
@@ -107,10 +109,21 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       metadata.agentId === entry ? paths : buildPaths(agentRoot, metadata.agentId);
     const state = stateJson.value;
     const report = reportJson.value;
-    const engagementSummary = summarizeEngagements(state, now);
-    const pendingWrites = Array.isArray(state?.pendingWrites) ? state.pendingWrites.length : 0;
-    const errors = Array.isArray(report?.errors) ? report.errors.length : 0;
-    const skipped = Array.isArray(report?.skipped) ? report.skipped.length : 0;
+    let sqliteSnapshot;
+    try {
+      sqliteSnapshot = await readSqliteAgentSnapshot(normalizedPaths.storagePath, now);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+    const engagementSummary = sqliteSnapshot?.engagementSummary ?? summarizeEngagements(state, now);
+    const pendingWrites =
+      sqliteSnapshot?.pendingWrites ?? (Array.isArray(state?.pendingWrites) ? state.pendingWrites.length : 0);
+    const errors =
+      sqliteSnapshot?.latestErrors ?? (Array.isArray(report?.errors) ? report.errors.length : 0);
+    const skipped =
+      sqliteSnapshot?.latestSkipped ?? (Array.isArray(report?.skipped) ? report.skipped.length : 0);
 
     agents.push({
       metadata,
@@ -122,11 +135,20 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       state,
       report,
       engagementSummary,
-      lastHeartbeatAt: asOptionalString(state?.lastHeartbeatAt) ?? asOptionalString(report?.finishedAt),
+      lastHeartbeatAt:
+        sqliteSnapshot?.lastHeartbeatAt ??
+        asOptionalString(state?.lastHeartbeatAt) ??
+        asOptionalString(report?.finishedAt),
       lastPostAt: asOptionalString(state?.lastPostAt),
       lastCommentAt: asOptionalString(state?.lastCommentAt),
       pendingWrites,
-      latestStatus: asOptionalString(report?.status),
+      schedulerHealth: sqliteSnapshot?.schedulerHealth ?? "unknown",
+      lastSuccessfulHeartbeatAt:
+        sqliteSnapshot?.lastSuccessfulHeartbeatAt ??
+        (asOptionalString(report?.status) === "ok" ? asOptionalString(report?.finishedAt) : undefined),
+      latestStartedAt: sqliteSnapshot?.latestStartedAt ?? asOptionalString(report?.startedAt),
+      latestFinishedAt: sqliteSnapshot?.latestFinishedAt ?? asOptionalString(report?.finishedAt),
+      latestStatus: sqliteSnapshot?.latestStatus ?? asOptionalString(report?.status),
       latestErrors: errors,
       latestSkipped: skipped
     });

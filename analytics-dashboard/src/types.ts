@@ -31,6 +31,7 @@ export interface AgentRuntimePaths {
   envPath: string;
   metadataPath: string;
   statePath: string;
+  storagePath: string;
   reportPath: string;
 }
 
@@ -48,6 +49,10 @@ export interface DiscoveredAgent {
   lastPostAt?: string;
   lastCommentAt?: string;
   pendingWrites: number;
+  schedulerHealth: "fresh" | "stale" | "unknown";
+  lastSuccessfulHeartbeatAt?: string;
+  latestStartedAt?: string;
+  latestFinishedAt?: string;
   latestStatus?: string;
   latestErrors: number;
   latestSkipped: number;

@@ -18,6 +18,10 @@ function countsLine(counts) {
   return `${formatNumber(counts.posts)} posts · ${formatNumber(counts.comments)} comments · ${formatNumber(counts.replies)} replies · ${formatNumber(counts.upvotes)} upvotes · ${formatNumber(counts.follows)} follows`;
 }
 
+function badgeClass(ok) {
+  return ok ? "" : "warn";
+}
+
 function card(label, value, detail = "") {
   return `
     <article class="card">
@@ -45,27 +49,29 @@ function renderEngagementCards(summary) {
 function renderAgents(agents) {
   const root = document.getElementById("agents-table");
   if (!agents.length) {
-    root.innerHTML = `<tr><td colspan="8" class="subtle">No agent runtime folders discovered.</td></tr>`;
+    root.innerHTML = `<tr><td colspan="9" class="subtle">No agent runtime folders discovered.</td></tr>`;
     return;
   }
 
   root.innerHTML = agents
     .map((agent) => {
       const summary = agent.engagementSummary;
-      const unhealthy = agent.latestStatus && agent.latestStatus !== "ok";
+      const schedulerFresh = agent.schedulerHealth === "fresh";
+      const lastRunOk = agent.latestStatus === "ok";
       return `
         <tr>
           <td>
             <div class="agent-name">${agent.displayName}</div>
             <div class="agent-id">${agent.agentId}</div>
           </td>
-          <td><span class="badge ${unhealthy ? "warn" : ""}">${agent.latestStatus || "unknown"}</span></td>
+          <td><span class="badge ${badgeClass(schedulerFresh)}">${agent.schedulerHealth || "unknown"}</span></td>
+          <td><span class="badge ${badgeClass(lastRunOk)}">${agent.latestStatus || "unknown"}</span></td>
           <td>${formatNumber(summary.windows.last2Hours.total)}</td>
           <td>${formatNumber(summary.windows.lastDay.total)}</td>
           <td>${formatNumber(summary.windows.lastWeek.total)}</td>
           <td>${formatNumber(summary.total.total)}</td>
           <td>${formatNumber(agent.pendingWrites)}</td>
-          <td>${formatTime(agent.lastHeartbeatAt)}</td>
+          <td>${formatTime(agent.lastSuccessfulHeartbeatAt)}</td>
         </tr>
       `;
     })

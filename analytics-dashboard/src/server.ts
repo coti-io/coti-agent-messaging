@@ -16,6 +16,7 @@ type CachedCotiStats = {
 
 const config = loadAnalyticsConfig();
 let cotiCache: CachedCotiStats | undefined;
+let cotiRefreshPromise: Promise<void> | undefined;
 
 function packageRoot(): string {
   return path.resolve(__dirname, "..");
@@ -93,27 +94,27 @@ function publicAgent(agent: Awaited<ReturnType<typeof discoverAgents>>[number]) 
     reportError: agent.reportError,
     engagementSummary: agent.engagementSummary,
     lastHeartbeatAt: agent.lastHeartbeatAt,
+    lastSuccessfulHeartbeatAt: agent.lastSuccessfulHeartbeatAt,
     lastPostAt: agent.lastPostAt,
     lastCommentAt: agent.lastCommentAt,
     pendingWrites: agent.pendingWrites,
+    schedulerHealth: agent.schedulerHealth,
+    latestStartedAt: agent.latestStartedAt,
+    latestFinishedAt: agent.latestFinishedAt,
     latestStatus: agent.latestStatus,
     latestErrors: agent.latestErrors,
     latestSkipped: agent.latestSkipped
   };
 }
 
-async function getCotiStats(configInput: AnalyticsConfig): Promise<CachedCotiStats> {
+async function refreshCotiStats(configInput: AnalyticsConfig): Promise<void> {
   const now = Date.now();
-  if (cotiCache && now - cotiCache.createdAt < configInput.cotiCacheTtlMs) {
-    return cotiCache;
-  }
-
   if (!configInput.contractAddress) {
     cotiCache = {
       createdAt: now,
       error: "CONTRACT_ADDRESS is not configured."
     };
-    return cotiCache;
+    return;
   }
 
   try {
@@ -133,8 +134,34 @@ async function getCotiStats(configInput: AnalyticsConfig): Promise<CachedCotiSta
       error: error instanceof Error ? error.message : String(error)
     };
   }
+}
 
-  return cotiCache;
+function ensureCotiRefresh(configInput: AnalyticsConfig): void {
+  if (cotiRefreshPromise) {
+    return;
+  }
+
+  cotiRefreshPromise = refreshCotiStats(configInput).finally(() => {
+    cotiRefreshPromise = undefined;
+  });
+}
+
+async function getCotiStats(configInput: AnalyticsConfig): Promise<CachedCotiStats> {
+  const now = Date.now();
+  if (cotiCache && now - cotiCache.createdAt < configInput.cotiCacheTtlMs) {
+    return cotiCache;
+  }
+
+  ensureCotiRefresh(configInput);
+
+  if (cotiCache) {
+    return cotiCache;
+  }
+
+  return {
+    createdAt: now,
+    error: "COTI stats are still loading."
+  };
 }
 
 async function summaryPayload() {

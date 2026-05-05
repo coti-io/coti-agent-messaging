@@ -7,6 +7,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { MoltbookRuntimeConfig } from "../src/config.js";
 import { runHeartbeat } from "../src/heartbeat.js";
 import { contentFingerprint, createInitialState } from "../src/policy.js";
+import { loadStateFromStorage, readStorageAnalytics } from "../src/storage.js";
 
 test("heartbeat creates an outreach post, then replies usefully to later questions", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-"));
@@ -251,12 +252,39 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
       engagementSummary?: { total?: { posts?: number; replies?: number; total?: number } };
       errors?: unknown[];
     };
+    const previousState = JSON.parse(
+      await readFile(path.join(tempDir, "state.previous.json"), "utf8")
+    ) as {
+      engagementTotals?: { posts?: number; replies?: number; total?: number };
+    };
+    const auditLines = (await readFile(path.join(tempDir, "state.audit.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as {
+        previousEngagementTotals?: { total?: number };
+        nextEngagementTotals?: { total?: number };
+      });
     assert.deepEqual(savedState.repliedCommentIds?.includes("comment-newest"), true);
     assert.equal((savedState.createdPostFingerprints?.length ?? 0) > 0, true);
     assert.equal((savedState.recentGeneratedArtifacts?.length ?? 0) >= 2, true);
     assert.equal(savedState.engagementTotals?.posts, 1);
     assert.equal(savedState.engagementTotals?.replies, 1);
     assert.equal(savedState.engagementTotals?.total, 2);
+    assert.equal(previousState.engagementTotals?.posts, 1);
+    assert.equal((previousState.engagementTotals?.total ?? 0) >= 1, true);
+    assert.equal(
+      (previousState.engagementTotals?.total ?? 0) <= (savedState.engagementTotals?.total ?? 0),
+      true
+    );
+    assert.equal(auditLines.length >= 2, true);
+    assert.deepEqual(
+      auditLines.some(
+        (entry) =>
+          entry.previousEngagementTotals?.total === 1 && entry.nextEngagementTotals?.total === 2
+      ),
+      true
+    );
     assert.equal(savedReport.status, "ok");
     assert.equal((savedReport.performed?.length ?? 0) > 0, true);
     assert.equal(savedReport.selectedWriteDecision?.selectedCandidateId, "reply:created-post-1:comment-newest");
@@ -266,8 +294,107 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
     assert.equal(savedReport.engagementSummary?.total?.replies, 1);
     assert.equal(savedReport.engagementSummary?.total?.total, 2);
     assert.deepEqual(savedReport.errors, []);
+    const storageAnalytics = await readStorageAnalytics(config.statePath, new Date("2026-03-12T12:05:00.000Z"));
+    assert.equal(storageAnalytics?.engagementSummary.total.posts, 1);
+    assert.equal(storageAnalytics?.engagementSummary.total.replies, 1);
+    assert.equal(storageAnalytics?.engagementSummary.total.total, 2);
+    assert.equal(storageAnalytics?.latestStatus, "ok");
+    assert.equal(storageAnalytics?.lastSuccessfulHeartbeatAt !== undefined, true);
   } finally {
     globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("storage migration preserves legacy totals and recent windows", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-migration-"));
+  const statePath = path.join(tempDir, "state.json");
+  const heartbeatReportPath = path.join(tempDir, "last-heartbeat.json");
+
+  await writeFile(
+    statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        agentId: "agent-a",
+        lastHeartbeatAt: "2026-05-04T11:59:00.000Z",
+        pendingWrites: [
+          {
+            id: "pending-1",
+            type: "comment",
+            fingerprint: "fingerprint-1",
+            content: "Need to follow up",
+            createdAt: "2026-05-04T11:58:00.000Z"
+          }
+        ],
+        engagementEvents: [
+          {
+            id: "event-comment",
+            type: "comment",
+            createdAt: "2026-05-04T11:30:00.000Z",
+            targetId: "post-1"
+          },
+          {
+            id: "event-follow",
+            type: "follow",
+            createdAt: "2026-05-01T09:00:00.000Z",
+            targetId: "agent-b"
+          }
+        ],
+        engagementTotals: {
+          posts: 3,
+          comments: 2,
+          replies: 1,
+          upvotes: 0,
+          follows: 1
+        }
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  await writeFile(
+    heartbeatReportPath,
+    JSON.stringify(
+      {
+        agentId: "agent-a",
+        startedAt: "2026-05-04T11:58:30.000Z",
+        finishedAt: "2026-05-04T11:59:00.000Z",
+        status: "ok",
+        dryRun: false,
+        plannedActions: [],
+        performed: [],
+        skipped: [],
+        errors: [],
+        reconciledPendingWrites: [],
+        writeCandidates: []
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  try {
+    const migratedState = await loadStateFromStorage(statePath, heartbeatReportPath);
+    const analytics = await readStorageAnalytics(statePath, new Date("2026-05-04T12:00:00.000Z"));
+
+    assert.equal(migratedState.engagementTotals.posts, 3);
+    assert.equal(migratedState.engagementTotals.comments, 2);
+    assert.equal(migratedState.engagementTotals.replies, 1);
+    assert.equal(migratedState.engagementTotals.follows, 1);
+    assert.equal(migratedState.engagementTotals.total, 7);
+    assert.equal(analytics?.engagementSummary.windows.last2Hours.comments, 1);
+    assert.equal(analytics?.engagementSummary.windows.lastWeek.follows, 1);
+    assert.equal(analytics?.engagementSummary.total.posts, 3);
+    assert.equal(analytics?.engagementSummary.total.comments, 2);
+    assert.equal(analytics?.engagementSummary.total.replies, 1);
+    assert.equal(analytics?.engagementSummary.total.follows, 1);
+    assert.equal(analytics?.engagementSummary.total.total, 7);
+    assert.equal(analytics?.pendingWrites, 1);
+    assert.equal(analytics?.lastSuccessfulHeartbeatAt, "2026-05-04T11:59:00.000Z");
+  } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 });

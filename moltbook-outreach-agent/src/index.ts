@@ -14,6 +14,7 @@ import {
   type OutreachAgentState
 } from "./policy.js";
 import { loadProductFacts } from "./product-facts.js";
+import { loadStateFromStorage, readStoredEngagementSummary } from "./storage.js";
 
 function getArg(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
@@ -38,14 +39,12 @@ function printUsage(): void {
 
 async function loadLocalState(statePath: string): Promise<OutreachAgentState> {
   try {
-    const raw = await readFile(statePath, "utf8");
-    return normalizeState(JSON.parse(raw) as Partial<OutreachAgentState>);
+    return await loadStateFromStorage(statePath);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
       return createInitialState();
     }
-
     throw error;
   }
 }
@@ -106,8 +105,7 @@ async function run(): Promise<void> {
     }
     case "engagements": {
       const config = await loadRuntimeConfig();
-      const state = await loadLocalState(config.statePath);
-      console.log(JSON.stringify(getEngagementSummary(state), null, 2));
+      console.log(JSON.stringify(await readStoredEngagementSummary(config.statePath), null, 2));
       return;
     }
     case "delete-post": {

@@ -24,9 +24,10 @@
     "test": "npm run build && node --test dist/test/*.test.js"
   },
   "dependencies": {
-    "@coti-io/coti-sdk-private-messaging": "git+https://github.com/coti-io/coti-sdk-private-messaging.git#main",
     "@coti-io/coti-ethers": "^1.0.5",
-    "dotenv": "^16.6.1"
+    "@coti-io/coti-sdk-private-messaging": "git+https://github.com/coti-io/coti-sdk-private-messaging.git#main",
+    "dotenv": "^16.6.1",
+    "sqlite3": "^6.0.1"
   },
   "devDependencies": {
     "@types/node": "^25.3.5",

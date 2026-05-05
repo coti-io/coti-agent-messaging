@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -32,6 +32,11 @@ import {
   type OutreachAgentState,
   type PlannedAction
 } from "./policy.js";
+import {
+  loadStateFromStorage,
+  saveHeartbeatRunToStorage,
+  saveStateToStorage
+} from "./storage.js";
 export interface HeartbeatResult {
   summary: string;
   performed: string[];
@@ -46,6 +51,7 @@ interface HeartbeatErrorEntry {
 }
 
 interface HeartbeatReport {
+  runId: string;
   agentId?: string;
   startedAt: string;
   finishedAt?: string;
@@ -73,29 +79,90 @@ interface HeartbeatReport {
 
 const PENDING_WRITE_MAX_RECONCILIATION_MISSES = 3;
 
-async function loadState(statePath: string): Promise<OutreachAgentState> {
-  try {
-    const raw = await readFile(statePath, "utf8");
-    return normalizeState(JSON.parse(raw) as Partial<OutreachAgentState>);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      return createInitialState();
-    }
+async function loadState(
+  statePath: string,
+  heartbeatReportPath: string
+): Promise<OutreachAgentState> {
+  return await loadStateFromStorage(statePath, heartbeatReportPath);
+}
 
+function stateSidecarPaths(statePath: string) {
+  const parsed = path.parse(statePath);
+  return {
+    previousPath: path.join(parsed.dir, `${parsed.name}.previous${parsed.ext}`),
+    auditPath: path.join(parsed.dir, `${parsed.name}.audit.jsonl`)
+  };
+}
+
+async function readOptionalUtf8(filePath: string): Promise<string | undefined> {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
     throw error;
   }
 }
 
-async function saveState(statePath: string, state: OutreachAgentState): Promise<void> {
+async function writeTextAtomic(filePath: string, contents: string): Promise<void> {
+  const tempPath = `${filePath}.tmp-${process.pid}`;
+  await writeFile(tempPath, contents, "utf8");
+  await rename(tempPath, filePath);
+}
+
+async function saveState(
+  statePath: string,
+  state: OutreachAgentState,
+  runId?: string
+): Promise<OutreachAgentState> {
   await mkdir(path.dirname(statePath), { recursive: true });
-  await writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+  const previousRaw = await readOptionalUtf8(statePath);
+  const persistedState = await saveStateToStorage(statePath, state, runId);
+  const nextRaw = JSON.stringify(persistedState, null, 2);
+  const { previousPath, auditPath } = stateSidecarPaths(statePath);
+
+  if (previousRaw !== undefined && previousRaw !== nextRaw) {
+    await writeTextAtomic(previousPath, previousRaw);
+  }
+
+  await writeTextAtomic(statePath, nextRaw);
+
+  const previousState =
+    previousRaw === undefined ? undefined : (JSON.parse(previousRaw) as Partial<OutreachAgentState>);
+  const auditEntry = {
+    savedAt: new Date().toISOString(),
+    path: statePath,
+    previousEngagementTotals: previousState?.engagementTotals,
+    nextEngagementTotals: persistedState.engagementTotals,
+    previousDailyCounts:
+      previousState === undefined
+        ? undefined
+        : {
+            posts: previousState.dailyPostCount,
+            comments: previousState.dailyCommentCount,
+            topLevelComments: previousState.dailyTopLevelCommentCount,
+            replies: previousState.dailyReplyCount
+          },
+    nextDailyCounts: {
+      posts: persistedState.dailyPostCount,
+      comments: persistedState.dailyCommentCount,
+      topLevelComments: persistedState.dailyTopLevelCommentCount,
+      replies: persistedState.dailyReplyCount
+    },
+    previousStateBytes: previousRaw ? Buffer.byteLength(previousRaw, "utf8") : 0,
+    nextStateBytes: Buffer.byteLength(nextRaw, "utf8")
+  };
+  await appendFile(auditPath, `${JSON.stringify(auditEntry)}\n`, "utf8");
+  return persistedState;
 }
 
 async function saveHeartbeatReport(
+  statePath: string,
   heartbeatReportPath: string,
   report: HeartbeatReport
 ): Promise<void> {
+  await saveHeartbeatRunToStorage(statePath, report);
   await mkdir(path.dirname(heartbeatReportPath), { recursive: true });
   await writeFile(heartbeatReportPath, JSON.stringify(report, null, 2), "utf8");
 }
@@ -172,7 +239,9 @@ export async function runHeartbeat(
     verificationLlmProvider: buildVerificationLlmProvider(config)
   });
   const startedAt = new Date().toISOString();
+  const runId = `${startedAt}:${process.pid}`;
   const report: HeartbeatReport = {
+    runId,
     agentId: config.agentId,
     startedAt,
     status: "running",
@@ -191,7 +260,7 @@ export async function runHeartbeat(
       api.getHome(),
       api.getMe(),
       loadProductFacts(config),
-      loadState(config.statePath)
+      loadState(config.statePath, config.heartbeatReportPath)
     ]);
     const exploreFeed = await api.getFeed({ sort: "new", limit: 10 });
     state = normalizeState(storedState);
@@ -200,7 +269,7 @@ export async function runHeartbeat(
         ...nextState,
         agentId: config.agentId ?? nextState.agentId
       });
-      await saveState(config.statePath, state);
+      state = await saveState(config.statePath, state, runId);
     };
     state = await reconcilePendingWrites(
       api,
@@ -465,7 +534,7 @@ export async function runHeartbeat(
       },
       new Date()
     );
-    await saveState(config.statePath, state);
+    state = await saveState(config.statePath, state, runId);
 
     const result = {
       summary: formatSummary(performed, skipped),
@@ -488,14 +557,14 @@ export async function runHeartbeat(
       },
       new Date()
     );
-    await saveState(config.statePath, state);
+    state = await saveState(config.statePath, state, runId);
     report.status = "failed";
     report.errors.push(toHeartbeatError("heartbeat", error));
     report.engagementSummary = getEngagementSummary(state);
     throw error;
   } finally {
     report.finishedAt = new Date().toISOString();
-    await saveHeartbeatReport(config.heartbeatReportPath, report);
+    await saveHeartbeatReport(config.statePath, config.heartbeatReportPath, report);
   }
 }
 

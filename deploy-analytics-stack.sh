@@ -109,6 +109,7 @@ for agent in data.get("agents", []):
         "displayName": agent.get("displayName", agent["agentId"]),
         "description": agent.get("description"),
         "serviceName": agent["serviceName"],
+        "profileUrl": agent.get("profileUrl"),
         "walletAddress": agent.get("walletAddress")
     }
     runtime_dir = agent.get("runtimeDir", f"{deploy_path}/agents/{agent['agentId']}/.runtime")

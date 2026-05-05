@@ -61,6 +61,7 @@ function normalizeMetadata(agentDir: string, parsed: Record<string, unknown> | u
     description: asOptionalString(parsed?.description),
     serviceName:
       asOptionalString(parsed?.serviceName) ?? `moltbook-outreach-${sanitizeServiceName(agentId)}`,
+    profileUrl: asOptionalString(parsed?.profileUrl),
     walletAddress: asOptionalString(parsed?.walletAddress)
   };
 }

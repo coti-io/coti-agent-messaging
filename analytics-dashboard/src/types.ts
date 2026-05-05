@@ -22,6 +22,7 @@ export interface AgentMetadata {
   displayName: string;
   description?: string;
   serviceName: string;
+  profileUrl?: string;
   walletAddress?: string;
 }
 

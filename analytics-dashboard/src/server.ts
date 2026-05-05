@@ -87,6 +87,7 @@ function publicAgent(agent: Awaited<ReturnType<typeof discoverAgents>>[number]) 
     displayName: agent.metadata.displayName,
     description: agent.metadata.description,
     serviceName: agent.metadata.serviceName,
+    profileUrl: agent.metadata.profileUrl,
     walletAddress: agent.metadata.walletAddress,
     statePresent: agent.statePresent,
     reportPresent: agent.reportPresent,

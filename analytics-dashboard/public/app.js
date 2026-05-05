@@ -22,6 +22,23 @@ function badgeClass(ok) {
   return ok ? "" : "warn";
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function agentNameMarkup(agent) {
+  const name = escapeHtml(agent.displayName);
+  if (!agent.profileUrl) {
+    return `<div class="agent-name">${name}</div>`;
+  }
+  return `<div class="agent-name"><a href="${escapeHtml(agent.profileUrl)}" target="_blank" rel="noreferrer">${name}</a></div>`;
+}
+
 function card(label, value, detail = "") {
   return `
     <article class="card">
@@ -61,7 +78,7 @@ function renderAgents(agents) {
       return `
         <tr>
           <td>
-            <div class="agent-name">${agent.displayName}</div>
+            ${agentNameMarkup(agent)}
             <div class="agent-id">${agent.agentId}</div>
           </td>
           <td><span class="badge ${badgeClass(schedulerFresh)}">${agent.schedulerHealth || "unknown"}</span></td>

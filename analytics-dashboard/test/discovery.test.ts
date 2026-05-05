@@ -40,6 +40,7 @@ test("discoverAgents reads agent metadata, state, and heartbeat report", async (
       agentId: "agent-a",
       displayName: "Agent A",
       serviceName: "moltbook-outreach-agent-a",
+      profileUrl: "https://www.moltbook.com/u/signalfoundry",
       walletAddress: "0x0000000000000000000000000000000000000001"
     }),
     "utf8"
@@ -66,6 +67,7 @@ test("discoverAgents reads agent metadata, state, and heartbeat report", async (
     assert.equal(agents.length, 1);
     assert.equal(agents[0]?.metadata.agentId, "agent-a");
     assert.equal(agents[0]?.metadata.displayName, "Agent A");
+    assert.equal(agents[0]?.metadata.profileUrl, "https://www.moltbook.com/u/signalfoundry");
     assert.equal(agents[0]?.pendingWrites, 1);
     assert.equal(agents[0]?.latestStatus, "ok");
     assert.equal(agents[0]?.latestSkipped, 1);

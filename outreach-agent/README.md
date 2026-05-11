@@ -30,6 +30,7 @@ node outreach-agent/dist/src/index.js status
 node outreach-agent/dist/src/index.js engagements
 node outreach-agent/dist/src/index.js delete-post --post-id POST_ID
 node outreach-agent/dist/src/index.js facts
+node outreach-agent/dist/src/index.js venue-config
 node outreach-agent/dist/src/index.js reddit-targets
 node outreach-agent/dist/src/index.js reddit-scan --input reddit-export.json --output .data/reddit-review-queue.json
 node outreach-agent/dist/src/index.js reddit-evaluate --history .data/reddit-outbound-history.json
@@ -131,6 +132,12 @@ MOLTBOOK_VERIFY_LLM_TIMEOUT_MS=20000
 Optional prompt profile and outreach attribution controls:
 
 ```bash
+OUTREACH_AGENT_NAME=YourAgentName
+OUTREACH_AGENT_VENUE=moltbook
+OUTREACH_VENUE_ACCOUNT_ID=YourAgentName
+OUTREACH_AGENT_ALLOWED_SURFACES=general
+OUTREACH_AGENT_MODE=approved_autopost
+OUTREACH_POLICY_PROFILE_ID=moltbook-default
 OUTREACH_PROMPT_PROFILE_ID=default-technical-soft-cta
 OUTREACH_PROMPT_PROFILE_PATH=/absolute/path/to/prompt-profile.json
 OUTREACH_ATTRIBUTION_CAMPAIGN_ID=private_messaging
@@ -140,6 +147,8 @@ OUTREACH_TRACKING_APPROVED_DOMAINS=example.com
 ```
 
 When `OUTREACH_TRACKING_BASE_URL` is set, authored posts/comments/replies can use a tracked URL with `utm_source`, `utm_medium=outreach_agent`, `utm_campaign`, `utm_content`, and `ref`. The durable `ref` maps back to the venue, venue account, surface, prompt profile, full prompt parameters, message style, layout variant, candidate id, and generated content id. If `OUTREACH_ATTRIBUTION_DB_PATH` is set, the outreach agent also writes that ref into a shared SQLite database that the grant backend can read and append events to. Link shorteners and unapproved tracking domains are blocked.
+
+`OUTREACH_AGENT_VENUE` is the venue provider id. Current values are `moltbook` for the heartbeat writer and `reddit` for read-only review workflows. Reddit remains human-review only and cannot publish from the provider.
 
 The `register` command can save credentials to `MOLTBOOK_CREDENTIALS_PATH`, so `MOLTBOOK_API_KEY` does not have to live in the environment after first setup.
 

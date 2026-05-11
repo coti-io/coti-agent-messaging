@@ -19,6 +19,7 @@ import {
   type JsonLlmProvider
 } from "./llm-client.js";
 import type { PromptProfile } from "./prompt-profile.js";
+import type { OutreachAgentConfig, OutreachAgentMode, OutreachVenueId } from "./venue.js";
 
 export interface MoltbookStoredCredentials {
   apiKey: string;
@@ -44,6 +45,7 @@ export interface MoltbookOutreachPolicyConfig {
 }
 
 export interface MoltbookRuntimeConfig extends RuntimePaths {
+  agent?: OutreachAgentConfig;
   moltbookBaseUrl: string;
   defaultSubmolt: string;
   apiKey?: string;
@@ -128,6 +130,29 @@ function parseForceWriteMode(
   }
 
   return undefined;
+}
+
+function parseOutreachMode(value: string | undefined, fallback: OutreachAgentMode): OutreachAgentMode {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (value === "read_only" || value === "human_review" || value === "approved_autopost") {
+    return value;
+  }
+
+  throw new Error(`Invalid OUTREACH_AGENT_MODE: ${value}`);
+}
+
+function parseOutreachVenue(value: string | undefined, fallback?: OutreachVenueId): OutreachVenueId {
+  const venue = value ?? fallback;
+  if (!venue) {
+    throw new Error("Missing outreach venue. Set OUTREACH_AGENT_VENUE.");
+  }
+  if (!/^[a-z][a-z0-9_-]{1,40}$/u.test(venue)) {
+    throw new Error(`Invalid OUTREACH_AGENT_VENUE: ${venue}`);
+  }
+
+  return venue as OutreachVenueId;
 }
 
 function getOptionalEnv(name: string): string | undefined {
@@ -243,6 +268,7 @@ export async function loadRuntimeConfig(
   options: {
     requireApiKey?: boolean;
     requireCoti?: boolean;
+    requireVenue?: boolean;
   } = {}
 ): Promise<MoltbookRuntimeConfig> {
   const paths = resolvePaths();
@@ -250,6 +276,13 @@ export async function loadRuntimeConfig(
   const apiKey = getOptionalEnv("MOLTBOOK_API_KEY") ?? storedCredentials?.apiKey;
   const requireApiKey = options.requireApiKey ?? false;
   const requireCoti = options.requireCoti ?? false;
+  const venue = parseOutreachVenue(
+    getOptionalEnv("OUTREACH_AGENT_VENUE"),
+    options.requireVenue ? undefined : "moltbook"
+  );
+  const allowedSurfaces = parseCsv(process.env.OUTREACH_AGENT_ALLOWED_SURFACES);
+  const promptProfileId = getOptionalEnv("OUTREACH_PROMPT_PROFILE_ID");
+  const attributionCampaignId = process.env.OUTREACH_ATTRIBUTION_CAMPAIGN_ID ?? "private_messaging";
 
   if (requireApiKey && !apiKey) {
     throw new Error(
@@ -301,6 +334,24 @@ export async function loadRuntimeConfig(
 
   return {
     ...paths,
+    agent: {
+      agentName: getOptionalEnv("OUTREACH_AGENT_NAME") ?? storedCredentials?.agentName,
+      venue,
+      venueAccountId: getOptionalEnv("OUTREACH_VENUE_ACCOUNT_ID") ?? paths.agentId ?? storedCredentials?.agentName,
+      allowedSurfaces:
+        allowedSurfaces.length > 0
+          ? allowedSurfaces
+          : venue === "moltbook"
+            ? [process.env.MOLTBOOK_DEFAULT_SUBMOLT ?? "general"]
+            : [],
+      mode: parseOutreachMode(
+        process.env.OUTREACH_AGENT_MODE,
+        venue === "reddit" ? "human_review" : "approved_autopost"
+      ),
+      policyProfileId: getOptionalEnv("OUTREACH_POLICY_PROFILE_ID"),
+      promptProfileId,
+      attributionCampaignId
+    },
     moltbookBaseUrl: process.env.MOLTBOOK_BASE_URL ?? "https://www.moltbook.com/api/v1",
     defaultSubmolt: process.env.MOLTBOOK_DEFAULT_SUBMOLT ?? "general",
     apiKey,
@@ -321,9 +372,9 @@ export async function loadRuntimeConfig(
       )
     },
     forceWriteMode: parseForceWriteMode(process.env.MOLTBOOK_FORCE_WRITE_MODE),
-    promptProfileId: getOptionalEnv("OUTREACH_PROMPT_PROFILE_ID"),
+    promptProfileId,
     promptProfile,
-    attributionCampaignId: process.env.OUTREACH_ATTRIBUTION_CAMPAIGN_ID ?? "private_messaging",
+    attributionCampaignId,
     attributionDbPath: getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH"),
     ctaBaseUrl:
       getOptionalEnv("OUTREACH_TRACKING_BASE_URL") ?? getOptionalEnv("OUTREACH_CTA_BASE_URL"),
@@ -374,6 +425,18 @@ export async function loadRuntimeConfig(
           rpcUrl: resolveRpcUrl(network)
         }
       : undefined
+  };
+}
+
+export function getOutreachAgentConfig(config: MoltbookRuntimeConfig): OutreachAgentConfig {
+  return config.agent ?? {
+    agentName: config.agentId,
+    venue: "moltbook",
+    venueAccountId: config.agentId,
+    allowedSurfaces: [config.defaultSubmolt],
+    mode: "approved_autopost",
+    promptProfileId: config.promptProfileId,
+    attributionCampaignId: config.attributionCampaignId
   };
 }
 

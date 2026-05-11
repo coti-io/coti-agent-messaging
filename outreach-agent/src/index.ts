@@ -54,6 +54,7 @@ function printUsage(): void {
   coti-outreach-agent engagements
   coti-outreach-agent delete-post --post-id POST_ID
   coti-outreach-agent facts
+  coti-outreach-agent venue-config
   coti-outreach-agent reddit-targets
   coti-outreach-agent reddit-scan [--input FILE] [--history FILE] [--rules FILE] [--output FILE]
   coti-outreach-agent reddit-evaluate --history FILE
@@ -223,6 +224,11 @@ async function run(): Promise<void> {
       const config = await loadRuntimeConfig();
       const facts = await loadProductFacts(config);
       console.log(JSON.stringify(facts, null, 2));
+      return;
+    }
+    case "venue-config": {
+      const config = await loadRuntimeConfig({ requireVenue: true });
+      console.log(JSON.stringify(config.agent, null, 2));
       return;
     }
     case "reddit-targets": {

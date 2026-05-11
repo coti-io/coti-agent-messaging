@@ -2,7 +2,6 @@ import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises
 import path from "node:path";
 
 import {
-  buildVerificationLlmProvider,
   loadRuntimeConfig,
   type MoltbookRuntimeConfig
 } from "./config.js";
@@ -12,8 +11,8 @@ import {
   type GeneratedWriteDecision,
   type WriteCandidate
 } from "./llm-content.js";
-import { MoltbookApiClient, MoltbookApiError, type MoltbookComment } from "./moltbook-api.js";
-import { loadProductFacts } from "./product-facts.js";
+import { MoltbookVenueProvider } from "./moltbook-venue.js";
+import { MoltbookApiError, type MoltbookComment } from "./moltbook-api.js";
 import {
   applyActionResult,
   canComment,
@@ -232,12 +231,7 @@ export async function runHeartbeat(
   configInput?: MoltbookRuntimeConfig
 ): Promise<HeartbeatResult> {
   const config = configInput ?? (await loadRuntimeConfig({ requireApiKey: true }));
-  const api = new MoltbookApiClient({
-    baseUrl: config.moltbookBaseUrl,
-    apiKey: config.apiKey,
-    autoVerify: config.autoVerify,
-    verificationLlmProvider: buildVerificationLlmProvider(config)
-  });
+  const venue = new MoltbookVenueProvider(config);
   const startedAt = new Date().toISOString();
   const runId = `${startedAt}:${process.pid}`;
   const report: HeartbeatReport = {
@@ -256,13 +250,11 @@ export async function runHeartbeat(
   let state = createInitialState();
 
   try {
-    const [home, me, factSheet, storedState] = await Promise.all([
-      api.getHome(),
-      api.getMe(),
-      loadProductFacts(config),
+    const [sources, storedState] = await Promise.all([
+      venue.loadHeartbeatSources(),
       loadState(config.statePath, config.heartbeatReportPath)
     ]);
-    const exploreFeed = await api.getFeed({ sort: "new", limit: 10 });
+    const { home, me, factSheet, exploreFeed } = sources;
     state = normalizeState(storedState);
     const persistState = async (nextState: OutreachAgentState): Promise<void> => {
       state = normalizeState({
@@ -272,7 +264,7 @@ export async function runHeartbeat(
       state = await saveState(config.statePath, state, runId);
     };
     state = await reconcilePendingWrites(
-      api,
+      venue,
       me.agent?.name ?? home.your_account.name,
       state,
       report,
@@ -308,7 +300,7 @@ export async function runHeartbeat(
               break;
             }
 
-            const comments = await api.getPostComments(action.activity.post_id, {
+            const comments = await venue.getPostComments(action.activity.post_id, {
               sort: "new",
               limit: 35
             });
@@ -322,7 +314,7 @@ export async function runHeartbeat(
             if (replyTargets.length === 0) {
               skipped.push(`no reply-worthy comment found on "${action.activity.post_title}".`);
               if (!config.dryRun) {
-                await api.markNotificationsReadByPost(action.activity.post_id);
+                await venue.markNotificationsReadByPost(action.activity.post_id);
               }
               break;
             }
@@ -341,7 +333,7 @@ export async function runHeartbeat(
             if (!target) {
               skipped.push(`LLM declined to reply on "${action.activity.post_title}".`);
               if (!config.dryRun) {
-                await api.markNotificationsReadByPost(action.activity.post_id);
+                await venue.markNotificationsReadByPost(action.activity.post_id);
               }
               break;
             }
@@ -371,7 +363,13 @@ export async function runHeartbeat(
               break;
             }
 
-            await api.upvotePost(postId);
+            await venue.publishAction({
+              id: `upvote:${postId}`,
+              venue: "moltbook",
+              type: "upvote_post",
+              parentId: postId,
+              raw: action
+            });
             state = applyActionResult(state, { type: "upvote_post", postId });
             performed.push(`Upvoted "${action.post.title}".`);
             break;
@@ -382,7 +380,13 @@ export async function runHeartbeat(
               break;
             }
 
-            await api.followAgent(action.agentName);
+            await venue.publishAction({
+              id: `follow:${action.agentName}`,
+              venue: "moltbook",
+              type: "follow_account",
+              parentId: action.agentName,
+              raw: action
+            });
             state = applyActionResult(state, { type: "follow_agent", agentName: action.agentName });
             performed.push(`Followed ${action.agentName}.`);
             break;
@@ -475,12 +479,17 @@ export async function runHeartbeat(
           } else {
             const pendingWrite = buildPendingWrite(candidate, decision);
             await persistState(addPendingWrite(state, pendingWrite));
-            await api.createComment(candidate.postId, {
+            await venue.publishAction({
+              id: `reply:${candidate.postId}:${candidate.target.commentId}`,
+              venue: "moltbook",
+              type: "reply_to_comment",
+              parentId: candidate.postId,
+              candidateId: candidate.target.commentId,
               content: decision.content,
-              parent_id: candidate.target.commentId
+              raw: candidate
             });
             await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
-            await api.markNotificationsReadByPost(candidate.postId);
+            await venue.markNotificationsReadByPost(candidate.postId);
             performed.push(
               `Replied to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`
             );
@@ -498,7 +507,14 @@ export async function runHeartbeat(
           } else {
             const pendingWrite = buildPendingWrite(candidate, decision);
             await persistState(addPendingWrite(state, pendingWrite));
-            await api.createComment(postId, { content: decision.content });
+            await venue.publishAction({
+              id: `comment:${postId}`,
+              venue: "moltbook",
+              type: "comment_on_post",
+              parentId: postId,
+              content: decision.content,
+              raw: candidate
+            });
             await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
             performed.push(`Commented on "${candidate.post.title}".`);
           }
@@ -510,10 +526,14 @@ export async function runHeartbeat(
           } else {
             const pendingWrite = buildPendingWrite(candidate, decision);
             await persistState(addPendingWrite(state, pendingWrite));
-            await api.createPost({
-              submolt_name: config.defaultSubmolt,
+            await venue.publishAction({
+              id: "create-post",
+              venue: "moltbook",
+              type: "create_post",
+              surface: config.defaultSubmolt,
               title: decision.title!,
-              content: decision.content
+              content: decision.content,
+              raw: candidate
             });
             await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
             performed.push(`Posted "${decision.title}".`);
@@ -722,7 +742,7 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
 }
 
 async function reconcilePendingWrites(
-  api: MoltbookApiClient,
+  venue: MoltbookVenueProvider,
   agentName: string | undefined,
   state: OutreachAgentState,
   report: HeartbeatReport,
@@ -733,13 +753,13 @@ async function reconcilePendingWrites(
   }
 
   try {
-    const profile = await api.getAgentProfile(agentName);
+    const profile = await venue.getAgentProfile(agentName);
     let nextState = state;
     let recoveredAny = false;
     let expiredAny = false;
     let updatedAny = false;
     for (const pendingWrite of state.pendingWrites) {
-      const recovered = await matchesPendingWrite(api, profile, pendingWrite);
+      const recovered = await matchesPendingWrite(venue, profile, pendingWrite);
       if (recovered) {
         nextState = removePendingWrite(recoverPendingWrite(nextState, pendingWrite), pendingWrite.id);
         report.reconciledPendingWrites.push({
@@ -793,17 +813,17 @@ async function reconcilePendingWrites(
 }
 
 async function matchesPendingWrite(
-  api: MoltbookApiClient,
-  profile: Awaited<ReturnType<MoltbookApiClient["getAgentProfile"]>>,
+  venue: MoltbookVenueProvider,
+  profile: Awaited<ReturnType<MoltbookVenueProvider["getAgentProfile"]>>,
   pendingWrite: PendingWrite
 ): Promise<boolean> {
   switch (pendingWrite.type) {
     case "post":
-      return matchPendingPost(api, profile, pendingWrite);
+      return matchPendingPost(venue, profile, pendingWrite);
     case "comment":
-      return matchPendingComment(api, profile, pendingWrite);
+      return matchPendingComment(venue, profile, pendingWrite);
     case "reply":
-      return matchPendingReply(api, profile, pendingWrite);
+      return matchPendingReply(venue, profile, pendingWrite);
   }
 }
 
@@ -812,8 +832,8 @@ function shouldExpirePendingWrite(reconciliationMisses: number): boolean {
 }
 
 async function matchPendingPost(
-  api: MoltbookApiClient,
-  profile: Awaited<ReturnType<MoltbookApiClient["getAgentProfile"]>>,
+  venue: MoltbookVenueProvider,
+  profile: Awaited<ReturnType<MoltbookVenueProvider["getAgentProfile"]>>,
   pendingWrite: PendingWrite
 ): Promise<boolean> {
   const profileMatch = (profile.recentPosts ?? []).some((post) => {
@@ -824,13 +844,13 @@ async function matchPendingPost(
     return true;
   }
 
-  const searchMatch = await searchForPendingWrite(api, pendingWrite);
+  const searchMatch = await searchForPendingWrite(venue, pendingWrite);
   return searchMatch;
 }
 
 async function matchPendingComment(
-  api: MoltbookApiClient,
-  profile: Awaited<ReturnType<MoltbookApiClient["getAgentProfile"]>>,
+  venue: MoltbookVenueProvider,
+  profile: Awaited<ReturnType<MoltbookVenueProvider["getAgentProfile"]>>,
   pendingWrite: PendingWrite
 ): Promise<boolean> {
   const profileMatch = (profile.recentComments ?? []).some((comment) =>
@@ -840,17 +860,17 @@ async function matchPendingComment(
     return true;
   }
 
-  const threadMatch = await matchPendingWriteInThread(api, pendingWrite);
+  const threadMatch = await matchPendingWriteInThread(venue, pendingWrite);
   if (threadMatch) {
     return true;
   }
 
-  return searchForPendingWrite(api, pendingWrite);
+  return searchForPendingWrite(venue, pendingWrite);
 }
 
 async function matchPendingReply(
-  api: MoltbookApiClient,
-  profile: Awaited<ReturnType<MoltbookApiClient["getAgentProfile"]>>,
+  venue: MoltbookVenueProvider,
+  profile: Awaited<ReturnType<MoltbookVenueProvider["getAgentProfile"]>>,
   pendingWrite: PendingWrite
 ): Promise<boolean> {
   const profileMatch = (profile.recentComments ?? []).some((comment) =>
@@ -860,12 +880,12 @@ async function matchPendingReply(
     return true;
   }
 
-  const threadMatch = await matchPendingWriteInThread(api, pendingWrite);
+  const threadMatch = await matchPendingWriteInThread(venue, pendingWrite);
   if (threadMatch) {
     return true;
   }
 
-  return searchForPendingWrite(api, pendingWrite);
+  return searchForPendingWrite(venue, pendingWrite);
 }
 
 function matchesCommentFingerprint(comment: MoltbookComment, pendingWrite: PendingWrite): boolean {
@@ -883,14 +903,14 @@ function matchesCommentFingerprint(comment: MoltbookComment, pendingWrite: Pendi
 }
 
 async function matchPendingWriteInThread(
-  api: MoltbookApiClient,
+  venue: MoltbookVenueProvider,
   pendingWrite: PendingWrite
 ): Promise<boolean> {
   if (!pendingWrite.postId) {
     return false;
   }
 
-  const comments = await api.getPostComments(pendingWrite.postId, {
+  const comments = await venue.getPostComments(pendingWrite.postId, {
     sort: "new",
     limit: 100
   });
@@ -912,7 +932,7 @@ function flattenComments(comments: readonly MoltbookComment[]): MoltbookComment[
 }
 
 async function searchForPendingWrite(
-  api: MoltbookApiClient,
+  venue: MoltbookVenueProvider,
   pendingWrite: PendingWrite
 ): Promise<boolean> {
   const query = buildPendingWriteSearchQuery(pendingWrite);
@@ -920,7 +940,7 @@ async function searchForPendingWrite(
     return false;
   }
 
-  const response = await api.search({
+  const response = await venue.search({
     q: query,
     type: pendingWrite.type === "post" ? "posts" : "comments",
     limit: 10

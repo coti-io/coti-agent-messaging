@@ -593,6 +593,12 @@ function buildPendingWrite(candidate: WriteCandidate, decision: GeneratedWriteDe
         fingerprint: decision.fingerprint || contentFingerprint(`${decision.title}\n${decision.content}`),
         title: decision.title,
         content: decision.content,
+        promptProfileId: decision.promptProfileId,
+        promptParameters: decision.promptParameters,
+        layout: decision.layout,
+        ctaUrl: decision.ctaUrl,
+        outreachRef: decision.outreachRef,
+        structuralFingerprint: decision.structuralFingerprint,
         createdAt
       };
     case "comment_on_post": {
@@ -604,6 +610,12 @@ function buildPendingWrite(candidate: WriteCandidate, decision: GeneratedWriteDe
         content: decision.content,
         postId,
         targetSummary: `${candidate.post.title} ${candidate.post.content_preview ?? ""}`.trim(),
+        promptProfileId: decision.promptProfileId,
+        promptParameters: decision.promptParameters,
+        layout: decision.layout,
+        ctaUrl: decision.ctaUrl,
+        outreachRef: decision.outreachRef,
+        structuralFingerprint: decision.structuralFingerprint,
         createdAt
       };
     }
@@ -617,6 +629,12 @@ function buildPendingWrite(candidate: WriteCandidate, decision: GeneratedWriteDe
         targetCommentId: candidate.target.commentId,
         targetSummary: candidate.target.content,
         replyToAuthor: candidate.target.authorName,
+        promptProfileId: decision.promptProfileId,
+        promptParameters: decision.promptParameters,
+        layout: decision.layout,
+        ctaUrl: decision.ctaUrl,
+        outreachRef: decision.outreachRef,
+        structuralFingerprint: decision.structuralFingerprint,
         createdAt
       };
   }
@@ -663,6 +681,12 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
         fingerprint: pendingWrite.fingerprint,
         title: pendingWrite.title ?? "Untitled post",
         content: pendingWrite.content,
+        promptProfileId: pendingWrite.promptProfileId,
+        promptParameters: pendingWrite.promptParameters,
+        layout: pendingWrite.layout,
+        ctaUrl: pendingWrite.ctaUrl,
+        outreachRef: pendingWrite.outreachRef,
+        structuralFingerprint: pendingWrite.structuralFingerprint,
         createdAt: pendingWrite.createdAt
       });
     case "comment":
@@ -671,6 +695,12 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
         commentId: `post:${pendingWrite.postId ?? pendingWrite.id}`,
         content: pendingWrite.content,
         targetSummary: pendingWrite.targetSummary,
+        promptProfileId: pendingWrite.promptProfileId,
+        promptParameters: pendingWrite.promptParameters,
+        layout: pendingWrite.layout,
+        ctaUrl: pendingWrite.ctaUrl,
+        outreachRef: pendingWrite.outreachRef,
+        structuralFingerprint: pendingWrite.structuralFingerprint,
         createdAt: pendingWrite.createdAt
       });
     case "reply":
@@ -680,6 +710,12 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
         content: pendingWrite.content,
         targetSummary: pendingWrite.targetSummary,
         replyToAuthor: pendingWrite.replyToAuthor,
+        promptProfileId: pendingWrite.promptProfileId,
+        promptParameters: pendingWrite.promptParameters,
+        layout: pendingWrite.layout,
+        ctaUrl: pendingWrite.ctaUrl,
+        outreachRef: pendingWrite.outreachRef,
+        structuralFingerprint: pendingWrite.structuralFingerprint,
         createdAt: pendingWrite.createdAt
       });
   }

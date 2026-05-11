@@ -5,6 +5,13 @@ import http from "node:http";
 import { formatEther } from "@coti-io/coti-ethers";
 
 import {
+  StarterGrantAttributionStore,
+  parseAttributionEventType,
+  validateAttributionRefId,
+  type StarterGrantAttributionEventInput,
+  type StarterGrantOutreachRef
+} from "./attribution-store.js";
+import {
   claimStarterGrant,
   consumeStarterGrantRateLimit,
   getStarterGrantFundingSnapshot,
@@ -47,6 +54,7 @@ class HttpError extends Error {
 
 export interface StartStarterGrantServiceDependencies {
   store?: StarterGrantStore;
+  attributionStore?: StarterGrantAttributionStore;
   funder?: StarterGrantFunder;
   payoutQueue?: StarterGrantPayoutQueue;
   logger?: Pick<typeof console, "log" | "error">;
@@ -90,6 +98,104 @@ function asString(value: unknown, field: string): string {
   }
 
   return value;
+}
+
+function asOptionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "string" || value.length === 0) {
+    throw new HttpError(400, `Expected string for "${field}".`);
+  }
+
+  return value;
+}
+
+function asRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, `Expected object for "${field}".`);
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function optionalRecord(value: unknown, field: string): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  return asRecord(value, field);
+}
+
+function parseOptionalMetadata(value: unknown): Record<string, unknown> | undefined {
+  const metadata = optionalRecord(value, "metadata");
+  if (!metadata) {
+    return undefined;
+  }
+
+  const entries = Object.entries(metadata).filter(([, entryValue]) => {
+    return (
+      typeof entryValue === "string" ||
+      typeof entryValue === "number" ||
+      typeof entryValue === "boolean"
+    );
+  });
+  return Object.fromEntries(entries);
+}
+
+function parseOptionalOutreachRef(value: unknown): StarterGrantOutreachRef | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const ref = asRecord(value, "outreachRef");
+  const promptParameters = asRecord(ref.promptParameters, "outreachRef.promptParameters");
+
+  return {
+    id: validateAttributionRefId(asString(ref.id, "outreachRef.id")),
+    venue: asString(ref.venue, "outreachRef.venue"),
+    venueAccountId: asOptionalString(ref.venueAccountId, "outreachRef.venueAccountId"),
+    surface: asOptionalString(ref.surface, "outreachRef.surface"),
+    contentType: asString(ref.contentType, "outreachRef.contentType"),
+    campaignId: asString(ref.campaignId, "outreachRef.campaignId"),
+    promptProfileId: asString(ref.promptProfileId, "outreachRef.promptProfileId"),
+    promptParameters,
+    messageStyle: asString(ref.messageStyle, "outreachRef.messageStyle"),
+    layout: asString(ref.layout, "outreachRef.layout"),
+    ctaStyle: asOptionalString(ref.ctaStyle, "outreachRef.ctaStyle"),
+    promotionLevel: asOptionalString(ref.promotionLevel, "outreachRef.promotionLevel"),
+    productSpecificity: asOptionalString(ref.productSpecificity, "outreachRef.productSpecificity"),
+    rewardEmphasis: asOptionalString(ref.rewardEmphasis, "outreachRef.rewardEmphasis"),
+    audience: asOptionalString(ref.audience, "outreachRef.audience"),
+    candidateId: asString(ref.candidateId, "outreachRef.candidateId"),
+    generatedContentId: asString(ref.generatedContentId, "outreachRef.generatedContentId"),
+    remoteContentId: asOptionalString(ref.remoteContentId, "outreachRef.remoteContentId"),
+    utm: optionalRecord(ref.utm, "outreachRef.utm"),
+    createdAt: asOptionalString(ref.createdAt, "outreachRef.createdAt")
+  };
+}
+
+function parseAttributionInput(body: Record<string, unknown>): {
+  refId?: string;
+  outreachRef?: StarterGrantOutreachRef;
+} {
+  const explicitRef = asOptionalString(body.ref, "ref");
+  const outreachRef = parseOptionalOutreachRef(body.outreachRef);
+  const refId = explicitRef ?? outreachRef?.id;
+
+  if (!refId) {
+    return { outreachRef };
+  }
+
+  const normalizedRefId = validateAttributionRefId(refId);
+  if (outreachRef && outreachRef.id !== normalizedRefId) {
+    throw new HttpError(400, "ref and outreachRef.id must match.");
+  }
+
+  return {
+    refId: normalizedRefId,
+    outreachRef
+  };
 }
 
 function resolveRequesterIp(
@@ -141,7 +247,7 @@ function mapUnhandledError(error: unknown): HttpError {
     return new HttpError(503, message);
   }
 
-  if (/Expected|JSON|application\/json/i.test(message)) {
+  if (/Expected|JSON|application\/json|Invalid attribution|Unsupported attribution/i.test(message)) {
     return new HttpError(400, message);
   }
 
@@ -188,6 +294,9 @@ export async function startStarterGrantService(
 ) {
   const logger = dependencies.logger ?? console;
   const store = dependencies.store ?? new StarterGrantFileStore(config.statePath);
+  const attributionStore =
+    dependencies.attributionStore ??
+    (config.attributionDbPath ? new StarterGrantAttributionStore(config.attributionDbPath) : undefined);
   const funder =
     dependencies.funder ??
     new CotiStarterGrantFunder({
@@ -247,13 +356,28 @@ export async function startStarterGrantService(
           return;
         }
         const body = await readJsonBody(request, config.maxBodyBytes);
+        const attribution = parseAttributionInput(body);
         const challenge = await issueStarterGrantChallenge(store, {
           walletAddress: asString(body.walletAddress, "walletAddress"),
           installId: asString(body.installId, "installId"),
           requesterKey,
           ttlMs: config.challengeTtlMs,
-          maxOutstandingChallengesPerIdentity: config.maxOutstandingChallengesPerIdentity
+          maxOutstandingChallengesPerIdentity: config.maxOutstandingChallengesPerIdentity,
+          attributionRefId: attribution.refId
         });
+        await persistOutreachRef(attributionStore, attribution.outreachRef, logger);
+        await recordAttributionEvent(
+          attributionStore,
+          challenge.attributionRefId
+            ? {
+                refId: challenge.attributionRefId,
+                type: "grant_challenge",
+                walletAddress: challenge.walletAddress,
+                installId: challenge.installId
+              }
+            : undefined,
+          logger
+        );
         writeJsonResponse(response, jsonResponse(200, challenge));
         return;
       }
@@ -306,6 +430,8 @@ export async function startStarterGrantService(
           return;
         }
         const body = await readJsonBody(request, config.maxBodyBytes);
+        const attribution = parseAttributionInput(body);
+        await persistOutreachRef(attributionStore, attribution.outreachRef, logger);
         const claim = await claimStarterGrant(store, payoutQueue, {
           challengeId: asString(body.challengeId, "challengeId"),
           walletAddress: asString(body.walletAddress, "walletAddress"),
@@ -318,10 +444,72 @@ export async function startStarterGrantService(
           rejectedClaimsPerWindow: config.rejectedClaimsPerWindow,
           rejectedClaimWindowMs: config.rejectedClaimWindowMs
         });
+        const claimRefId = claim.attributionRefId ?? attribution.refId;
+        if (claimRefId) {
+          await recordAttributionEvent(
+            attributionStore,
+            {
+              refId: claimRefId,
+              type: "grant_claim_attempted",
+              walletAddress: claim.walletAddress,
+              installId: claim.installId
+            },
+            logger
+          );
+          await recordAttributionEvent(
+            attributionStore,
+            {
+              refId: claimRefId,
+              type: claim.status === "claimed" ? "grant_claim_succeeded" : "grant_claim_queued",
+              walletAddress: claim.walletAddress,
+              installId: claim.installId,
+              metadata: claim.transactionHash ? { transactionHash: claim.transactionHash } : undefined
+            },
+            logger
+          );
+        }
         writeJsonResponse(
           response,
           jsonResponse(claim.status === "claimed" ? 200 : 202, claim)
         );
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/attribution/event") {
+        requireJsonRequest(request);
+        const body = await readJsonBody(request, config.maxBodyBytes);
+        const attribution = parseAttributionInput(body);
+        await persistOutreachRef(attributionStore, attribution.outreachRef, logger);
+        const refId = attribution.refId ?? validateAttributionRefId(asString(body.ref, "ref"));
+        const event: StarterGrantAttributionEventInput = {
+          refId,
+          type: parseAttributionEventType(asString(body.type, "type")),
+          venue: asOptionalString(body.venue, "venue"),
+          walletAddress: asOptionalString(body.walletAddress, "walletAddress"),
+          installId: asOptionalString(body.installId, "installId"),
+          sessionId: asOptionalString(body.sessionId, "sessionId"),
+          skillId: asOptionalString(body.skillId, "skillId"),
+          metadata: parseOptionalMetadata(body.metadata)
+        };
+        if (!attributionStore) {
+          writeJsonResponse(response, jsonResponse(503, { error: "Attribution store is not configured." }));
+          return;
+        }
+        await attributionStore.recordEvent(event);
+        writeJsonResponse(response, jsonResponse(202, { ok: true, ref: refId, type: event.type }));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/attribution/summary") {
+        if (!attributionStore) {
+          writeJsonResponse(
+            response,
+            jsonResponse(200, { generatedAt: new Date().toISOString(), groups: [] })
+          );
+          return;
+        }
+        const campaignId = url.searchParams.get("campaignId") ?? undefined;
+        writeJsonResponse(response, jsonResponse(200, await attributionStore.summarize({ campaignId })));
         return;
       }
 
@@ -364,6 +552,36 @@ export async function startStarterGrantService(
         });
       })
   };
+}
+
+async function persistOutreachRef(
+  attributionStore: StarterGrantAttributionStore | undefined,
+  outreachRef: StarterGrantOutreachRef | undefined,
+  logger: Pick<typeof console, "error">
+): Promise<void> {
+  if (!attributionStore || !outreachRef) {
+    return;
+  }
+  try {
+    await attributionStore.upsertOutreachRef(outreachRef);
+  } catch (error) {
+    logger.error("Failed to persist outreach attribution ref", error);
+  }
+}
+
+async function recordAttributionEvent(
+  attributionStore: StarterGrantAttributionStore | undefined,
+  event: StarterGrantAttributionEventInput | undefined,
+  logger: Pick<typeof console, "error">
+): Promise<void> {
+  if (!attributionStore || !event) {
+    return;
+  }
+  try {
+    await attributionStore.recordEvent(event);
+  } catch (error) {
+    logger.error("Failed to persist attribution event", error);
+  }
 }
 
 function writeJsonResponse(response: http.ServerResponse, result: JsonResponse): void {

@@ -4,8 +4,8 @@ set -euo pipefail
 SSH_HOST="${MOLTBOOK_OUTREACH_SSH_HOST:-grant}"
 SERVICE_NAME="${MOLTBOOK_OUTREACH_SERVICE_NAME:-moltbook-outreach-heartbeat}"
 LINES="${MOLTBOOK_OUTREACH_LOG_LINES:-100}"
-DEPLOY_PATH="${MOLTBOOK_OUTREACH_DEPLOY_PATH:-/home/ubuntu/moltbook-outreach-agent}"
-REMOTE_PACKAGE_DIR="$DEPLOY_PATH/moltbook-outreach-agent"
+DEPLOY_PATH="${MOLTBOOK_OUTREACH_DEPLOY_PATH:-/home/ubuntu/outreach-agent}"
+REMOTE_PACKAGE_DIR="$DEPLOY_PATH/outreach-agent"
 RUNTIME_DIR="$DEPLOY_PATH/.runtime"
 
 SERVICE_UNIT="${SERVICE_NAME}.service"

@@ -6,6 +6,7 @@ export interface StarterGrantServiceConfig {
   statusRoute: string;
   healthRoute: string;
   statePath: string;
+  attributionDbPath?: string;
   authToken?: string;
   trustProxy: boolean;
   maxBodyBytes: number;
@@ -37,6 +38,7 @@ export interface StarterGrantChallengeRecord {
   issuedAt: string;
   expiresAt: string;
   requesterKey?: string;
+  attributionRefId?: string;
   status: "issued" | "funding" | "claimed" | "expired" | "rejected";
   attempts: number;
 }
@@ -47,6 +49,7 @@ export interface StarterGrantClaimRecord {
   walletAddress: string;
   installId: string;
   requesterKey?: string;
+  attributionRefId?: string;
   status: "pending_funding" | "claimed" | "rejected" | "funding_failed";
   reason?: string;
   transactionHash?: string;
@@ -94,6 +97,7 @@ export interface StarterGrantChallengeResponse {
   expiresAt: string;
   walletAddress: string;
   installId: string;
+  attributionRefId?: string;
 }
 
 export interface StarterGrantClaimResponse {
@@ -103,6 +107,7 @@ export interface StarterGrantClaimResponse {
   challengeId: string;
   transactionHash?: string;
   amountWei: string;
+  attributionRefId?: string;
 }
 
 export interface StarterGrantFundingAvailability {
@@ -151,6 +156,7 @@ export interface StarterGrantPayoutJob {
   challengeId: string;
   walletAddress: string;
   installId: string;
+  attributionRefId?: string;
   amountWei: bigint;
 }
 

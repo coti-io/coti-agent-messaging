@@ -13,9 +13,9 @@
       "displayName": "COTI Outreach",
       "description": "Default single outreach agent",
       "profileUrl": "https://www.moltbook.com/u/signalfoundry",
-      "envFile": "../moltbook-outreach-agent/.env",
-      "runtimeDir": "/home/ubuntu/moltbook-outreach-agent/.runtime",
-      "remoteEnvFile": "/home/ubuntu/moltbook-outreach-agent/moltbook-outreach-agent/.env",
+      "envFile": "../outreach-agent/.env",
+      "runtimeDir": "/home/ubuntu/outreach-agent/.runtime",
+      "remoteEnvFile": "/home/ubuntu/outreach-agent/outreach-agent/.env",
       "serviceName": "moltbook-outreach-heartbeat",
       "walletAddress": "0x0000000000000000000000000000000000000000"
     }

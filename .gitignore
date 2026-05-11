@@ -10,6 +10,6 @@ contracts/.env
 sdk/.env
 starter-grant-service/.env
 .DS_Store
-moltbook-outreach-agent/.data/
-moltbook-outreach-agent/.bridge/
+outreach-agent/.data/
+outreach-agent/.bridge/
 starter-grant-service/.data/

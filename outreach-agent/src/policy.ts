@@ -7,6 +7,8 @@ import type {
 } from "./moltbook-api.js";
 import type { MoltbookOutreachPolicyConfig } from "./config.js";
 import type { ProductFactSheet } from "./product-facts.js";
+import type { OutreachRef } from "./outreach-attribution.js";
+import type { LayoutVariant, PromptParameterSet } from "./prompt-profile.js";
 
 export interface RecentGeneratedArtifact {
   id: string;
@@ -15,6 +17,14 @@ export interface RecentGeneratedArtifact {
   content: string;
   targetId?: string;
   targetSummary?: string;
+  promptProfileId?: string;
+  promptParameters?: PromptParameterSet;
+  layout?: LayoutVariant;
+  ctaUrl?: string;
+  outreachRef?: OutreachRef;
+  structuralFingerprint?: string;
+  clickCount?: number;
+  privateMessageCount?: number;
   createdAt: string;
 }
 
@@ -29,6 +39,12 @@ export interface PendingWrite {
   targetCommentId?: string;
   targetSummary?: string;
   replyToAuthor?: string;
+  promptProfileId?: string;
+  promptParameters?: PromptParameterSet;
+  layout?: LayoutVariant;
+  ctaUrl?: string;
+  outreachRef?: OutreachRef;
+  structuralFingerprint?: string;
   createdAt: string;
 }
 
@@ -968,6 +984,12 @@ export function applyActionResult(
         fingerprint: string;
         title: string;
         content: string;
+        promptProfileId?: string;
+        promptParameters?: PromptParameterSet;
+        layout?: LayoutVariant;
+        ctaUrl?: string;
+        outreachRef?: OutreachRef;
+        structuralFingerprint?: string;
         createdAt?: string;
       }
     | {
@@ -976,6 +998,12 @@ export function applyActionResult(
         content: string;
         targetSummary?: string;
         replyToAuthor?: string;
+        promptProfileId?: string;
+        promptParameters?: PromptParameterSet;
+        layout?: LayoutVariant;
+        ctaUrl?: string;
+        outreachRef?: OutreachRef;
+        structuralFingerprint?: string;
         createdAt?: string;
       }
     | { type: "upvote_post"; postId: string }
@@ -1022,6 +1050,12 @@ export function applyActionResult(
         type: "post",
         title: action.title,
         content: action.content,
+        promptProfileId: action.promptProfileId,
+        promptParameters: action.promptParameters,
+        layout: action.layout,
+        ctaUrl: action.ctaUrl,
+        outreachRef: action.outreachRef,
+        structuralFingerprint: action.structuralFingerprint,
         createdAt: actionTime.toISOString()
       };
       nextState.recentGeneratedArtifacts = [
@@ -1059,6 +1093,12 @@ export function applyActionResult(
         content: action.content,
         targetId: action.commentId,
         targetSummary: action.targetSummary,
+        promptProfileId: action.promptProfileId,
+        promptParameters: action.promptParameters,
+        layout: action.layout,
+        ctaUrl: action.ctaUrl,
+        outreachRef: action.outreachRef,
+        structuralFingerprint: action.structuralFingerprint,
         createdAt: actionTime.toISOString()
       };
       nextState.recentGeneratedArtifacts = [

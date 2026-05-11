@@ -150,6 +150,7 @@ export class SerialStarterGrantPayoutQueue implements StarterGrantPayoutQueue {
           walletAddress: job.walletAddress,
           installId: job.installId,
           challengeId: job.challengeId,
+          attributionRefId: job.attributionRefId,
           transactionHash: transfer.transactionHash,
           amountWei: job.amountWei.toString()
         };
@@ -190,6 +191,7 @@ export class SerialStarterGrantPayoutQueue implements StarterGrantPayoutQueue {
         walletAddress: job.walletAddress,
         installId: job.installId,
         challengeId: job.challengeId,
+        attributionRefId: job.attributionRefId,
         transactionHash: transfer.transactionHash,
         amountWei: job.amountWei.toString()
       };

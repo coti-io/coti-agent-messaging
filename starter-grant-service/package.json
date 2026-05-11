@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@coti-io/coti-ethers": "^1.0.5",
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "sqlite3": "^6.0.1"
   },
   "devDependencies": {
     "@types/node": "^25.3.5",

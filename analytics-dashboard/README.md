@@ -45,7 +45,7 @@ $MOLTBOOK_ANALYTICS_AGENT_ROOT/<agentId>/.runtime/last-heartbeat.json
   "agentId": "agent-a",
   "displayName": "COTI Outreach A",
   "description": "Primary outreach agent",
-  "serviceName": "moltbook-outreach-agent-a",
+  "serviceName": "outreach-agent-a",
   "walletAddress": "0x..."
 }
 ```

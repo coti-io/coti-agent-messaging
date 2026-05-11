@@ -65,7 +65,7 @@ DASHBOARD_ENV_FILE="$(value dashboard.envFile)"
 RSYNC_OPTS=(-az --compress --human-readable --delete)
 
 echo "Building local deploy artifacts..."
-npm run build -w @coti-agent-messaging/moltbook-outreach-agent
+npm run build -w @coti-agent-messaging/outreach-agent
 npm run build -w @coti-agent-messaging/analytics-dashboard
 
 ssh "$SSH_HOST" "mkdir -p '$DEPLOY_PATH' '$REMOTE_REPO_DIR' '$AGENTS_ROOT' '$DASHBOARD_DIR'"
@@ -197,7 +197,7 @@ paths = [
     Path("package-lock.json"),
     Path("package.json"),
     Path("analytics-dashboard/package.json"),
-    Path("moltbook-outreach-agent/package.json"),
+    Path("outreach-agent/package.json"),
 ]
 
 digest = hashlib.sha256()
@@ -219,9 +219,9 @@ if [[ -f "$REMOTE_INSTALL_STAMP_PATH" ]]; then
   previous_stamp="$(tr -d '[:space:]' < "$REMOTE_INSTALL_STAMP_PATH")"
 fi
 
-if [[ ! -d analytics-dashboard/node_modules || ! -d moltbook-outreach-agent/node_modules || "$current_stamp" != "$previous_stamp" ]]; then
+if [[ ! -d analytics-dashboard/node_modules || ! -d outreach-agent/node_modules || "$current_stamp" != "$previous_stamp" ]]; then
   echo "Installing focused runtime dependencies on remote host..."
-  rm -rf analytics-dashboard/node_modules moltbook-outreach-agent/node_modules
+  rm -rf analytics-dashboard/node_modules outreach-agent/node_modules
   (
     cd analytics-dashboard
     NPM_CONFIG_AUDIT=false \
@@ -230,7 +230,7 @@ if [[ ! -d analytics-dashboard/node_modules || ! -d moltbook-outreach-agent/node
     npm install --workspaces=false --omit=dev --no-package-lock
   )
   (
-    cd moltbook-outreach-agent
+    cd outreach-agent
     NPM_CONFIG_AUDIT=false \
     NPM_CONFIG_FUND=false \
     NPM_CONFIG_PROGRESS=false \
@@ -253,10 +253,10 @@ for agent in json.loads(os.environ["MANIFEST_JSON"]).get("agents", []):
     print(f"{agent['agentId']}\t{agent['serviceName']}\t{runtime_dir}\t{remote_env_file}")
 PY
   install_template \
-    "$REMOTE_REPO_DIR/moltbook-outreach-agent/deploy/systemd/moltbook-outreach-heartbeat.service" \
+    "$REMOTE_REPO_DIR/outreach-agent/deploy/systemd/moltbook-outreach-heartbeat.service" \
     "/tmp/${service_name}.service" \
     "__REMOTE_USER__" "$remote_user" \
-    "__PACKAGE_DIR__" "$REMOTE_REPO_DIR/moltbook-outreach-agent" \
+    "__PACKAGE_DIR__" "$REMOTE_REPO_DIR/outreach-agent" \
     "__RUNTIME_DIR__" "$runtime_dir" \
     "__ENV_FILE__" "$remote_env_file" \
     "__LOCK_FILE__" "$runtime_dir/heartbeat.lock" \
@@ -265,7 +265,7 @@ PY
   sudo -n mv "/tmp/${service_name}.service" "/etc/systemd/system/${service_name}.service"
 
   install_template \
-    "$REMOTE_REPO_DIR/moltbook-outreach-agent/deploy/systemd/moltbook-outreach-heartbeat.timer" \
+    "$REMOTE_REPO_DIR/outreach-agent/deploy/systemd/moltbook-outreach-heartbeat.timer" \
     "/tmp/${service_name}.timer" \
     "__SERVICE_NAME__" "$service_name"
   sudo -n mv "/tmp/${service_name}.timer" "/etc/systemd/system/${service_name}.timer"

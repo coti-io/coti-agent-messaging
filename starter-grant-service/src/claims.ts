@@ -251,6 +251,7 @@ function rejectClaimAttempt(
     walletAddress: input.walletAddress,
     installId: input.installId,
     requesterKey: input.requesterKey,
+    attributionRefId: input.challenge.attributionRefId,
     status: "rejected",
     reason: input.reason,
     createdAt: input.now.toISOString(),
@@ -276,6 +277,7 @@ export async function issueStarterGrantChallenge(
     now?: Date;
     ttlMs: number;
     maxOutstandingChallengesPerIdentity: number;
+    attributionRefId?: string;
   }
 ): Promise<StarterGrantChallengeResponse> {
   const now = input.now ?? new Date();
@@ -291,13 +293,17 @@ export async function issueStarterGrantChallenge(
 
     const activeChallenge = latestActiveChallengeForIdentity(state, walletAddress, input.installId, now);
     if (activeChallenge) {
+      if (!activeChallenge.attributionRefId && input.attributionRefId) {
+        activeChallenge.attributionRefId = input.attributionRefId;
+      }
       return {
         challengeId: activeChallenge.id,
         prompt: activeChallenge.prompt,
         claimPayload: activeChallenge.claimPayload,
         expiresAt: activeChallenge.expiresAt,
         walletAddress,
-        installId: input.installId
+        installId: input.installId,
+        attributionRefId: activeChallenge.attributionRefId
       };
     }
 
@@ -324,6 +330,7 @@ export async function issueStarterGrantChallenge(
       issuedAt: challenge.issuedAt,
       expiresAt: challenge.expiresAt,
       requesterKey: input.requesterKey,
+      attributionRefId: input.attributionRefId,
       status: "issued",
       attempts: 0
     });
@@ -343,7 +350,8 @@ export async function issueStarterGrantChallenge(
       claimPayload: challenge.claimPayload,
       expiresAt: challenge.expiresAt,
       walletAddress,
-      installId: input.installId
+      installId: input.installId,
+      attributionRefId: input.attributionRefId
     };
   });
 }
@@ -511,6 +519,7 @@ export async function claimStarterGrant(
       walletAddress,
       installId: input.installId,
       requesterKey: input.requesterKey,
+      attributionRefId: challenge.attributionRefId,
       status: "pending_funding",
       amountWei: input.amountWei.toString(),
       createdAt: now.toISOString(),
@@ -532,6 +541,7 @@ export async function claimStarterGrant(
       challengeId: challenge.id,
       walletAddress,
       installId: input.installId,
+      attributionRefId: challenge.attributionRefId,
       amountWei: input.amountWei
     };
   });

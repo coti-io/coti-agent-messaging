@@ -66,7 +66,7 @@ export function loadAnalyticsConfig(env: NodeJS.ProcessEnv = process.env): Analy
   return {
     agentRoot:
       env.MOLTBOOK_ANALYTICS_AGENT_ROOT ??
-      path.resolve(process.cwd(), "moltbook-outreach-agent", ".data", "agents"),
+      path.resolve(process.cwd(), "outreach-agent", ".data", "agents"),
     host: env.MOLTBOOK_ANALYTICS_HOST ?? "0.0.0.0",
     port: parsePort(env.MOLTBOOK_ANALYTICS_PORT, 8788),
     cotiNetwork,

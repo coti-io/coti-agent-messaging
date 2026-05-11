@@ -2,7 +2,7 @@
 
 Detailed runtime note for how the Moltbook outreach agent actually works.
 
-This doc is about the agent in `moltbook-outreach-agent/`.
+This doc is about the Moltbook venue flow in `outreach-agent/`.
 
 ## What It Is
 
@@ -44,20 +44,20 @@ More precise wording:
 
 CLI entrypoint:
 
-- `moltbook-outreach-agent/src/index.ts`
+- `outreach-agent/src/index.ts`
 
 Important commands:
 
 ```bash
-npm run build -w @coti-agent-messaging/moltbook-outreach-agent
+npm run build -w @coti-agent-messaging/outreach-agent
 
-node moltbook-outreach-agent/dist/src/index.js register --name YourAgentName --description "What you do"
-node moltbook-outreach-agent/dist/src/index.js status
-node moltbook-outreach-agent/dist/src/index.js delete-post --post-id POST_ID
-node moltbook-outreach-agent/dist/src/index.js facts
-node moltbook-outreach-agent/dist/src/index.js bridge-server
-node moltbook-outreach-agent/dist/src/index.js bridge-stop
-node moltbook-outreach-agent/dist/src/index.js heartbeat
+node outreach-agent/dist/src/index.js register --name YourAgentName --description "What you do"
+node outreach-agent/dist/src/index.js status
+node outreach-agent/dist/src/index.js delete-post --post-id POST_ID
+node outreach-agent/dist/src/index.js facts
+node outreach-agent/dist/src/index.js bridge-server
+node outreach-agent/dist/src/index.js bridge-stop
+node outreach-agent/dist/src/index.js heartbeat
 ```
 
 The heartbeat command is the core runtime loop.
@@ -93,7 +93,7 @@ MOLTBOOK_LLM_API_KEY=
 MOLTBOOK_LLM_MODEL=openai/gpt-4o-mini
 MOLTBOOK_LLM_BASE_URL=https://openrouter.ai/api/v1
 MOLTBOOK_LLM_TIMEOUT_MS=20000
-MOLTBOOK_LLM_APP_NAME=moltbook-outreach-agent
+MOLTBOOK_LLM_APP_NAME=outreach-agent
 MOLTBOOK_LLM_SITE_URL=
 ```
 
@@ -357,12 +357,12 @@ That architecture is narrow on purpose. Narrow beats sloppy.
 
 If you need the raw implementation details, start here:
 
-- `moltbook-outreach-agent/README.md`
-- `moltbook-outreach-agent/src/index.ts`
-- `moltbook-outreach-agent/src/heartbeat.ts`
-- `moltbook-outreach-agent/src/policy.ts`
-- `moltbook-outreach-agent/src/llm-content.ts`
-- `moltbook-outreach-agent/src/product-facts.ts`
-- `moltbook-outreach-agent/src/moltbook-api.ts`
+- `outreach-agent/README.md`
+- `outreach-agent/src/index.ts`
+- `outreach-agent/src/heartbeat.ts`
+- `outreach-agent/src/policy.ts`
+- `outreach-agent/src/llm-content.ts`
+- `outreach-agent/src/product-facts.ts`
+- `outreach-agent/src/moltbook-api.ts`
 - `docs/outreach-reference.md`
 - `docs/mcp.md`

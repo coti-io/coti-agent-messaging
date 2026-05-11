@@ -1,8 +1,21 @@
 import { buildMainLlmProvider, type MoltbookRuntimeConfig } from "./config.js";
+import { saveOutreachRefToAttributionStore } from "./attribution-store.js";
 import type { JsonLlmProvider } from "./llm-client.js";
 import type { MoltbookPost } from "./moltbook-api.js";
+import { buildOutreachRef, buildTrackedLink, type CtaLink, type OutreachRef } from "./outreach-attribution.js";
 import type { ProductFactSheet } from "./product-facts.js";
 import { contentFingerprint, type OutreachAgentState, type ReplyTarget } from "./policy.js";
+import {
+  contentTokenSimilarity,
+  promptProfileToPromptText,
+  resolvePromptProfile,
+  structuralFingerprint,
+  validateDraftAgainstPromptProfile,
+  validatePromptProfile,
+  type LayoutVariant,
+  type PromptParameterSet,
+  type ResolvedPromptProfile
+} from "./prompt-profile.js";
 import { buildRepoContext } from "./repo-context.js";
 
 export type WriteCandidate =
@@ -32,6 +45,12 @@ export interface GeneratedWriteDecision {
   content: string;
   rationale: string;
   fingerprint: string;
+  promptProfileId?: string;
+  promptParameters?: PromptParameterSet;
+  layout?: LayoutVariant;
+  ctaUrl?: string;
+  outreachRef?: OutreachRef;
+  structuralFingerprint?: string;
 }
 
 interface LlmReplyGateResponse {
@@ -198,6 +217,16 @@ export async function chooseAndDraftWriteAction(
     );
   }
   const selectedCandidate = selectedLabeledCandidate.candidate;
+  const resolvedProfile = resolvePromptProfile({
+    venue: "moltbook",
+    actionType: selectedCandidate.type,
+    profile: config.promptProfile,
+    profileId: config.promptProfileId,
+    ctaBaseUrl: config.ctaBaseUrl,
+    approvedDomains: config.ctaApprovedDomains
+  });
+  validatePromptProfile(resolvedProfile);
+  const ctaLink = buildCandidateCtaLink(config, selectedCandidate, resolvedProfile);
   const response = await draftCandidate(
     llmProvider,
     selectedLabeledCandidate.label,
@@ -205,10 +234,16 @@ export async function chooseAndDraftWriteAction(
     selection.rationale,
     factSheet,
     state,
-    repoContext
+    repoContext,
+    resolvedProfile,
+    ctaLink
   );
 
-  const content = normalizeDraftContent(selectedCandidate, (response.content ?? "").trim());
+  const content = applyCtaToContent(
+    normalizeDraftContent(selectedCandidate, (response.content ?? "").trim()),
+    resolvedProfile,
+    ctaLink
+  );
   if (!content) {
     throw new Error(`LLM returned empty content for candidate ${selectedCandidate.id}`);
   }
@@ -219,14 +254,24 @@ export async function chooseAndDraftWriteAction(
     throw new Error("LLM selected a post candidate but did not return a title.");
   }
 
-  validateDraft(selectedCandidate, title, content, state);
+  validateDraft(selectedCandidate, title, content, state, resolvedProfile, ctaLink);
+  validateDraftAgainstPromptProfile(resolvedProfile, content, ctaLink?.url);
+  if (ctaLink?.ref) {
+    await saveOutreachRefToAttributionStore(config.attributionDbPath, ctaLink.ref).catch(() => undefined);
+  }
 
   return {
     selectedCandidateId: selectedCandidate.id,
     title,
     content,
     rationale: [selection.rationale, response.rationale].filter(Boolean).join(" ").trim() || "No rationale provided.",
-    fingerprint: contentFingerprint(`${title ?? ""}\n${content}`)
+    fingerprint: contentFingerprint(`${title ?? ""}\n${content}`),
+    promptProfileId: resolvedProfile.id,
+    promptParameters: resolvedProfile.parameters,
+    layout: resolvedProfile.parameters.layout,
+    ctaUrl: ctaLink?.url,
+    outreachRef: ctaLink?.ref,
+    structuralFingerprint: structuralFingerprint(`${title ?? ""}\n${content}`)
   };
 }
 
@@ -256,12 +301,14 @@ async function draftCandidate(
   selectionRationale: string | undefined,
   factSheet: ProductFactSheet,
   state: OutreachAgentState,
-  repoContext: Awaited<ReturnType<typeof buildRepoContext>>
+  repoContext: Awaited<ReturnType<typeof buildRepoContext>>,
+  resolvedProfile: ResolvedPromptProfile,
+  ctaLink: CtaLink | undefined
 ): Promise<LlmDraftResponse> {
   return llmProvider.createJsonCompletion<LlmDraftResponse>([
     {
       role: "system",
-      content: buildDraftSystemPrompt(candidateLabel, candidate)
+      content: buildDraftSystemPrompt(candidateLabel, candidate, resolvedProfile)
     },
     {
       role: "user",
@@ -271,7 +318,9 @@ async function draftCandidate(
         selectionRationale,
         factSheet,
         state,
-        repoContext
+        repoContext,
+        resolvedProfile,
+        ctaLink
       )
     }
   ]);
@@ -326,10 +375,15 @@ function buildSelectionUserPrompt(
   ].join("\n");
 }
 
-function buildDraftSystemPrompt(candidateLabel: string, candidate: WriteCandidate): string {
+function buildDraftSystemPrompt(
+  candidateLabel: string,
+  candidate: WriteCandidate,
+  resolvedProfile: ResolvedPromptProfile
+): string {
   const commonRules = [
     `Prompt version: ${PROMPT_VERSION}.`,
     BASE_PERSONALITY,
+    "Follow the active prompt profile and layout instructions unless they conflict with safety rules.",
     "Ground claims only in the provided facts and repo snippets.",
     "Do not sound like docs, release notes, or a pitch deck.",
     "Do not lead with rewards unless the target is explicitly discussing rewards.",
@@ -339,6 +393,7 @@ function buildDraftSystemPrompt(candidateLabel: string, candidate: WriteCandidat
     "Cut throat-clearing, avoid explanatory filler, and do not enumerate just because you can.",
     "Avoid repeating recent authored phrases or openings.",
     "If you reference our product, mechanics, SDK, MCP surface, rewards, or private messaging flow, leave one explicit attribution anchor to COTI or to our COTI private messaging stack.",
+    promptProfileToPromptText(resolvedProfile),
     `Echo selectedCandidateId as "${candidateLabel}".`,
     "Return strict JSON with keys: selectedCandidateId, title, content, rationale."
   ];
@@ -388,7 +443,9 @@ function buildDraftUserPrompt(
   selectionRationale: string | undefined,
   factSheet: ProductFactSheet,
   state: OutreachAgentState,
-  repoContext: Awaited<ReturnType<typeof buildRepoContext>>
+  repoContext: Awaited<ReturnType<typeof buildRepoContext>>,
+  resolvedProfile: ResolvedPromptProfile,
+  ctaLink: CtaLink | undefined
 ): string {
   const candidateQuery = candidateToQueryText(candidate);
   const relevantClaims = selectRelevantClaims(factSheet, candidateQuery);
@@ -420,6 +477,23 @@ function buildDraftUserPrompt(
       ? "Make one strong claim and support it with concrete mechanics."
       : "Keep it sharp. One distinction, one consequence, one memorable closing line beats a well-behaved explanation.",
     "",
+    "Active prompt profile:",
+    promptProfileToPromptText(resolvedProfile),
+    "",
+    "CTA/ref requirement:",
+    ctaLink
+      ? JSON.stringify(
+          {
+            url: ctaLink.url,
+            ref: ctaLink.ref,
+            placement: ctaLink.placement,
+            instruction: "Include this exact URL once. Do not alter its query params."
+          },
+          null,
+          2
+        )
+      : "No tracked CTA URL is required for this draft.",
+    "",
     "Recent authored history:",
     buildRecentHistorySummary(state),
     "",
@@ -432,7 +506,9 @@ function validateDraft(
   candidate: WriteCandidate,
   title: string | undefined,
   content: string,
-  state: OutreachAgentState
+  state: OutreachAgentState,
+  resolvedProfile: ResolvedPromptProfile,
+  ctaLink: CtaLink | undefined
 ): void {
   if (candidate.type === "create_post" && title && title.length > 110) {
     throw new Error("Generated post title is too long.");
@@ -458,6 +534,22 @@ function validateDraft(
   if (state.createdPostFingerprints.includes(fingerprint)) {
     throw new Error("Generated content is too similar to recent authored history.");
   }
+
+  const draftStructure = structuralFingerprint(`${title ?? ""}\n${content}`);
+  const nearDuplicate = state.recentGeneratedArtifacts.find((artifact) => {
+    const artifactText = `${artifact.title ?? ""}\n${artifact.content}`;
+    return (
+      artifact.structuralFingerprint === draftStructure ||
+      contentTokenSimilarity(`${title ?? ""}\n${content}`, artifactText) >= 0.72
+    );
+  });
+  if (nearDuplicate) {
+    throw new Error(`Generated content is too similar to recent authored artifact ${nearDuplicate.id}.`);
+  }
+
+  if (resolvedProfile.cta.requirement === "required" && ctaLink && !content.includes(ctaLink.url)) {
+    throw new Error("Generated content is missing the required tracked CTA URL.");
+  }
 }
 
 function normalizeDraftContent(candidate: WriteCandidate, content: string): string {
@@ -469,6 +561,60 @@ function normalizeDraftContent(candidate: WriteCandidate, content: string): stri
     .replace(/`([^`]+)`/g, "$1")
     .replace(/`+/g, "")
     .trim();
+}
+
+function buildCandidateCtaLink(
+  config: MoltbookRuntimeConfig,
+  candidate: WriteCandidate,
+  resolvedProfile: ResolvedPromptProfile
+): CtaLink | undefined {
+  if (resolvedProfile.cta.requirement !== "required" || !resolvedProfile.cta.baseUrl) {
+    return undefined;
+  }
+
+  const generatedContentId = contentFingerprint(`${candidate.id}:${candidateToQueryText(candidate)}`);
+  const ref = buildOutreachRef({
+    venue: "moltbook",
+    venueAccountId: config.agentId,
+    surface: config.defaultSubmolt,
+    contentType:
+      candidate.type === "create_post"
+        ? "post"
+        : candidate.type === "reply_to_activity"
+          ? "reply"
+          : "comment",
+    promptProfileId: resolvedProfile.id,
+    parameters: resolvedProfile.parameters,
+    campaignId: config.attributionCampaignId ?? "private_messaging",
+    candidateId: candidate.id,
+    generatedContentId
+  });
+
+  return buildTrackedLink({
+    baseUrl: resolvedProfile.cta.baseUrl,
+    ref,
+    placement: resolvedProfile.cta.placement,
+    approvedDomains: resolvedProfile.cta.approvedDomains
+  });
+}
+
+function applyCtaToContent(
+  content: string,
+  resolvedProfile: ResolvedPromptProfile,
+  ctaLink: CtaLink | undefined
+): string {
+  if (!ctaLink || resolvedProfile.cta.requirement !== "required" || content.includes(ctaLink.url)) {
+    return content;
+  }
+
+  if (ctaLink.placement === "after_first_paragraph") {
+    const paragraphs = content.split(/\n\n+/);
+    if (paragraphs.length > 1) {
+      return [paragraphs[0], ctaLink.url, ...paragraphs.slice(1)].join("\n\n");
+    }
+  }
+
+  return `${content}\n\n${ctaLink.url}`;
 }
 
 function candidateToQueryText(candidate: WriteCandidate): string {
@@ -581,6 +727,11 @@ function buildRecentHistorySummary(state: OutreachAgentState): string {
         type: artifact.type,
         title: artifact.title,
         opening: extractOpening(artifact.content),
+        promptProfileId: artifact.promptProfileId,
+        messageStyle: artifact.promptParameters?.messageStyle,
+        layout: artifact.layout,
+        structuralFingerprint: artifact.structuralFingerprint,
+        ctaRef: artifact.outreachRef?.id,
         targetSummary: artifact.targetSummary,
         createdAt: artifact.createdAt
       })

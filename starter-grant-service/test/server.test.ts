@@ -40,6 +40,50 @@ function createConfig(overrides: Partial<StarterGrantServiceConfig> = {}): Start
   };
 }
 
+function solveChallengePrompt(prompt: string): string {
+  const numbers = prompt.match(/\d+/gu)?.map(Number) ?? [];
+  assert.equal(numbers.length >= 2, true);
+  const [left = 0, right = 0] = numbers;
+  if (prompt.includes("receives")) {
+    return String(left + right);
+  }
+  if (prompt.includes("archives")) {
+    return String(left - right);
+  }
+  return String(left * right);
+}
+
+function buildOutreachRef(refId: string) {
+  return {
+    id: refId,
+    venue: "moltbook",
+    venueAccountId: "OutreachBot",
+    surface: "general",
+    contentType: "post",
+    campaignId: "private_messaging",
+    promptProfileId: "aggressive-structured",
+    promptParameters: {
+      messageStyle: "aggressive",
+      layout: "structured_bullets"
+    },
+    messageStyle: "aggressive",
+    layout: "structured_bullets",
+    ctaStyle: "direct_next_step",
+    promotionLevel: "explicit",
+    productSpecificity: "product_named",
+    rewardEmphasis: "balanced",
+    audience: "builders",
+    candidateId: "create-post",
+    generatedContentId: "generated-1",
+    utm: {
+      source: "moltbook",
+      medium: "outreach_agent",
+      campaign: "private_messaging",
+      content: "aggressive_structured_post"
+    }
+  };
+}
+
 async function startTestServer(
   overrides: Partial<StarterGrantServiceConfig> = {},
   dependencies: StartStarterGrantServiceDependencies = {}
@@ -243,6 +287,104 @@ test("health route reports degraded when funder cannot cover another claim", asy
     assert.equal(body.funding.pendingFundingClaimsCount, 0);
     assert.equal(body.funding.estimatedClaimsRemaining, 0);
     assert.equal(body.funding.requiredBalanceNative, "0.00000000000000015");
+  } finally {
+    await service.close();
+  }
+});
+
+test("shared attribution db joins outreach refs with grant and usage events", async () => {
+  const wallet = Wallet.createRandom();
+  const refId = "mb_testref_1";
+  const service = await startTestServer(
+    {
+      attributionDbPath: path.join(os.tmpdir(), `starter-grant-attribution-${Date.now()}-${Math.random()}.sqlite`)
+    },
+    {
+      funder: {
+        async getFundingAvailability() {
+          return {
+            funderAddress: "0xfunder",
+            onChainBalanceWei: "1000",
+            reservedPendingAmountWei: "0",
+            availableBalanceWei: "1000",
+            estimatedGasCostWei: "1",
+            requiredBalanceWei: "26",
+            hasSufficientBalance: true
+          };
+        },
+        async createStarterGrantTransfer() {
+          return {
+            transactionHash: "0xgrant",
+            waitForConfirmation: async () => undefined
+          };
+        }
+      }
+    }
+  );
+
+  try {
+    const challengeResponse = await fetch(`${service.baseUrl}/challenge`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        walletAddress: wallet.address,
+        installId: "install-attribution",
+        ref: refId,
+        outreachRef: buildOutreachRef(refId)
+      })
+    });
+    assert.equal(challengeResponse.status, 200);
+    const challenge = await challengeResponse.json();
+    assert.equal(challenge.attributionRefId, refId);
+
+    const claimPayload = String(challenge.claimPayload);
+    const claimResponse = await fetch(`${service.baseUrl}/claim`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        challengeId: challenge.challengeId,
+        walletAddress: wallet.address,
+        installId: "install-attribution",
+        challengeAnswer: solveChallengePrompt(String(challenge.prompt)),
+        claimPayload,
+        signature: await wallet.signMessage(claimPayload)
+      })
+    });
+    assert.equal(claimResponse.status, 200);
+    const claim = await claimResponse.json();
+    assert.equal(claim.status, "claimed");
+    assert.equal(claim.attributionRefId, refId);
+
+    const eventResponse = await fetch(`${service.baseUrl}/attribution/event`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ref: refId,
+        type: "skill_usage",
+        walletAddress: wallet.address,
+        installId: "install-attribution",
+        skillId: "private-message-send"
+      })
+    });
+    assert.equal(eventResponse.status, 202);
+
+    const summaryResponse = await fetch(`${service.baseUrl}/attribution/summary?campaignId=private_messaging`);
+    assert.equal(summaryResponse.status, 200);
+    const summary = await summaryResponse.json();
+    assert.equal(summary.groups.length, 1);
+    assert.equal(summary.groups[0].promptProfileId, "aggressive-structured");
+    assert.equal(summary.groups[0].messageStyle, "aggressive");
+    assert.equal(summary.groups[0].layout, "structured_bullets");
+    assert.equal(summary.groups[0].grantChallenges, 1);
+    assert.equal(summary.groups[0].grantClaimAttempts, 1);
+    assert.equal(summary.groups[0].grantClaimsSucceeded, 1);
+    assert.equal(summary.groups[0].skillUsages, 1);
   } finally {
     await service.close();
   }

@@ -76,6 +76,7 @@ export function resolveStarterGrantServiceConfig(): StarterGrantServiceConfig {
     statePath:
       process.env.STARTER_GRANT_SERVICE_STATE_PATH ??
       path.join(packageRoot, ".data", "starter-grants.json"),
+    attributionDbPath: getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH"),
     authToken: getOptionalEnv("STARTER_GRANT_SERVICE_AUTH_TOKEN"),
     trustProxy: parseBoolean(process.env.STARTER_GRANT_SERVICE_TRUST_PROXY, false),
     maxBodyBytes: parseNumber(process.env.STARTER_GRANT_SERVICE_MAX_BODY_BYTES, 16 * 1024),

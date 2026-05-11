@@ -346,7 +346,10 @@ async function setBaselineCounts(db: SqliteDatabase, counts: EngagementCounts): 
   await setMetaValue(db, BASELINE_META_KEY, JSON.stringify(normalizeCounts(counts)));
 }
 
-async function getSnapshotState(db: SqliteDatabase): Promise<OutreachAgentState | undefined> {
+async function getSnapshotState(
+  db: SqliteDatabase,
+  now = new Date()
+): Promise<OutreachAgentState | undefined> {
   const row = await db.get<{ snapshot_json: string }>(
     "SELECT snapshot_json FROM state_snapshots WHERE snapshot_id = ?",
     [STATE_SNAPSHOT_ID]
@@ -354,7 +357,7 @@ async function getSnapshotState(db: SqliteDatabase): Promise<OutreachAgentState 
   if (!row?.snapshot_json) {
     return undefined;
   }
-  return normalizeState(JSON.parse(row.snapshot_json) as Partial<OutreachAgentState>);
+  return normalizeState(JSON.parse(row.snapshot_json) as Partial<OutreachAgentState>, now);
 }
 
 async function writeSnapshotState(db: SqliteDatabase, state: OutreachAgentState): Promise<void> {
@@ -476,7 +479,7 @@ async function getWindowCounts(db: SqliteDatabase, fromIso: string): Promise<Eng
 }
 
 async function buildAnalytics(db: SqliteDatabase, now = new Date()): Promise<StorageAnalytics> {
-  const snapshotState = (await getSnapshotState(db)) ?? createInitialState();
+  const snapshotState = (await getSnapshotState(db, now)) ?? createInitialState();
   const pendingWrites = await loadPendingWrites(db);
   const state = normalizeState({
     ...snapshotState,
@@ -485,6 +488,8 @@ async function buildAnalytics(db: SqliteDatabase, now = new Date()): Promise<Sto
   const last2Hours = new Date(now.getTime() - 2 * 60 * 60 * 1_000).toISOString();
   const lastDay = new Date(now.getTime() - 24 * 60 * 60 * 1_000).toISOString();
   const lastWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1_000).toISOString();
+  const storedEvents = await loadStoredEvents(db);
+  const snapshotEventSummary = summarizeEvents(state.engagementEvents, now);
   const [latestRun, latestSuccess, total, twoHours, day, week] = await Promise.all([
     db.get<{
       status: string;
@@ -509,10 +514,16 @@ async function buildAnalytics(db: SqliteDatabase, now = new Date()): Promise<Sto
         LIMIT 1
       `
     ),
-    getLifetimeCounts(db),
-    getWindowCounts(db, last2Hours),
-    getWindowCounts(db, lastDay),
-    getWindowCounts(db, lastWeek)
+    storedEvents.length === 0 ? Promise.resolve(normalizeCounts(state.engagementTotals)) : getLifetimeCounts(db),
+    storedEvents.length === 0
+      ? Promise.resolve(snapshotEventSummary.windows.last2Hours)
+      : getWindowCounts(db, last2Hours),
+    storedEvents.length === 0
+      ? Promise.resolve(snapshotEventSummary.windows.lastDay)
+      : getWindowCounts(db, lastDay),
+    storedEvents.length === 0
+      ? Promise.resolve(snapshotEventSummary.windows.lastWeek)
+      : getWindowCounts(db, lastWeek)
   ]);
 
   const summary: EngagementSummary = {
@@ -564,7 +575,12 @@ async function migrateLegacyStateIfNeeded(
   }
 
   const legacyStateJson = await readOptionalJson(statePath);
-  const migratedState = normalizeState((legacyStateJson as Partial<OutreachAgentState>) ?? createInitialState());
+  const legacyState = (legacyStateJson as Partial<OutreachAgentState>) ?? createInitialState();
+  const migrationNow =
+    typeof legacyState.lastHeartbeatAt === "string"
+      ? new Date(legacyState.lastHeartbeatAt)
+      : new Date();
+  const migratedState = normalizeState(legacyState, migrationNow);
   const baselineCounts = subtractCounts(
     normalizeCounts(migratedState.engagementTotals),
     countEvents(migratedState.engagementEvents)

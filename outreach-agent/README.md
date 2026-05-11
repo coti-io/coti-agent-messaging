@@ -22,28 +22,32 @@ The agent is designed to push three messages in the right order:
 ## Commands
 
 ```bash
-npm run build -w @coti-agent-messaging/moltbook-outreach-agent
-npm run deploy:rsync -w @coti-agent-messaging/moltbook-outreach-agent
+npm run build -w @coti-agent-messaging/outreach-agent
+npm run deploy:rsync -w @coti-agent-messaging/outreach-agent
 
-node moltbook-outreach-agent/dist/src/index.js register --name YourAgentName --description "What you do"
-node moltbook-outreach-agent/dist/src/index.js status
-node moltbook-outreach-agent/dist/src/index.js engagements
-node moltbook-outreach-agent/dist/src/index.js delete-post --post-id POST_ID
-node moltbook-outreach-agent/dist/src/index.js facts
-node moltbook-outreach-agent/dist/src/index.js bridge-server
-node moltbook-outreach-agent/dist/src/index.js bridge-stop
-node moltbook-outreach-agent/dist/src/index.js heartbeat
+node outreach-agent/dist/src/index.js register --name YourAgentName --description "What you do"
+node outreach-agent/dist/src/index.js status
+node outreach-agent/dist/src/index.js engagements
+node outreach-agent/dist/src/index.js delete-post --post-id POST_ID
+node outreach-agent/dist/src/index.js facts
+node outreach-agent/dist/src/index.js reddit-targets
+node outreach-agent/dist/src/index.js reddit-scan --input reddit-export.json --output .data/reddit-review-queue.json
+node outreach-agent/dist/src/index.js reddit-evaluate --history .data/reddit-outbound-history.json
+node outreach-agent/dist/src/index.js attribution-summary --refs .data/outreach-refs.json --events .data/attribution-events.json
+node outreach-agent/dist/src/index.js bridge-server
+node outreach-agent/dist/src/index.js bridge-stop
+node outreach-agent/dist/src/index.js heartbeat
 ```
 
 ## Deploy To `grant`
 
-The package includes `moltbook-outreach-agent/deploy-rsync.sh`, which deploys a repo subset to the SSH config host `grant`, syncs a local env file, builds the outreach workspace on the server, and installs a `systemd` timer that runs one heartbeat every 5 minutes.
+The package includes `outreach-agent/deploy-rsync.sh`, which deploys a repo subset to the SSH config host `grant`, syncs a local env file, builds the outreach workspace on the server, and installs a `systemd` timer that runs one heartbeat every 5 minutes.
 
 Default remote settings:
 
 - SSH host alias: `grant`
-- Deploy path: `/home/ubuntu/moltbook-outreach-agent`
-- Local env file to sync: `moltbook-outreach-agent/.env`
+- Deploy path: `/home/ubuntu/outreach-agent`
+- Local env file to sync: `outreach-agent/.env`
 - Timer unit: `moltbook-outreach-heartbeat.timer`
 
 The deploy script also installs missing Ubuntu prerequisites when needed:
@@ -61,14 +65,14 @@ Required remote setup:
 Run the deploy:
 
 ```bash
-npm run deploy:rsync -w @coti-agent-messaging/moltbook-outreach-agent
+npm run deploy:rsync -w @coti-agent-messaging/outreach-agent
 ```
 
 Optional deploy env vars:
 
 ```bash
-export MOLTBOOK_OUTREACH_DEPLOY_PATH=/home/ubuntu/moltbook-outreach-agent
-export MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE=/absolute/path/to/moltbook-outreach-agent.env
+export MOLTBOOK_OUTREACH_DEPLOY_PATH=/home/ubuntu/outreach-agent
+export MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE=/absolute/path/to/outreach-agent.env
 export MOLTBOOK_OUTREACH_DEPLOY_DELETE=1
 ```
 
@@ -116,13 +120,26 @@ MOLTBOOK_LLM_API_KEY=
 MOLTBOOK_LLM_MODEL=openai/gpt-4o-mini
 MOLTBOOK_LLM_BASE_URL=https://openrouter.ai/api/v1
 MOLTBOOK_LLM_TIMEOUT_MS=20000
-MOLTBOOK_LLM_APP_NAME=moltbook-outreach-agent
+MOLTBOOK_LLM_APP_NAME=outreach-agent
 MOLTBOOK_LLM_SITE_URL=
 MOLTBOOK_VERIFY_LLM_API_KEY=
 MOLTBOOK_VERIFY_LLM_MODEL=openai/gpt-4o-mini
 MOLTBOOK_VERIFY_LLM_BASE_URL=https://openrouter.ai/api/v1
 MOLTBOOK_VERIFY_LLM_TIMEOUT_MS=20000
 ```
+
+Optional prompt profile and outreach attribution controls:
+
+```bash
+OUTREACH_PROMPT_PROFILE_ID=default-technical-soft-cta
+OUTREACH_PROMPT_PROFILE_PATH=/absolute/path/to/prompt-profile.json
+OUTREACH_ATTRIBUTION_CAMPAIGN_ID=private_messaging
+OUTREACH_ATTRIBUTION_DB_PATH=/absolute/path/to/outreach-attribution.sqlite
+OUTREACH_TRACKING_BASE_URL=https://example.com/agent-messaging
+OUTREACH_TRACKING_APPROVED_DOMAINS=example.com
+```
+
+When `OUTREACH_TRACKING_BASE_URL` is set, authored posts/comments/replies can use a tracked URL with `utm_source`, `utm_medium=outreach_agent`, `utm_campaign`, `utm_content`, and `ref`. The durable `ref` maps back to the venue, venue account, surface, prompt profile, full prompt parameters, message style, layout variant, candidate id, and generated content id. If `OUTREACH_ATTRIBUTION_DB_PATH` is set, the outreach agent also writes that ref into a shared SQLite database that the grant backend can read and append events to. Link shorteners and unapproved tracking domains are blocked.
 
 The `register` command can save credentials to `MOLTBOOK_CREDENTIALS_PATH`, so `MOLTBOOK_API_KEY` does not have to live in the environment after first setup.
 
@@ -142,21 +159,21 @@ The bridge receives the exact same `messages` array the OpenRouter path would re
 If you just need a crude local endpoint for manual or external-process handling, the package also ships a tiny bridge server:
 
 ```bash
-npm run build -w @coti-agent-messaging/moltbook-outreach-agent
-npm run bridge:start -w @coti-agent-messaging/moltbook-outreach-agent
-npm run bridge:stop -w @coti-agent-messaging/moltbook-outreach-agent
+npm run build -w @coti-agent-messaging/outreach-agent
+npm run bridge:start -w @coti-agent-messaging/outreach-agent
+npm run bridge:stop -w @coti-agent-messaging/outreach-agent
 ```
 
 Or through the CLI:
 
 ```bash
-node moltbook-outreach-agent/dist/src/index.js bridge-server
-node moltbook-outreach-agent/dist/src/index.js bridge-stop
+node outreach-agent/dist/src/index.js bridge-server
+node outreach-agent/dist/src/index.js bridge-stop
 ```
 
 The included server writes each request to `requests/<id>.json` inside `MOLTBOOK_LLM_BRIDGE_SERVER_DIR`, waits for a matching `responses/<id>.json`, and returns that JSON as the model result.
 
-By default, the bundled bridge server stores its scratch files under `moltbook-outreach-agent/.bridge/llm-bridge`.
+By default, the bundled bridge server stores its scratch files under `outreach-agent/.bridge/llm-bridge`.
 
 If Moltbook's verification challenges are too garbled for the deterministic parser, verification now reuses the main LLM config by default. You only need `MOLTBOOK_VERIFY_LLM_*` if you want a separate model, key, or endpoint for captcha solving.
 
@@ -168,7 +185,7 @@ The included bridge server itself is configured with:
 MOLTBOOK_LLM_BRIDGE_SERVER_HOST=127.0.0.1
 MOLTBOOK_LLM_BRIDGE_SERVER_PORT=4318
 MOLTBOOK_LLM_BRIDGE_SERVER_PATH=/json-completion
-MOLTBOOK_LLM_BRIDGE_SERVER_DIR=./moltbook-outreach-agent/.bridge/llm-bridge
+MOLTBOOK_LLM_BRIDGE_SERVER_DIR=./outreach-agent/.bridge/llm-bridge
 MOLTBOOK_LLM_BRIDGE_SERVER_AUTH_TOKEN=
 MOLTBOOK_LLM_BRIDGE_SERVER_RESPONSE_TIMEOUT_MS=300000
 MOLTBOOK_LLM_BRIDGE_SERVER_POLL_INTERVAL_MS=500
@@ -179,6 +196,36 @@ Each heartbeat also writes a JSON report to `MOLTBOOK_HEARTBEAT_REPORT_PATH` or,
 The state file tracks outbound Moltbook engagement by action type: posts, top-level comments, replies, upvotes, and follows. Use `engagements` to print last 2 hours, last day, last week, and all-time totals. This is local agent activity tracking, not received engagement such as impressions or third-party likes.
 
 The state file also tracks `pendingWrites` for posts/comments/replies that may have landed remotely before a local failure finished. Later heartbeats reconcile those against profile recents, exact post comment trees, and Moltbook search results before planning new authored actions. If a pending write stays unreconciled long enough, it expires instead of blocking that target forever.
+
+### Reddit Read-Only Outreach Assistant
+
+The Reddit workflow is intentionally not an autonomous poster. It monitors approved subreddits, scores relevant threads, generates non-promotional explanatory first-reply drafts, and emits a human-review queue.
+
+Useful commands:
+
+```bash
+npm run build -w @coti-agent-messaging/outreach-agent
+npm run reddit:targets -w @coti-agent-messaging/outreach-agent
+npm run reddit:scan -w @coti-agent-messaging/outreach-agent -- --input reddit-export.json --output outreach-agent/.data/reddit-review-queue.json
+npm run reddit:evaluate -w @coti-agent-messaging/outreach-agent -- --history outreach-agent/.data/reddit-outbound-history.json
+```
+
+For live read-only monitoring through Reddit OAuth:
+
+```bash
+REDDIT_ACCESS_TOKEN=
+REDDIT_USER_AGENT=coti-agent-messaging/0.1.0 by YOUR_REDDIT_USERNAME
+REDDIT_BASE_URL=https://oauth.reddit.com
+```
+
+Guardrails:
+
+- first replies/comments must not mention COTI, product names, owned links, CTAs, demos, or DM prompts
+- product/tool discussion is allowed only after explicit user interest
+- every target subreddit must have a registry entry before draft generation
+- the review queue always requires human approval
+- daily activity is capped by subreddit and globally
+- outcome evaluation triggers kill reasons for bans, repeated mod removals, spam accusations, or first-reply promotion violations
 
 ### COTI
 
@@ -221,7 +268,7 @@ The runtime is split into a few narrow modules:
 ## Testing
 
 ```bash
-npm run test -w @coti-agent-messaging/moltbook-outreach-agent
+npm run test -w @coti-agent-messaging/outreach-agent
 ```
 
 The tests cover:

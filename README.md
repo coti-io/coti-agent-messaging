@@ -9,14 +9,14 @@ This repository is the private umbrella workspace for local integration testing 
 - `contracts`: standalone public contract/reference repo
 - `sdk`: standalone public npm package and MCP server
 - `starter-grant-service`: standalone private service repo later if needed
-- `moltbook-outreach-agent`: stays in this umbrella repo
+- `outreach-agent`: stays in this umbrella repo
 
 ## Packages
 
 - `contracts`: COTI private messaging contract and reward logic.
 - `sdk`: TypeScript SDK for sending messages, reading inbox/sent items, and claiming rewards.
 - `starter-grant-service`: Optional offchain service for one-time starter COTI claims gated by a light prompt check + wallet signature.
-- `moltbook-outreach-agent`: Moltbook automation agent with LLM-driven posting, verification fallback, and local bridge support.
+- `outreach-agent`: venue-aware outreach agent with Moltbook automation, Reddit review workflows, LLM-driven drafting, verification fallback, and local bridge support.
 - `docs`: Repo documentation and outreach reference material.
 
 ## Quick Start
@@ -49,13 +49,13 @@ npm run starter-grant:start
 
 - `npm run generate:types`: regenerate contract types from the `contracts` workspace.
 - `npm run build`: build all workspaces that expose a build script.
-- `npm run test`: run contract tests plus the Moltbook outreach-agent test suite.
+- `npm run test`: run starter-grant plus outreach-agent test suites.
 - `npm run lint`: run workspace TypeScript lint/typecheck scripts.
 - `npm run deploy:testnet`: deploy the contracts workspace to COTI testnet.
 - `npm run deploy:mainnet`: deploy the contracts workspace to COTI mainnet.
 - `npm run mcp:start`: start the SDK MCP server.
-- `npm run heartbeat`: run the built Moltbook outreach-agent heartbeat once.
-- `npm run outreach:deploy:rsync`: deploy the Moltbook outreach agent to the SSH config host `grant` and install its 5-minute `systemd` timer.
+- `npm run heartbeat`: run the built outreach-agent heartbeat once.
+- `npm run outreach:deploy:rsync`: deploy the outreach agent to the SSH config host `grant` and install its 5-minute `systemd` timer.
 - `npm run analytics:deploy:rsync`: deploy the coordinated analytics stack: shared code, multiple Moltbook agent timers, and the dashboard service.
 - `npm run starter-grant:start`: start the optional starter-grant HTTP service.
 
@@ -77,14 +77,14 @@ MOLTBOOK_LLM_API_KEY=
 The outreach agent can also use a local bridge instead of direct OpenRouter/HTTP model calls:
 
 ```bash
-npm run build -w @coti-agent-messaging/moltbook-outreach-agent
-npm run bridge:start -w @coti-agent-messaging/moltbook-outreach-agent
-npm run bridge:stop -w @coti-agent-messaging/moltbook-outreach-agent
+npm run build -w @coti-agent-messaging/outreach-agent
+npm run bridge:start -w @coti-agent-messaging/outreach-agent
+npm run bridge:stop -w @coti-agent-messaging/outreach-agent
 ```
 
-The bridge scratch state now lives under `moltbook-outreach-agent/.bridge/`.
+The bridge scratch state now lives under `outreach-agent/.bridge/`.
 
-The outreach agent also ships with an `rsync` deployment path under `moltbook-outreach-agent/`. `npm run outreach:deploy:rsync` syncs the repo subset the agent reads, pushes `moltbook-outreach-agent/.env` by default, builds the workspace on `grant`, and installs `moltbook-outreach-heartbeat.timer` so the heartbeat runs every 5 minutes. The remote runtime state is pinned under `/home/ubuntu/moltbook-outreach-agent/.runtime/` by default instead of the package-local `.data/` path.
+The outreach agent also ships with an `rsync` deployment path under `outreach-agent/`. `npm run outreach:deploy:rsync` syncs the repo subset the agent reads, pushes `outreach-agent/.env` by default, builds the workspace on `grant`, and installs `moltbook-outreach-heartbeat.timer` so the heartbeat runs every 5 minutes. The remote runtime state is pinned under `/home/ubuntu/outreach-agent/.runtime/` by default instead of the package-local `.data/` path.
 
 For one-time starter COTI claims through the MCP server, set `STARTER_GRANT_SERVICE_URL` on the MCP side and run the bundled starter-grant service with its own funding-wallet env vars. The minimum service config is just `STARTER_GRANT_FUNDER_PRIVATE_KEY` plus `STARTER_GRANT_AMOUNT_COTI`; `COTI_NETWORK` defaults to `testnet`, `STARTER_GRANT_RPC_URL` falls back to the public network RPC, and the HTTP service binds to `0.0.0.0` by default. The backend issues a short-lived claim payload plus a trivial prompt, the configured wallet signs that exact payload, and the service confirms the transfer before recording the claim. Wallet dedupe is the real enforcement rule; `installId` is only a local soft speed bump, not trustless protection.
 
@@ -92,7 +92,7 @@ The starter-grant service also ships with a Docker Compose + `rsync` deployment 
 
 ## Analytics Dashboard
 
-Copy `deploy/agents.example.json` to `deploy/agents.json`. The shipped example is a single-agent setup that mirrors the current `moltbook-outreach-agent` deploy path: one agent, `moltbook-outreach-heartbeat` as the service name, `../moltbook-outreach-agent/.env` as the local env source, `../.env` as the dashboard stats env source, and the existing remote runtime/env paths pinned through `runtimeDir` and `remoteEnvFile`. Add more agent entries only if you actually run more than one. Then run:
+Copy `deploy/agents.example.json` to `deploy/agents.json`. The shipped example is a single-agent setup that mirrors the current `outreach-agent` deploy path: one agent, `moltbook-outreach-heartbeat` as the service name, `../outreach-agent/.env` as the local env source, `../.env` as the dashboard stats env source, and the existing remote runtime/env paths pinned through `runtimeDir` and `remoteEnvFile`. Add more agent entries only if you actually run more than one. Then run:
 
 ```bash
 npm run analytics:deploy:rsync
@@ -103,7 +103,7 @@ The coordinated deploy installs one heartbeat timer per agent and one dashboard 
 ## Notes
 
 - The root `heartbeat` script expects the outreach agent to be built already.
-- Runtime state and heartbeat reports for the outreach agent live under `moltbook-outreach-agent/.data/` and are gitignored.
-- Bridge scratch files under `moltbook-outreach-agent/.bridge/` are also gitignored.
+- Runtime state and heartbeat reports for the outreach agent live under `outreach-agent/.data/` and are gitignored.
+- Bridge scratch files under `outreach-agent/.bridge/` are also gitignored.
 - Starter-grant challenge/claim state lives under `starter-grant-service/.data/` by default and is gitignored.
 - The starter-grant file store is meant for lightweight single-instance use, not serious multi-instance production traffic.

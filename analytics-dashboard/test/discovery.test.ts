@@ -39,7 +39,7 @@ test("discoverAgents reads agent metadata, state, and heartbeat report", async (
     JSON.stringify({
       agentId: "agent-a",
       displayName: "Agent A",
-      serviceName: "moltbook-outreach-agent-a",
+      serviceName: "outreach-agent-a",
       profileUrl: "https://www.moltbook.com/u/signalfoundry",
       walletAddress: "0x0000000000000000000000000000000000000001"
     }),
@@ -89,7 +89,7 @@ test("discoverAgents prefers sqlite health and counters when present", async () 
     JSON.stringify({
       agentId: "agent-b",
       displayName: "Agent B",
-      serviceName: "moltbook-outreach-agent-b"
+      serviceName: "outreach-agent-b"
     }),
     "utf8"
   );

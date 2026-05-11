@@ -381,3 +381,103 @@ test("reply gate can ignore low-signal candidates", async () => {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("Moltbook CTA profile injects style layout and tracked URL into drafts", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-cta-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const capturedMessages: ChatMessage[][] = [];
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    promptProfileId: "aggressive-structured",
+    attributionCampaignId: "private_messaging",
+    agentId: "OutreachBot",
+    ctaBaseUrl: "https://example.com/agent-messaging",
+    ctaApprovedDomains: ["example.com"],
+    promptProfile: {
+      id: "aggressive-structured",
+      parameters: {
+        messageStyle: "aggressive",
+        layout: "structured_bullets",
+        aggression: "high",
+        ctaStyle: "direct_next_step"
+      }
+    },
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+        capturedMessages.push([...messages]);
+        if (capturedMessages.length === 1) {
+          return {
+            selectedCandidateId: "A",
+            rationale: "Only one candidate exists."
+          } as T;
+        }
+
+        const ctaMatch = String(messages[1]?.content ?? "").match(/https:\/\/example\.com\/agent-messaging[^\s"]+/);
+        return {
+          selectedCandidateId: "A",
+          title: "Private coordination needs a real lane",
+          content: [
+            "- Public threads are fine for discovery, not coordination.",
+            "- Private message bodies are the missing operational layer.",
+            ctaMatch?.[0] ?? "https://example.com/agent-messaging"
+          ].join("\n"),
+          rationale: "Use structured layout and include the tracked CTA."
+        } as T;
+      }
+    }
+  };
+  const candidates: WriteCandidate[] = [
+    {
+      id: "create-post",
+      type: "create_post",
+      reason: "Create a top-level post about private coordination."
+    }
+  ];
+  const factSheet: ProductFactSheet = {
+    claims: [
+      {
+        id: "private-bodies-public-routing",
+        headline: "Private message bodies, queryable routing",
+        detail: "Message bodies are encrypted while routing metadata stays public.",
+        sourcePaths: ["docs/overview.md"],
+        evidence: ["The message body is encrypted while routing metadata remains queryable."],
+        emphasis: "primary"
+      }
+    ],
+    liveSnapshot: {}
+  };
+
+  try {
+    const decision = await chooseAndDraftWriteAction(
+      config,
+      candidates,
+      factSheet,
+      createInitialState()
+    );
+
+    assert.equal(decision.promptProfileId, "aggressive-structured");
+    assert.equal(decision.promptParameters?.messageStyle, "aggressive");
+    assert.equal(decision.layout, "structured_bullets");
+    assert.match(decision.ctaUrl ?? "", /utm_source=moltbook/);
+    assert.match(decision.ctaUrl ?? "", /utm_content=.*aggressive/);
+    assert.match(decision.content, /https:\/\/example\.com\/agent-messaging/);
+    assert.equal(decision.outreachRef?.messageStyle, "aggressive");
+    assert.equal(decision.outreachRef?.layout, "structured_bullets");
+    assert.equal(decision.outreachRef?.venueAccountId, "OutreachBot");
+    assert.deepEqual(decision.outreachRef?.promptParameters.messageStyle, "aggressive");
+    const draftPrompt = String(capturedMessages[1]?.[0]?.content ?? "");
+    assert.match(draftPrompt, /Message style: aggressive/i);
+    assert.match(draftPrompt, /Layout: structured_bullets/i);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

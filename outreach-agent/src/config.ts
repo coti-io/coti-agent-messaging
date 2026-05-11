@@ -18,6 +18,7 @@ import {
   type ChatClientConfig,
   type JsonLlmProvider
 } from "./llm-client.js";
+import type { PromptProfile } from "./prompt-profile.js";
 
 export interface MoltbookStoredCredentials {
   apiKey: string;
@@ -50,6 +51,12 @@ export interface MoltbookRuntimeConfig extends RuntimePaths {
   autoVerify: boolean;
   policy?: MoltbookOutreachPolicyConfig;
   forceWriteMode?: "create_post" | "comment_on_post" | "reply_to_activity";
+  promptProfileId?: string;
+  promptProfile?: PromptProfile;
+  attributionCampaignId?: string;
+  attributionDbPath?: string;
+  ctaBaseUrl?: string;
+  ctaApprovedDomains?: string[];
   llm?: ChatClientConfig;
   verificationLlm?: ChatClientConfig;
   llmBridge?: BridgeLlmClientConfig;
@@ -135,6 +142,26 @@ function getRequiredEnv(name: string): string {
   }
 
   return value;
+}
+
+function parseCsv(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+async function loadPromptProfile(profilePath: string | undefined): Promise<PromptProfile | undefined> {
+  if (!profilePath) {
+    return undefined;
+  }
+
+  const raw = await readFile(resolveHomePath(profilePath), "utf8");
+  return JSON.parse(raw) as PromptProfile;
 }
 
 export function resolveNetwork(raw = process.env.COTI_NETWORK): CotiNetwork {
@@ -236,6 +263,7 @@ export async function loadRuntimeConfig(
   const contractAddress = getOptionalEnv("CONTRACT_ADDRESS");
   const llmApiKey = getOptionalEnv("MOLTBOOK_LLM_API_KEY") ?? getOptionalEnv("OPENROUTER_API_KEY");
   const hasCotiCredentials = Boolean(privateKey && aesKey && contractAddress);
+  const promptProfile = await loadPromptProfile(getOptionalEnv("OUTREACH_PROMPT_PROFILE_PATH"));
 
   if (requireCoti && !hasCotiCredentials) {
     throw new Error(
@@ -255,7 +283,7 @@ export async function loadRuntimeConfig(
           process.env.OPENROUTER_MODEL ??
           "openai/gpt-4o-mini",
         timeoutMs: parseNumber(process.env.MOLTBOOK_LLM_TIMEOUT_MS, 20_000),
-        appName: process.env.MOLTBOOK_LLM_APP_NAME ?? "moltbook-outreach-agent",
+        appName: process.env.MOLTBOOK_LLM_APP_NAME ?? "outreach-agent",
         siteUrl: process.env.MOLTBOOK_LLM_SITE_URL
       }
     : undefined;
@@ -293,6 +321,16 @@ export async function loadRuntimeConfig(
       )
     },
     forceWriteMode: parseForceWriteMode(process.env.MOLTBOOK_FORCE_WRITE_MODE),
+    promptProfileId: getOptionalEnv("OUTREACH_PROMPT_PROFILE_ID"),
+    promptProfile,
+    attributionCampaignId: process.env.OUTREACH_ATTRIBUTION_CAMPAIGN_ID ?? "private_messaging",
+    attributionDbPath: getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH"),
+    ctaBaseUrl:
+      getOptionalEnv("OUTREACH_TRACKING_BASE_URL") ?? getOptionalEnv("OUTREACH_CTA_BASE_URL"),
+    ctaApprovedDomains: parseCsv(
+      process.env.OUTREACH_TRACKING_APPROVED_DOMAINS ??
+        process.env.OUTREACH_CTA_APPROVED_DOMAINS
+    ),
     llm,
     llmBridge,
     verificationLlm: verificationLlmApiKey

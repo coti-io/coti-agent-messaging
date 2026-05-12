@@ -490,6 +490,8 @@ function buildDraftSystemPrompt(
         "Open with a strong observation or tradeoff, not a slogan.",
         "Use one compact paragraph by default; only use two short paragraphs if the pivot materially improves the post.",
         "Make one sharp claim, support it with one concrete mechanic, then stop.",
+        "Every top-level post must contain one concrete proof point: SDK, MCP, quickstart, contract address, transaction hash, COTIscan link, messageId, inbox/read-back, or a send/read smoke-test result.",
+        "Do not write another abstract 'private bodies plus public routing' thesis unless it is anchored to an actual integration or dogfood artifact.",
         "If a draft starts getting long, cut examples, throat-clearing, and subordinate points instead of adding explanation.",
         "The post should feel like a technical operator talking, not a marketer."
       ].join(" ");
@@ -599,7 +601,12 @@ function validateDraft(
     const artifactText = `${artifact.title ?? ""}\n${artifact.content}`;
     return (
       artifact.structuralFingerprint === draftStructure ||
-      contentTokenSimilarity(`${title ?? ""}\n${content}`, artifactText) >= 0.72
+      contentTokenSimilarity(`${title ?? ""}\n${content}`, artifactText) >= 0.72 ||
+      (
+        candidate.type === "create_post" &&
+        artifact.type === "post" &&
+        hasRepeatedPostTheme(`${title ?? ""}\n${content}`, artifactText)
+      )
     );
   });
   if (nearDuplicate) {
@@ -609,6 +616,52 @@ function validateDraft(
   if (resolvedProfile.cta.requirement === "required" && ctaLink && !content.includes(ctaLink.url)) {
     throw new Error("Generated content is missing the required tracked CTA URL.");
   }
+
+  if (candidate.type === "create_post" && !hasConcretePostProofPoint(`${title ?? ""}\n${content}`)) {
+    throw new Error(
+      "Generated post is missing a concrete proof point such as SDK, MCP, quickstart, contract address, tx hash, COTIscan link, messageId, inbox/read-back, or smoke-test result."
+    );
+  }
+}
+
+function hasConcretePostProofPoint(value: string): boolean {
+  return (
+    /\b(?:sdk|mcp|quickstart|contract address|messageid|inbox|read[- ]?back|smoke test|send\/read|send and read|cotiscan)\b/i.test(value) ||
+    /\btx(?: hash)?\b/i.test(value) ||
+    /0x[a-f0-9]{40}/i.test(value)
+  );
+}
+
+function hasRepeatedPostTheme(draft: string, previous: string): boolean {
+  const draftThemes = postThemeTags(draft);
+  const previousThemes = postThemeTags(previous);
+  if (draftThemes.length < 2 || previousThemes.length < 2) {
+    return false;
+  }
+
+  const overlap = draftThemes.filter((theme) => previousThemes.includes(theme));
+  return overlap.length >= 3 || (overlap.length >= 2 && contentTokenSimilarity(draft, previous) >= 0.25);
+}
+
+function postThemeTags(value: string): string[] {
+  const normalized = value.toLowerCase();
+  const tags: string[] = [];
+  if (/\b(?:private|encrypted|ciphertext)\b/.test(normalized) && /\b(?:body|content|message)\b/.test(normalized)) {
+    tags.push("encrypted-body");
+  }
+  if (/\b(?:public|queryable|routing|metadata|from|to)\b/.test(normalized)) {
+    tags.push("public-routing");
+  }
+  if (/\b(?:sdk|mcp|quickstart|integration|install|function calls?)\b/.test(normalized)) {
+    tags.push("integration");
+  }
+  if (/\b(?:reward|grant|epoch|usage units?)\b/.test(normalized)) {
+    tags.push("rewards");
+  }
+  if (/\b(?:dogfood|smoke test|messageid|tx|transaction|cotiscan|read[- ]?back|inbox)\b/.test(normalized)) {
+    tags.push("proof");
+  }
+  return tags;
 }
 
 function normalizeDraftContent(candidate: WriteCandidate, content: string): string {

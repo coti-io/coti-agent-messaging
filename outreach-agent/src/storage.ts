@@ -19,7 +19,7 @@ export interface StoredHeartbeatRun {
   agentId?: string;
   startedAt: string;
   finishedAt?: string;
-  status: "running" | "ok" | "failed";
+  status: "running" | "ok" | "degraded" | "failed";
   summary?: string;
   dryRun: boolean;
   plannedActions: string[];

@@ -112,6 +112,45 @@ export interface StoredAttributionSummary {
   }>;
 }
 
+export type MessageFunnelStage = "sent" | "delivered" | "parsed" | "replied" | "converted";
+
+export interface MessageFunnelEventInput {
+  messageId: string;
+  refId: string;
+  stage: MessageFunnelStage;
+  occurredAt?: Date;
+  recipient?: string;
+  cohort?: string;
+  contentVariant?: string;
+  ctaVariant?: string;
+  metadata?: Record<string, string | number | boolean>;
+}
+
+export interface MessageFunnelSummary {
+  generatedAt: string;
+  totals: {
+    sent: number;
+    delivered: number;
+    parsed: number;
+    replied: number;
+    converted: number;
+  };
+  cohorts: Array<{
+    cohort: string;
+    contentVariant: string;
+    ctaVariant: string;
+    sent: number;
+    delivered: number;
+    parsed: number;
+    replied: number;
+    converted: number;
+    deliveredRate: number;
+    parsedRate: number;
+    repliedRate: number;
+    convertedRate: number;
+  }>;
+}
+
 export function validateAttributionRefId(refId: string): string {
   const trimmed = refId.trim();
   if (!/^[A-Za-z0-9_-]{3,96}$/u.test(trimmed)) {
@@ -149,6 +188,101 @@ export async function saveAttributionEventToStore(
     await db.transaction(async () => {
       await recordAttributionEvent(db, event);
     });
+  } finally {
+    await db.close();
+  }
+}
+
+export async function saveMessageFunnelEventToStore(
+  databasePath: string | undefined,
+  event: MessageFunnelEventInput
+): Promise<void> {
+  if (!databasePath) {
+    return;
+  }
+  const db = await openAttributionDatabase(databasePath);
+  try {
+    await db.transaction(async () => {
+      await recordMessageFunnelEvent(db, event);
+    });
+  } finally {
+    await db.close();
+  }
+}
+
+export async function readMessageFunnelSummaryFromStore(databasePath: string): Promise<MessageFunnelSummary> {
+  const db = await openAttributionDatabase(databasePath);
+  try {
+    const [totals] = await db.all<{
+      sent: number;
+      delivered: number;
+      parsed: number;
+      replied: number;
+      converted: number;
+    }>(`
+      SELECT
+        COUNT(sent_at) AS sent,
+        COUNT(delivered_at) AS delivered,
+        COUNT(parsed_at) AS parsed,
+        COUNT(replied_at) AS replied,
+        COUNT(converted_at) AS converted
+      FROM outbound_message_funnel
+    `);
+    const rows = await db.all<{
+      cohort: string;
+      content_variant: string;
+      cta_variant: string;
+      sent: number;
+      delivered: number;
+      parsed: number;
+      replied: number;
+      converted: number;
+    }>(`
+      SELECT
+        COALESCE(cohort, 'unassigned') AS cohort,
+        COALESCE(content_variant, 'unassigned') AS content_variant,
+        COALESCE(cta_variant, 'unassigned') AS cta_variant,
+        COUNT(sent_at) AS sent,
+        COUNT(delivered_at) AS delivered,
+        COUNT(parsed_at) AS parsed,
+        COUNT(replied_at) AS replied,
+        COUNT(converted_at) AS converted
+      FROM outbound_message_funnel
+      GROUP BY 1, 2, 3
+      ORDER BY converted DESC, replied DESC, parsed DESC, sent DESC, cohort ASC
+    `);
+
+    return {
+      generatedAt: new Date().toISOString(),
+      totals: {
+        sent: Number(totals?.sent) || 0,
+        delivered: Number(totals?.delivered) || 0,
+        parsed: Number(totals?.parsed) || 0,
+        replied: Number(totals?.replied) || 0,
+        converted: Number(totals?.converted) || 0
+      },
+      cohorts: rows.map((row) => {
+        const sent = Number(row.sent) || 0;
+        const delivered = Number(row.delivered) || 0;
+        const parsed = Number(row.parsed) || 0;
+        const replied = Number(row.replied) || 0;
+        const converted = Number(row.converted) || 0;
+        return {
+          cohort: row.cohort,
+          contentVariant: row.content_variant,
+          ctaVariant: row.cta_variant,
+          sent,
+          delivered,
+          parsed,
+          replied,
+          converted,
+          deliveredRate: sent === 0 ? 0 : delivered / sent,
+          parsedRate: sent === 0 ? 0 : parsed / sent,
+          repliedRate: sent === 0 ? 0 : replied / sent,
+          convertedRate: sent === 0 ? 0 : converted / sent
+        };
+      })
+    };
   } finally {
     await db.close();
   }
@@ -294,6 +428,28 @@ async function ensureAttributionSchema(db: SqliteDatabase): Promise<void> {
       ON attribution_events(ref_id, created_at);
     CREATE INDEX IF NOT EXISTS attribution_events_type_idx
       ON attribution_events(event_type, created_at);
+
+    CREATE TABLE IF NOT EXISTS outbound_message_funnel (
+      message_id TEXT PRIMARY KEY,
+      ref_id TEXT NOT NULL,
+      recipient TEXT,
+      cohort TEXT,
+      content_variant TEXT,
+      cta_variant TEXT,
+      sent_at TEXT,
+      delivered_at TEXT,
+      parsed_at TEXT,
+      replied_at TEXT,
+      converted_at TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS outbound_message_funnel_ref_idx
+      ON outbound_message_funnel(ref_id, sent_at);
+    CREATE INDEX IF NOT EXISTS outbound_message_funnel_cohort_idx
+      ON outbound_message_funnel(cohort, content_variant, cta_variant);
   `);
 }
 
@@ -386,4 +542,63 @@ async function recordAttributionEvent(db: SqliteDatabase, event: AttributionEven
       event.occurredAt
     ]
   );
+}
+
+async function recordMessageFunnelEvent(db: SqliteDatabase, event: MessageFunnelEventInput): Promise<void> {
+  const stageColumn = stageToColumn(event.stage);
+  const now = new Date().toISOString();
+  const occurredAt = (event.occurredAt ?? new Date()).toISOString();
+  const refId = validateAttributionRefId(event.refId);
+  await db.run(
+    `
+      INSERT INTO outbound_message_funnel(
+        message_id,
+        ref_id,
+        recipient,
+        cohort,
+        content_variant,
+        cta_variant,
+        ${stageColumn},
+        metadata_json,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        ref_id = COALESCE(excluded.ref_id, outbound_message_funnel.ref_id),
+        recipient = COALESCE(excluded.recipient, outbound_message_funnel.recipient),
+        cohort = COALESCE(excluded.cohort, outbound_message_funnel.cohort),
+        content_variant = COALESCE(excluded.content_variant, outbound_message_funnel.content_variant),
+        cta_variant = COALESCE(excluded.cta_variant, outbound_message_funnel.cta_variant),
+        ${stageColumn} = COALESCE(outbound_message_funnel.${stageColumn}, excluded.${stageColumn}),
+        metadata_json = COALESCE(excluded.metadata_json, outbound_message_funnel.metadata_json),
+        updated_at = excluded.updated_at
+    `,
+    [
+      event.messageId,
+      refId,
+      event.recipient ?? null,
+      event.cohort ?? null,
+      event.contentVariant ?? null,
+      event.ctaVariant ?? null,
+      occurredAt,
+      event.metadata ? JSON.stringify(event.metadata) : null,
+      now,
+      now
+    ]
+  );
+}
+
+function stageToColumn(stage: MessageFunnelStage): string {
+  switch (stage) {
+    case "sent":
+      return "sent_at";
+    case "delivered":
+      return "delivered_at";
+    case "parsed":
+      return "parsed_at";
+    case "replied":
+      return "replied_at";
+    case "converted":
+      return "converted_at";
+  }
 }

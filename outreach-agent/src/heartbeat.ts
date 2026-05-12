@@ -49,14 +49,21 @@ interface HeartbeatErrorEntry {
   name?: string;
 }
 
+interface HeartbeatAlert {
+  severity: "warning" | "critical";
+  message: string;
+}
+
 interface HeartbeatReport {
   runId: string;
   agentId?: string;
   startedAt: string;
   finishedAt?: string;
-  status: "running" | "ok" | "failed";
+  status: "running" | "ok" | "degraded" | "failed";
   summary?: string;
   dryRun: boolean;
+  failureStreak: number;
+  alerts: HeartbeatAlert[];
   plannedActions: PlannedAction["type"][];
   performed: string[];
   skipped: string[];
@@ -166,6 +173,18 @@ async function saveHeartbeatReport(
   await writeFile(heartbeatReportPath, JSON.stringify(report, null, 2), "utf8");
 }
 
+async function readPreviousHeartbeatReport(heartbeatReportPath: string): Promise<Partial<HeartbeatReport> | undefined> {
+  const raw = await readOptionalUtf8(heartbeatReportPath);
+  if (!raw) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(raw) as Partial<HeartbeatReport>;
+  } catch {
+    return undefined;
+  }
+}
+
 function formatSummary(performed: string[], skipped: string[]): string {
   if (performed.length === 0 && skipped.length === 0) {
     return "HEARTBEAT_OK - Checked Moltbook, all good.";
@@ -234,12 +253,15 @@ export async function runHeartbeat(
   const venue = new MoltbookVenueProvider(config);
   const startedAt = new Date().toISOString();
   const runId = `${startedAt}:${process.pid}`;
+  const previousReport = await readPreviousHeartbeatReport(config.heartbeatReportPath);
   const report: HeartbeatReport = {
     runId,
     agentId: config.agentId,
     startedAt,
     status: "running",
     dryRun: config.dryRun,
+    failureStreak: 0,
+    alerts: [],
     plannedActions: [],
     performed: [],
     skipped: [],
@@ -591,7 +613,7 @@ export async function runHeartbeat(
       skipped,
       plannedActions: planned.map((entry) => entry.type)
     };
-    report.status = "ok";
+    report.status = report.errors.length > 0 ? "degraded" : "ok";
     report.summary = result.summary;
     report.performed = result.performed;
     report.skipped = result.skipped;
@@ -609,12 +631,41 @@ export async function runHeartbeat(
     state = await saveState(config.statePath, state, runId);
     report.status = "failed";
     report.errors.push(toHeartbeatError("heartbeat", error));
+    report.summary = `HEARTBEAT_FAILED - ${formatErrorMessage(error)}`;
     report.engagementSummary = getEngagementSummary(state);
     throw error;
   } finally {
+    finalizeHeartbeatAlerts(report, previousReport);
     report.finishedAt = new Date().toISOString();
     await saveHeartbeatReport(config.statePath, config.heartbeatReportPath, report);
   }
+}
+
+function finalizeHeartbeatAlerts(report: HeartbeatReport, previousReport: Partial<HeartbeatReport> | undefined): void {
+  const previousStreak =
+    previousReport?.status === "failed" || previousReport?.status === "degraded"
+      ? Number(previousReport.failureStreak) || 1
+      : 0;
+
+  if (report.status === "failed") {
+    report.failureStreak = previousStreak + 1;
+    report.alerts.push({
+      severity: report.failureStreak >= 2 ? "critical" : "warning",
+      message: `Heartbeat failed; failure streak is ${report.failureStreak}.`
+    });
+    return;
+  }
+
+  if (report.status === "degraded") {
+    report.failureStreak = previousStreak + 1;
+    report.alerts.push({
+      severity: report.failureStreak >= 3 ? "critical" : "warning",
+      message: `Heartbeat completed with ${report.errors.length} error${report.errors.length === 1 ? "" : "s"}; failure streak is ${report.failureStreak}.`
+    });
+    return;
+  }
+
+  report.failureStreak = 0;
 }
 
 function toHeartbeatError(phase: string, error: unknown): HeartbeatErrorEntry {

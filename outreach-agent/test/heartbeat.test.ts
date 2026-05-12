@@ -770,6 +770,8 @@ test("heartbeat records failed upvotes without failing the run", async () => {
 
     const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
       status?: string;
+      failureStreak?: number;
+      alerts?: Array<{ severity?: string; message?: string }>;
       skipped?: string[];
       performed?: string[];
       errors?: Array<{ phase?: string; message?: string; name?: string }>;
@@ -778,7 +780,9 @@ test("heartbeat records failed upvotes without failing the run", async () => {
       upvotedPostIds?: string[];
       engagementTotals?: { upvotes?: number };
     };
-    assert.equal(savedReport.status, "ok");
+    assert.equal(savedReport.status, "degraded");
+    assert.equal(savedReport.failureStreak, 1);
+    assert.equal(savedReport.alerts?.[0]?.severity, "warning");
     assert.equal(savedReport.errors?.length, 1);
     assert.equal(savedReport.errors?.[0]?.phase, 'publish:upvote "Private transport"');
     assert.equal(savedReport.errors?.[0]?.name, "MoltbookApiError");

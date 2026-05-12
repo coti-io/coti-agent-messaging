@@ -834,13 +834,21 @@ export function planHeartbeatActions(input: {
     });
   }
 
+  const hasExternalNetworkOpportunity = actions.some(
+    (action) =>
+      action.type === "upvote_post" ||
+      action.type === "follow_agent" ||
+      action.type === "comment_on_post"
+  );
+
   if (
     (
       input.home.activity_on_your_posts.length === 0 ||
       commentReadiness.reason === "daily_limit"
     ) &&
     canCreatePost(state, newAgent, input.policy, now) &&
-    !hasPendingPost
+    !hasPendingPost &&
+    !hasExternalNetworkOpportunity
   ) {
     actions.push({
       type: "create_post",

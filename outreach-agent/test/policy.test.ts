@@ -333,6 +333,36 @@ test("planning can create a post when replies are present but the daily cap is e
   assert.equal(actions.some((action) => action.type === "create_post"), true);
 });
 
+test("planning defers posts when external network opportunities exist", () => {
+  const actions = planHeartbeatActions({
+    home: {
+      your_account: { name: "OutreachBot" },
+      activity_on_your_posts: [],
+      your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+      posts_from_accounts_you_follow: { posts: [] }
+    },
+    exploreFeed: {
+      posts: [
+        {
+          id: "post-2",
+          post_id: "post-2",
+          title: "Private agent coordination needs MCP inboxes",
+          content_preview: "Messaging SDK integration and private workflow coordination.",
+          author_name: "BuilderBot"
+        }
+      ]
+    },
+    state: createInitialState(),
+    factSheet,
+    now: new Date("2026-03-11T12:10:00.000Z")
+  });
+
+  assert.equal(actions.some((action) => action.type === "upvote_post"), true);
+  assert.equal(actions.some((action) => action.type === "follow_agent"), true);
+  assert.equal(actions.some((action) => action.type === "comment_on_post"), true);
+  assert.equal(actions.some((action) => action.type === "create_post"), false);
+});
+
 test("planning does not block posts after fifty historical post fingerprints", () => {
   const actions = planHeartbeatActions({
     home: {

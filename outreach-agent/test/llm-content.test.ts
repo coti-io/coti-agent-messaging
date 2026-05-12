@@ -427,7 +427,7 @@ test("Moltbook CTA profile injects style layout and tracked URL into drafts", as
           title: "Private coordination needs a real lane",
           content: [
             "- Public threads are fine for discovery, not coordination.",
-            "- Private message bodies are the missing operational layer.",
+            "- The SDK smoke test now proves send/read works instead of asking operators to trust a thesis.",
             ctaMatch?.[0] ?? "https://example.com/agent-messaging"
           ].join("\n"),
           rationale: "Use structured layout and include the tracked CTA."
@@ -523,7 +523,7 @@ test("create_post drafts trim overlong title and content without dropping tracke
         return {
           selectedCandidateId: "A",
           title: "Overlong title ".repeat(10).trim(),
-          content: `${"Strong claim. ".repeat(120).trim()}\n\n${ctaMatch?.[0] ?? "https://example.com/agent-messaging"}`,
+          content: `SDK smoke test proves send/read works. ${"Strong claim. ".repeat(120).trim()}\n\n${ctaMatch?.[0] ?? "https://example.com/agent-messaging"}`,
           rationale: "Force local trimming instead of failing the heartbeat."
         } as T;
       }
@@ -564,6 +564,83 @@ test("create_post drafts trim overlong title and content without dropping tracke
     assert.match(decision.title, /\.\.\.$/);
     assert.match(decision.content, /https:\/\/example\.com\/agent-messaging/);
     assert.match(decision.ctaUrl ?? "", /utm_source=moltbook/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("create_post drafts reject repeated private-routing thesis even with new wording", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-theme-repeat-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+        if (String(messages[0]?.content ?? "").includes("selecting exactly one authored Moltbook action")) {
+          return {
+            selectedCandidateId: "A",
+            rationale: "Only one candidate exists."
+          } as T;
+        }
+
+        return {
+          selectedCandidateId: "A",
+          title: "Private routing only works when bodies stay encrypted",
+          content:
+            "Private message bodies plus public routing metadata is the useful split. The SDK smoke test proves agents can send and read back without turning every coordination detail into a public thread.",
+          rationale: "Repeat the same thesis with fresh wording."
+        } as T;
+      }
+    }
+  };
+  const candidates: WriteCandidate[] = [
+    {
+      id: "create-post",
+      type: "create_post",
+      reason: "Create one top-level post."
+    }
+  ];
+  const factSheet: ProductFactSheet = {
+    claims: [
+      {
+        id: "private-bodies-public-routing",
+        headline: "Private message bodies, queryable routing",
+        detail: "Message bodies are encrypted while routing metadata stays public.",
+        sourcePaths: ["docs/overview.md"],
+        evidence: ["The message body is encrypted while routing metadata remains queryable."],
+        emphasis: "primary"
+      }
+    ],
+    liveSnapshot: {}
+  };
+  const state = {
+    ...createInitialState(),
+    recentGeneratedArtifacts: [
+      {
+        id: "recent-post-1",
+        type: "post" as const,
+        title: "Agents need private bodies and public routing",
+        content:
+          "Encrypted message bodies and queryable public metadata are the practical split for agent messaging. The SDK gives builders the path without forcing every handoff into a public thread.",
+        createdAt: "2026-05-12T10:00:00.000Z"
+      }
+    ]
+  };
+
+  try {
+    await assert.rejects(
+      () => chooseAndDraftWriteAction(config, candidates, factSheet, state),
+      /too similar to recent authored artifact recent-post-1/
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -5,10 +5,11 @@ import path from "node:path";
 
 import { runBridgeServerCli } from "./bridge-server.js";
 import { stopBridgeServer } from "./bridge-stop.js";
-import { readAttributionSummaryFromStore } from "./attribution-store.js";
+import { readAttributionSummaryFromStore, readMessageFunnelSummaryFromStore } from "./attribution-store.js";
 import { loadRuntimeConfig, saveStoredCredentials } from "./config.js";
+import { mergeFeedPosts, rankDesignPartnerCandidates } from "./design-partners.js";
 import { runHeartbeat } from "./heartbeat.js";
-import { MoltbookApiClient } from "./moltbook-api.js";
+import { MoltbookApiClient, type MoltbookAgentProfile } from "./moltbook-api.js";
 import {
   createInitialState,
   getEngagementSummary,
@@ -55,10 +56,12 @@ function printUsage(): void {
   coti-outreach-agent delete-post --post-id POST_ID
   coti-outreach-agent facts
   coti-outreach-agent venue-config
+  coti-outreach-agent design-partners [--limit 10]
   coti-outreach-agent reddit-targets
   coti-outreach-agent reddit-scan [--input FILE] [--history FILE] [--rules FILE] [--output FILE]
   coti-outreach-agent reddit-evaluate --history FILE
   coti-outreach-agent attribution-summary [--db FILE | --refs FILE --events FILE]
+  coti-outreach-agent message-funnel [--db FILE]
   coti-outreach-agent bridge-server
   coti-outreach-agent bridge-stop
   coti-outreach-agent heartbeat`);
@@ -231,6 +234,48 @@ async function run(): Promise<void> {
       console.log(JSON.stringify(config.agent, null, 2));
       return;
     }
+    case "design-partners": {
+      const config = await loadRuntimeConfig();
+      const limit = Number(getArg("--limit") ?? "10");
+      const candidateLimit = Number.isFinite(limit) && limit > 0 ? limit : 10;
+      const api = new MoltbookApiClient({
+        baseUrl: config.moltbookBaseUrl,
+        apiKey: config.apiKey,
+        autoVerify: false
+      });
+      const feedLimit = Number(getArg("--feed-limit") ?? "40");
+      const feeds = await Promise.all([
+        api.getFeed({ sort: "hot", limit: feedLimit }),
+        api.getFeed({ sort: "top", limit: feedLimit }),
+        api.getFeed({ sort: "rising", limit: feedLimit }),
+        api.getFeed({ sort: "new", limit: feedLimit })
+      ]);
+      const posts = mergeFeedPosts(feeds);
+      const firstPass = rankDesignPartnerCandidates({ posts }, Math.max(candidateLimit * 2, candidateLimit));
+      const profileEntries = await Promise.all(
+        firstPass.map(async (candidate): Promise<[string, MoltbookAgentProfile | undefined]> => {
+          try {
+            const profile = await api.getAgentProfile(candidate.agentName);
+            return [candidate.agentName, profile.agent];
+          } catch {
+            return [candidate.agentName, undefined];
+          }
+        })
+      );
+
+      await emitJson({
+        generatedAt: new Date().toISOString(),
+        sourcePostCount: posts.length,
+        candidates: rankDesignPartnerCandidates(
+          {
+            posts,
+            profiles: Object.fromEntries(profileEntries)
+          },
+          candidateLimit
+        )
+      });
+      return;
+    }
     case "reddit-targets": {
       await emitJson({
         targeting: DEFAULT_REDDIT_TARGETING,
@@ -310,6 +355,19 @@ async function run(): Promise<void> {
           events: await readJsonFile<AttributionEvent[]>(eventsPath)
         })
       );
+      return;
+    }
+    case "message-funnel": {
+      const dbPath = getArg("--db");
+      if (dbPath) {
+        await emitJson(await readMessageFunnelSummaryFromStore(dbPath));
+        return;
+      }
+      const config = await loadRuntimeConfig();
+      if (!config.attributionDbPath) {
+        throw new Error("message-funnel requires --db FILE or OUTREACH_ATTRIBUTION_DB_PATH.");
+      }
+      await emitJson(await readMessageFunnelSummaryFromStore(config.attributionDbPath));
       return;
     }
     case "bridge-server": {

@@ -5,7 +5,9 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
 import {
+  readMessageFunnelSummaryFromStore,
   readAttributionSummaryFromStore,
+  saveMessageFunnelEventToStore,
   saveAttributionEventToStore,
   saveOutreachRefToAttributionStore
 } from "../src/attribution-store.js";
@@ -105,6 +107,61 @@ test("shared sqlite attribution store persists refs and downstream events", asyn
     assert.equal(summary.groups[0]?.layout, "structured_bullets");
     assert.equal(summary.groups[0]?.privateMessagesReceived, 1);
     assert.equal(summary.groups[0]?.skillUsages, 1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("message funnel ledger tracks stage timestamps by cohort and variants", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "outreach-message-funnel-"));
+  const dbPath = path.join(tempDir, "attribution.sqlite");
+
+  try {
+    await saveMessageFunnelEventToStore(dbPath, {
+      messageId: "msg-1",
+      refId: "mo_ref1",
+      stage: "sent",
+      cohort: "top-10",
+      contentVariant: "integration-first",
+      ctaVariant: "quickstart",
+      recipient: "BuilderA",
+      occurredAt: new Date("2026-05-12T08:00:00.000Z")
+    });
+    await saveMessageFunnelEventToStore(dbPath, {
+      messageId: "msg-1",
+      refId: "mo_ref1",
+      stage: "delivered",
+      occurredAt: new Date("2026-05-12T08:01:00.000Z")
+    });
+    await saveMessageFunnelEventToStore(dbPath, {
+      messageId: "msg-1",
+      refId: "mo_ref1",
+      stage: "parsed",
+      occurredAt: new Date("2026-05-12T08:02:00.000Z")
+    });
+    await saveMessageFunnelEventToStore(dbPath, {
+      messageId: "msg-2",
+      refId: "mo_ref2",
+      stage: "sent",
+      cohort: "top-10",
+      contentVariant: "integration-first",
+      ctaVariant: "quickstart"
+    });
+
+    const summary = await readMessageFunnelSummaryFromStore(dbPath);
+
+    assert.deepEqual(summary.totals, {
+      sent: 2,
+      delivered: 1,
+      parsed: 1,
+      replied: 0,
+      converted: 0
+    });
+    assert.equal(summary.cohorts[0]?.cohort, "top-10");
+    assert.equal(summary.cohorts[0]?.contentVariant, "integration-first");
+    assert.equal(summary.cohorts[0]?.ctaVariant, "quickstart");
+    assert.equal(summary.cohorts[0]?.sent, 2);
+    assert.equal(summary.cohorts[0]?.parsedRate, 0.5);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

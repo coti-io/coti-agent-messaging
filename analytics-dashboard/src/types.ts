@@ -63,10 +63,84 @@ export interface AnalyticsConfig {
   agentRoot: string;
   host: string;
   port: number;
+  attributionDbPath?: string;
   cotiNetwork: "mainnet" | "testnet";
   cotiRpcUrl: string;
   contractAddress?: string;
   contractDeployBlock?: number;
   cotiBlockscoutApiUrl?: string;
   cotiCacheTtlMs: number;
+}
+
+export interface AttributionTotals {
+  refs: number;
+  clicks: number;
+  grantChallenges: number;
+  grantClaimAttempts: number;
+  grantClaimsQueued: number;
+  grantClaimsSucceeded: number;
+  grantClaimsFailed: number;
+  privateMessagesReceived: number;
+  skillUsages: number;
+  unresolvedEvents: number;
+}
+
+export interface AttributionConversionRates {
+  clickToGrantChallenge: number;
+  clickToPrivateMessage: number;
+  clickToSkillUsage: number;
+  refToSkillUsage: number;
+}
+
+export interface AttributionGroup {
+  key: string;
+  venue: string;
+  campaignId: string;
+  promptProfileId: string;
+  messageStyle: string;
+  layout: string;
+  ctaStyle?: string;
+  promotionLevel?: string;
+  rewardEmphasis?: string;
+  refCount: number;
+  totals: AttributionTotals;
+  conversionRates: AttributionConversionRates;
+}
+
+export interface AttributionRefDetail {
+  refId: string;
+  venue: string;
+  venueAccountId?: string;
+  surface?: string;
+  contentType: string;
+  campaignId: string;
+  promptProfileId: string;
+  promptParameters: Record<string, unknown>;
+  messageStyle: string;
+  layout: string;
+  ctaStyle?: string;
+  promotionLevel?: string;
+  productSpecificity?: string;
+  rewardEmphasis?: string;
+  audience?: string;
+  candidateId: string;
+  generatedContentId: string;
+  remoteContentId?: string;
+  utm?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  totals: AttributionTotals;
+  conversionRates: AttributionConversionRates;
+  lastEventAt?: string;
+}
+
+export interface AttributionSummary {
+  configured: boolean;
+  databasePath?: string;
+  generatedAt: string;
+  error?: string;
+  totals: AttributionTotals;
+  conversionRates: AttributionConversionRates;
+  groups: AttributionGroup[];
+  topRefs: AttributionRefDetail[];
 }

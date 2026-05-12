@@ -69,6 +69,7 @@ export function loadAnalyticsConfig(env: NodeJS.ProcessEnv = process.env): Analy
       path.resolve(process.cwd(), "outreach-agent", ".data", "agents"),
     host: env.MOLTBOOK_ANALYTICS_HOST ?? "0.0.0.0",
     port: parsePort(env.MOLTBOOK_ANALYTICS_PORT, 8788),
+    attributionDbPath: env.OUTREACH_ATTRIBUTION_DB_PATH,
     cotiNetwork,
     cotiRpcUrl: resolveMessageStatsRpcUrl(cotiNetwork, env),
     contractAddress: env.CONTRACT_ADDRESS,

@@ -14,6 +14,10 @@ function formatTime(value) {
   return Number.isNaN(timestamp) ? "n/a" : timeFmt.format(new Date(timestamp));
 }
 
+function formatPercent(value) {
+  return `${Math.round(Number(value || 0) * 100)}%`;
+}
+
 function countsLine(counts) {
   return `${formatNumber(counts.posts)} posts · ${formatNumber(counts.comments)} comments · ${formatNumber(counts.replies)} replies · ${formatNumber(counts.upvotes)} upvotes · ${formatNumber(counts.follows)} follows`;
 }
@@ -135,6 +139,96 @@ function renderCoti(coti) {
     .join("");
 }
 
+function renderAttribution(attribution) {
+  const subtitle = document.getElementById("attribution-subtitle");
+  const cards = document.getElementById("attribution-cards");
+  const groups = document.getElementById("attribution-groups");
+  const refs = document.getElementById("attribution-refs");
+
+  if (!attribution?.configured) {
+    subtitle.textContent = "Set OUTREACH_ATTRIBUTION_DB_PATH to show shared attribution data.";
+    cards.innerHTML = card("Attribution", "Not configured", "No shared DB path");
+    groups.innerHTML = `<tr><td colspan="7" class="subtle">No attribution database configured.</td></tr>`;
+    refs.innerHTML = `<tr><td colspan="5" class="subtle">No ref drilldown available.</td></tr>`;
+    return;
+  }
+
+  if (attribution.error) {
+    subtitle.textContent = attribution.error;
+  } else {
+    subtitle.textContent = `Read-only shared DB snapshot from ${formatTime(attribution.generatedAt)}.`;
+  }
+
+  const totals = attribution.totals || {};
+  cards.innerHTML = [
+    card("Refs", formatNumber(totals.refs), `${formatNumber(totals.unresolvedEvents)} unresolved events`),
+    card("Clicks", formatNumber(totals.clicks), `${formatPercent(attribution.conversionRates?.clickToGrantChallenge)} click→grant`),
+    card("Private messages", formatNumber(totals.privateMessagesReceived), `${formatPercent(attribution.conversionRates?.clickToPrivateMessage)} click→PM`),
+    card("Grant successes", formatNumber(totals.grantClaimsSucceeded), `${formatNumber(totals.grantClaimsQueued)} queued`),
+    card("Skill usage", formatNumber(totals.skillUsages), `${formatPercent(attribution.conversionRates?.refToSkillUsage)} ref→skill`)
+  ].join("");
+
+  if (!attribution.groups?.length) {
+    groups.innerHTML = `<tr><td colspan="7" class="subtle">No attributed refs found yet.</td></tr>`;
+  } else {
+    groups.innerHTML = attribution.groups
+      .map((group) => `
+        <tr>
+          <td>
+            <div class="agent-name">${escapeHtml(group.messageStyle)} · ${escapeHtml(group.layout)}</div>
+            <div class="agent-id">${escapeHtml(group.venue)} / ${escapeHtml(group.campaignId)} / ${escapeHtml(group.promptProfileId)}</div>
+            <div class="card-detail">CTA ${escapeHtml(group.ctaStyle || "n/a")} · promo ${escapeHtml(group.promotionLevel || "n/a")} · reward ${escapeHtml(group.rewardEmphasis || "n/a")}</div>
+          </td>
+          <td>${formatNumber(group.refCount)}</td>
+          <td>${formatNumber(group.totals.clicks)}</td>
+          <td>${formatNumber(group.totals.privateMessagesReceived)}</td>
+          <td>${formatNumber(group.totals.grantClaimsSucceeded)} / ${formatNumber(group.totals.grantClaimsQueued)}</td>
+          <td>${formatNumber(group.totals.skillUsages)}</td>
+          <td>
+            <div>${formatPercent(group.conversionRates.clickToSkillUsage)} click→skill</div>
+            <div class="subtle">${formatPercent(group.conversionRates.refToSkillUsage)} ref→skill</div>
+          </td>
+        </tr>
+      `)
+      .join("");
+  }
+
+  if (!attribution.topRefs?.length) {
+    refs.innerHTML = `<tr><td colspan="5" class="subtle">No successful refs found yet.</td></tr>`;
+    return;
+  }
+
+  refs.innerHTML = attribution.topRefs
+    .map((ref) => {
+      const promptParams = JSON.stringify(ref.promptParameters || {}, null, 2);
+      const utm = Object.entries(ref.utm || {})
+        .map(([key, value]) => `${escapeHtml(key)}=${escapeHtml(value)}`)
+        .join("<br>");
+      return `
+        <tr>
+          <td>
+            <div class="agent-name">${escapeHtml(ref.refId)}</div>
+            <div class="agent-id">${escapeHtml(ref.venue)} / ${escapeHtml(ref.surface || "n/a")}</div>
+            <div class="card-detail">${escapeHtml(ref.contentType)} · ${escapeHtml(ref.remoteContentId || ref.generatedContentId)}</div>
+          </td>
+          <td>
+            <details>
+              <summary>${escapeHtml(ref.messageStyle)} · ${escapeHtml(ref.layout)}</summary>
+              <pre class="prompt-json">${escapeHtml(promptParams)}</pre>
+            </details>
+          </td>
+          <td>${utm || '<span class="subtle">n/a</span>'}</td>
+          <td>
+            <div>${formatNumber(ref.totals.clicks)} clicks · ${formatNumber(ref.totals.privateMessagesReceived)} PMs</div>
+            <div>${formatNumber(ref.totals.grantClaimsSucceeded)} grants · ${formatNumber(ref.totals.skillUsages)} skills</div>
+          </td>
+          <td>${formatTime(ref.lastEventAt)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
 async function refresh() {
   const response = await fetch("/api/summary");
   const payload = await response.json();
@@ -142,6 +236,7 @@ async function refresh() {
   renderEngagementCards(payload.aggregateEngagements);
   renderAgents(payload.agents);
   renderCoti(payload.coti);
+  renderAttribution(payload.attribution);
 }
 
 refresh().catch((error) => {

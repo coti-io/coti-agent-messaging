@@ -6,6 +6,7 @@ import { collectMessageStats, type MessageStatsReport } from "../../contracts/sr
 import { loadAnalyticsConfig } from "./config";
 import { discoverAgents, readDeployMetadata } from "./discovery";
 import { aggregateEngagementSummaries } from "./engagements";
+import { readAttributionSummary } from "./storage";
 import type { AnalyticsConfig } from "./types";
 
 type CachedCotiStats = {
@@ -165,24 +166,27 @@ async function getCotiStats(configInput: AnalyticsConfig): Promise<CachedCotiSta
   };
 }
 
-async function summaryPayload() {
-  const agents = await discoverAgents(config.agentRoot);
+async function summaryPayload(configInput: AnalyticsConfig) {
+  const agents = await discoverAgents(configInput.agentRoot);
   const publicAgents = agents.map(publicAgent);
   const engagementSummary = aggregateEngagementSummaries(
     publicAgents.map((agent) => agent.engagementSummary)
   );
-  const coti = await getCotiStats(config);
+  const coti = await getCotiStats(configInput);
+  const attribution = await readAttributionSummary(configInput.attributionDbPath);
 
   return {
     generatedAt: new Date().toISOString(),
     config: {
-      agentRoot: config.agentRoot,
-      cotiNetwork: config.cotiNetwork,
-      contractAddress: config.contractAddress,
-      cotiCacheTtlMs: config.cotiCacheTtlMs
+      agentRoot: configInput.agentRoot,
+      attributionConfigured: Boolean(configInput.attributionDbPath),
+      cotiNetwork: configInput.cotiNetwork,
+      contractAddress: configInput.contractAddress,
+      cotiCacheTtlMs: configInput.cotiCacheTtlMs
     },
     agents: publicAgents,
     aggregateEngagements: engagementSummary,
+    attribution,
     coti: {
       cachedAt: new Date(coti.createdAt).toISOString(),
       error: coti.error,
@@ -191,20 +195,20 @@ async function summaryPayload() {
   };
 }
 
-async function handleApi(pathname: string, response: http.ServerResponse) {
+async function handleApi(pathname: string, response: http.ServerResponse, configInput: AnalyticsConfig) {
   if (pathname === "/api/summary") {
-    jsonResponse(response, 200, await summaryPayload());
+    jsonResponse(response, 200, await summaryPayload(configInput));
     return;
   }
 
   if (pathname === "/api/agents") {
-    const agents = await discoverAgents(config.agentRoot);
+    const agents = await discoverAgents(configInput.agentRoot);
     jsonResponse(response, 200, { agents: agents.map(publicAgent) });
     return;
   }
 
   if (pathname === "/api/engagements") {
-    const agents = await discoverAgents(config.agentRoot);
+    const agents = await discoverAgents(configInput.agentRoot);
     const publicAgents = agents.map(publicAgent);
     jsonResponse(response, 200, {
       aggregate: aggregateEngagementSummaries(publicAgents.map((agent) => agent.engagementSummary)),
@@ -217,16 +221,21 @@ async function handleApi(pathname: string, response: http.ServerResponse) {
     return;
   }
 
+  if (pathname === "/api/attribution") {
+    jsonResponse(response, 200, await readAttributionSummary(configInput.attributionDbPath));
+    return;
+  }
+
   if (pathname === "/api/coti/messages") {
-    jsonResponse(response, 200, await getCotiStats(config));
+    jsonResponse(response, 200, await getCotiStats(configInput));
     return;
   }
 
   if (pathname === "/api/deploy") {
     jsonResponse(response, 200, {
-      ...(await readDeployMetadata(config.agentRoot)),
-      host: config.host,
-      port: config.port
+      ...(await readDeployMetadata(configInput.agentRoot)),
+      host: configInput.host,
+      port: configInput.port
     });
     return;
   }
@@ -234,12 +243,12 @@ async function handleApi(pathname: string, response: http.ServerResponse) {
   jsonResponse(response, 404, { error: "Unknown API endpoint." });
 }
 
-export function createServer() {
+export function createServer(configInput: AnalyticsConfig = config) {
   return http.createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
       if (url.pathname.startsWith("/api/")) {
-        await handleApi(url.pathname, response);
+        await handleApi(url.pathname, response, configInput);
         return;
       }
 

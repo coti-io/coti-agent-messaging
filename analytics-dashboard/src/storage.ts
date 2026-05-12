@@ -1,6 +1,13 @@
 import sqlite3 from "sqlite3";
 
-import type { EngagementCounts, EngagementSummary } from "./types";
+import type {
+  AttributionConversionRates,
+  AttributionRefDetail,
+  AttributionSummary,
+  AttributionTotals,
+  EngagementCounts,
+  EngagementSummary
+} from "./types";
 
 const HEARTBEAT_FRESHNESS_MS = 15 * 60 * 1_000;
 
@@ -240,6 +247,349 @@ export async function readSqliteAgentSnapshot(
       latestFinishedAt,
       schedulerHealth
     };
+  } finally {
+    await db.close();
+  }
+}
+
+function emptyAttributionTotals(): AttributionTotals {
+  return {
+    refs: 0,
+    clicks: 0,
+    grantChallenges: 0,
+    grantClaimAttempts: 0,
+    grantClaimsQueued: 0,
+    grantClaimsSucceeded: 0,
+    grantClaimsFailed: 0,
+    privateMessagesReceived: 0,
+    skillUsages: 0,
+    unresolvedEvents: 0
+  };
+}
+
+function rates(totals: AttributionTotals): AttributionConversionRates {
+  return {
+    clickToGrantChallenge: totals.clicks === 0 ? 0 : totals.grantChallenges / totals.clicks,
+    clickToPrivateMessage: totals.clicks === 0 ? 0 : totals.privateMessagesReceived / totals.clicks,
+    clickToSkillUsage: totals.clicks === 0 ? 0 : totals.skillUsages / totals.clicks,
+    refToSkillUsage: totals.refs === 0 ? 0 : totals.skillUsages / totals.refs
+  };
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== "string" || value.length === 0) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function sanitizeAttributionMetadata(value: Record<string, unknown>): Record<string, unknown> {
+  const blocked = new Set([
+    "wallet",
+    "walletAddress",
+    "wallet_address",
+    "installId",
+    "install_id",
+    "sessionId",
+    "session_id"
+  ]);
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (blocked.has(key)) {
+      continue;
+    }
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      sanitized[key] = sanitizeAttributionMetadata(entry as Record<string, unknown>);
+      continue;
+    }
+    sanitized[key] = entry;
+  }
+  return sanitized;
+}
+
+function attributionTotalsFromRow(row: Partial<Record<keyof AttributionTotals, unknown>> | undefined): AttributionTotals {
+  return {
+    refs: Number(row?.refs) || 0,
+    clicks: Number(row?.clicks) || 0,
+    grantChallenges: Number(row?.grantChallenges) || 0,
+    grantClaimAttempts: Number(row?.grantClaimAttempts) || 0,
+    grantClaimsQueued: Number(row?.grantClaimsQueued) || 0,
+    grantClaimsSucceeded: Number(row?.grantClaimsSucceeded) || 0,
+    grantClaimsFailed: Number(row?.grantClaimsFailed) || 0,
+    privateMessagesReceived: Number(row?.privateMessagesReceived) || 0,
+    skillUsages: Number(row?.skillUsages) || 0,
+    unresolvedEvents: Number(row?.unresolvedEvents) || 0
+  };
+}
+
+export function emptyAttributionSummary(databasePath?: string, error?: string): AttributionSummary {
+  const totals = emptyAttributionTotals();
+  return {
+    configured: Boolean(databasePath),
+    databasePath,
+    generatedAt: new Date().toISOString(),
+    error,
+    totals,
+    conversionRates: rates(totals),
+    groups: [],
+    topRefs: []
+  };
+}
+
+export async function readAttributionSummary(
+  databasePath: string | undefined,
+  now = new Date()
+): Promise<AttributionSummary> {
+  if (!databasePath) {
+    return emptyAttributionSummary(undefined);
+  }
+
+  let db: SqliteDatabase | undefined;
+  try {
+    db = await SqliteDatabase.open(databasePath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("SQLITE_CANTOPEN")) {
+      return emptyAttributionSummary(databasePath, "Attribution database was not found.");
+    }
+    return emptyAttributionSummary(databasePath, message);
+  }
+
+  try {
+    const tableRow = await db.get<{ count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM sqlite_master
+      WHERE type = 'table' AND name IN ('outreach_refs', 'attribution_events')
+    `);
+    if ((Number(tableRow?.count) || 0) < 2) {
+      return {
+        ...emptyAttributionSummary(databasePath),
+        configured: true,
+        generatedAt: now.toISOString()
+      };
+    }
+
+    const totalsRow = await db.get<{
+      refs: number;
+      clicks: number;
+      grantChallenges: number;
+      grantClaimAttempts: number;
+      grantClaimsQueued: number;
+      grantClaimsSucceeded: number;
+      grantClaimsFailed: number;
+      privateMessagesReceived: number;
+      skillUsages: number;
+      unresolvedEvents: number;
+    }>(`
+      SELECT
+        (SELECT COUNT(*) FROM outreach_refs) AS refs,
+        SUM(CASE WHEN e.event_type = 'click' THEN 1 ELSE 0 END) AS clicks,
+        SUM(CASE WHEN e.event_type = 'grant_challenge' THEN 1 ELSE 0 END) AS grantChallenges,
+        SUM(CASE WHEN e.event_type = 'grant_claim_attempted' THEN 1 ELSE 0 END) AS grantClaimAttempts,
+        SUM(CASE WHEN e.event_type = 'grant_claim_queued' THEN 1 ELSE 0 END) AS grantClaimsQueued,
+        SUM(CASE WHEN e.event_type = 'grant_claim_succeeded' THEN 1 ELSE 0 END) AS grantClaimsSucceeded,
+        SUM(CASE WHEN e.event_type = 'grant_claim_failed' THEN 1 ELSE 0 END) AS grantClaimsFailed,
+        SUM(CASE WHEN e.event_type = 'private_message_received' THEN 1 ELSE 0 END) AS privateMessagesReceived,
+        SUM(CASE WHEN e.event_type = 'skill_usage' THEN 1 ELSE 0 END) AS skillUsages,
+        SUM(CASE WHEN r.ref_id IS NULL THEN 1 ELSE 0 END) AS unresolvedEvents
+      FROM attribution_events e
+      LEFT JOIN outreach_refs r ON r.ref_id = e.ref_id
+    `);
+    const totals = attributionTotalsFromRow(totalsRow);
+
+    const groupRows = await db.all<{
+      key: string;
+      venue: string;
+      campaignId: string;
+      promptProfileId: string;
+      messageStyle: string;
+      layout: string;
+      ctaStyle: string | null;
+      promotionLevel: string | null;
+      rewardEmphasis: string | null;
+      refs: number;
+      clicks: number;
+      grantChallenges: number;
+      grantClaimAttempts: number;
+      grantClaimsQueued: number;
+      grantClaimsSucceeded: number;
+      grantClaimsFailed: number;
+      privateMessagesReceived: number;
+      skillUsages: number;
+      unresolvedEvents: number;
+    }>(`
+      SELECT
+        r.venue || ':' || r.campaign_id || ':' || r.prompt_profile_id || ':' || r.message_style || ':' || r.layout || ':' || COALESCE(r.cta_style, '') AS key,
+        r.venue AS venue,
+        r.campaign_id AS campaignId,
+        r.prompt_profile_id AS promptProfileId,
+        r.message_style AS messageStyle,
+        r.layout AS layout,
+        r.cta_style AS ctaStyle,
+        r.promotion_level AS promotionLevel,
+        r.reward_emphasis AS rewardEmphasis,
+        COUNT(DISTINCT r.ref_id) AS refs,
+        SUM(CASE WHEN e.event_type = 'click' THEN 1 ELSE 0 END) AS clicks,
+        SUM(CASE WHEN e.event_type = 'grant_challenge' THEN 1 ELSE 0 END) AS grantChallenges,
+        SUM(CASE WHEN e.event_type = 'grant_claim_attempted' THEN 1 ELSE 0 END) AS grantClaimAttempts,
+        SUM(CASE WHEN e.event_type = 'grant_claim_queued' THEN 1 ELSE 0 END) AS grantClaimsQueued,
+        SUM(CASE WHEN e.event_type = 'grant_claim_succeeded' THEN 1 ELSE 0 END) AS grantClaimsSucceeded,
+        SUM(CASE WHEN e.event_type = 'grant_claim_failed' THEN 1 ELSE 0 END) AS grantClaimsFailed,
+        SUM(CASE WHEN e.event_type = 'private_message_received' THEN 1 ELSE 0 END) AS privateMessagesReceived,
+        SUM(CASE WHEN e.event_type = 'skill_usage' THEN 1 ELSE 0 END) AS skillUsages,
+        0 AS unresolvedEvents
+      FROM outreach_refs r
+      LEFT JOIN attribution_events e ON e.ref_id = r.ref_id
+      GROUP BY
+        r.venue, r.campaign_id, r.prompt_profile_id, r.message_style, r.layout,
+        r.cta_style, r.promotion_level, r.reward_emphasis
+      ORDER BY skillUsages DESC, privateMessagesReceived DESC, grantClaimsSucceeded DESC, clicks DESC, refs DESC
+    `);
+
+    const refRows = await db.all<{
+      refId: string;
+      venue: string;
+      venueAccountId: string | null;
+      surface: string | null;
+      contentType: string;
+      campaignId: string;
+      promptProfileId: string;
+      promptParametersJson: string;
+      messageStyle: string;
+      layout: string;
+      ctaStyle: string | null;
+      promotionLevel: string | null;
+      productSpecificity: string | null;
+      rewardEmphasis: string | null;
+      audience: string | null;
+      candidateId: string;
+      generatedContentId: string;
+      remoteContentId: string | null;
+      utmJson: string | null;
+      createdAt: string;
+      updatedAt: string;
+      clicks: number;
+      grantChallenges: number;
+      grantClaimAttempts: number;
+      grantClaimsQueued: number;
+      grantClaimsSucceeded: number;
+      grantClaimsFailed: number;
+      privateMessagesReceived: number;
+      skillUsages: number;
+      lastEventAt: string | null;
+    }>(`
+      SELECT
+        r.ref_id AS refId,
+        r.venue AS venue,
+        r.venue_account_id AS venueAccountId,
+        r.surface AS surface,
+        r.content_type AS contentType,
+        r.campaign_id AS campaignId,
+        r.prompt_profile_id AS promptProfileId,
+        r.prompt_parameters_json AS promptParametersJson,
+        r.message_style AS messageStyle,
+        r.layout AS layout,
+        r.cta_style AS ctaStyle,
+        r.promotion_level AS promotionLevel,
+        r.product_specificity AS productSpecificity,
+        r.reward_emphasis AS rewardEmphasis,
+        r.audience AS audience,
+        r.candidate_id AS candidateId,
+        r.generated_content_id AS generatedContentId,
+        r.remote_content_id AS remoteContentId,
+        r.utm_json AS utmJson,
+        r.created_at AS createdAt,
+        r.updated_at AS updatedAt,
+        SUM(CASE WHEN e.event_type = 'click' THEN 1 ELSE 0 END) AS clicks,
+        SUM(CASE WHEN e.event_type = 'grant_challenge' THEN 1 ELSE 0 END) AS grantChallenges,
+        SUM(CASE WHEN e.event_type = 'grant_claim_attempted' THEN 1 ELSE 0 END) AS grantClaimAttempts,
+        SUM(CASE WHEN e.event_type = 'grant_claim_queued' THEN 1 ELSE 0 END) AS grantClaimsQueued,
+        SUM(CASE WHEN e.event_type = 'grant_claim_succeeded' THEN 1 ELSE 0 END) AS grantClaimsSucceeded,
+        SUM(CASE WHEN e.event_type = 'grant_claim_failed' THEN 1 ELSE 0 END) AS grantClaimsFailed,
+        SUM(CASE WHEN e.event_type = 'private_message_received' THEN 1 ELSE 0 END) AS privateMessagesReceived,
+        SUM(CASE WHEN e.event_type = 'skill_usage' THEN 1 ELSE 0 END) AS skillUsages,
+        MAX(e.created_at) AS lastEventAt
+      FROM outreach_refs r
+      LEFT JOIN attribution_events e ON e.ref_id = r.ref_id
+      GROUP BY r.ref_id
+      HAVING COUNT(e.event_id) > 0
+      ORDER BY skillUsages DESC, privateMessagesReceived DESC, grantClaimsSucceeded DESC, clicks DESC, r.created_at DESC
+      LIMIT 25
+    `);
+
+    return {
+      configured: true,
+      databasePath,
+      generatedAt: now.toISOString(),
+      totals,
+      conversionRates: rates(totals),
+      groups: groupRows.map((row) => {
+        const groupTotals = attributionTotalsFromRow(row);
+        return {
+          key: row.key,
+          venue: row.venue,
+          campaignId: row.campaignId,
+          promptProfileId: row.promptProfileId,
+          messageStyle: row.messageStyle,
+          layout: row.layout,
+          ctaStyle: row.ctaStyle ?? undefined,
+          promotionLevel: row.promotionLevel ?? undefined,
+          rewardEmphasis: row.rewardEmphasis ?? undefined,
+          refCount: groupTotals.refs,
+          totals: groupTotals,
+          conversionRates: rates(groupTotals)
+        };
+      }),
+      topRefs: refRows.map((row): AttributionRefDetail => {
+        const refTotals = attributionTotalsFromRow({
+          refs: 1,
+          clicks: row.clicks,
+          grantChallenges: row.grantChallenges,
+          grantClaimAttempts: row.grantClaimAttempts,
+          grantClaimsQueued: row.grantClaimsQueued,
+          grantClaimsSucceeded: row.grantClaimsSucceeded,
+          grantClaimsFailed: row.grantClaimsFailed,
+          privateMessagesReceived: row.privateMessagesReceived,
+          skillUsages: row.skillUsages,
+          unresolvedEvents: 0
+        });
+        return {
+          refId: row.refId,
+          venue: row.venue,
+          venueAccountId: row.venueAccountId ?? undefined,
+          surface: row.surface ?? undefined,
+          contentType: row.contentType,
+          campaignId: row.campaignId,
+          promptProfileId: row.promptProfileId,
+          promptParameters: sanitizeAttributionMetadata(parseJsonRecord(row.promptParametersJson)),
+          messageStyle: row.messageStyle,
+          layout: row.layout,
+          ctaStyle: row.ctaStyle ?? undefined,
+          promotionLevel: row.promotionLevel ?? undefined,
+          productSpecificity: row.productSpecificity ?? undefined,
+          rewardEmphasis: row.rewardEmphasis ?? undefined,
+          audience: row.audience ?? undefined,
+          candidateId: row.candidateId,
+          generatedContentId: row.generatedContentId,
+          remoteContentId: row.remoteContentId ?? undefined,
+          utm: sanitizeAttributionMetadata(parseJsonRecord(row.utmJson)),
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          totals: refTotals,
+          conversionRates: rates(refTotals),
+          lastEventAt: row.lastEventAt ?? undefined
+        };
+      })
+    };
+  } catch (error) {
+    return emptyAttributionSummary(databasePath, error instanceof Error ? error.message : String(error));
   } finally {
     await db.close();
   }

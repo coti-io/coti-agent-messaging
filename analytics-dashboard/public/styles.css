@@ -205,6 +205,29 @@ th {
   font-size: 12px;
 }
 
+.attribution-ref-wrap {
+  margin-top: 18px;
+}
+
+summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.prompt-json {
+  max-width: 420px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(8, 17, 31, 0.72);
+  color: var(--text);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 900px) {
   .hero,
   .section-heading {

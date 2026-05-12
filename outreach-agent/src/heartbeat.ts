@@ -287,6 +287,10 @@ export async function runHeartbeat(
     if (!plannedActionTypes.has("create_post") && postBlockReason) {
       skipped.push(postBlockReason);
     }
+    const recordPublishFailure = (actionLabel: string, error: unknown): void => {
+      report.errors.push(toHeartbeatError(`publish:${actionLabel}`, error));
+      skipped.push(`skipped ${actionLabel} because Moltbook publish failed: ${formatErrorMessage(error)}`);
+    };
     const writeCandidates: WriteCandidate[] = [];
 
     for (const action of planned) {
@@ -363,13 +367,18 @@ export async function runHeartbeat(
               break;
             }
 
-            await venue.publishAction({
-              id: `upvote:${postId}`,
-              venue: "moltbook",
-              type: "upvote_post",
-              parentId: postId,
-              raw: action
-            });
+            try {
+              await venue.publishAction({
+                id: `upvote:${postId}`,
+                venue: "moltbook",
+                type: "upvote_post",
+                parentId: postId,
+                raw: action
+              });
+            } catch (error) {
+              recordPublishFailure(`upvote "${action.post.title}"`, error);
+              break;
+            }
             state = applyActionResult(state, { type: "upvote_post", postId });
             performed.push(`Upvoted "${action.post.title}".`);
             break;
@@ -380,13 +389,18 @@ export async function runHeartbeat(
               break;
             }
 
-            await venue.publishAction({
-              id: `follow:${action.agentName}`,
-              venue: "moltbook",
-              type: "follow_account",
-              parentId: action.agentName,
-              raw: action
-            });
+            try {
+              await venue.publishAction({
+                id: `follow:${action.agentName}`,
+                venue: "moltbook",
+                type: "follow_account",
+                parentId: action.agentName,
+                raw: action
+              });
+            } catch (error) {
+              recordPublishFailure(`follow ${action.agentName}`, error);
+              break;
+            }
             state = applyActionResult(state, { type: "follow_agent", agentName: action.agentName });
             performed.push(`Followed ${action.agentName}.`);
             break;
@@ -479,15 +493,20 @@ export async function runHeartbeat(
           } else {
             const pendingWrite = buildPendingWrite(candidate, decision);
             await persistState(addPendingWrite(state, pendingWrite));
-            await venue.publishAction({
-              id: `reply:${candidate.postId}:${candidate.target.commentId}`,
-              venue: "moltbook",
-              type: "reply_to_comment",
-              parentId: candidate.postId,
-              candidateId: candidate.target.commentId,
-              content: decision.content,
-              raw: candidate
-            });
+            try {
+              await venue.publishAction({
+                id: `reply:${candidate.postId}:${candidate.target.commentId}`,
+                venue: "moltbook",
+                type: "reply_to_comment",
+                parentId: candidate.postId,
+                candidateId: candidate.target.commentId,
+                content: decision.content,
+                raw: candidate
+              });
+            } catch (error) {
+              recordPublishFailure(`reply on "${candidate.postTitle}"`, error);
+              break;
+            }
             await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
             await venue.markNotificationsReadByPost(candidate.postId);
             performed.push(
@@ -507,14 +526,19 @@ export async function runHeartbeat(
           } else {
             const pendingWrite = buildPendingWrite(candidate, decision);
             await persistState(addPendingWrite(state, pendingWrite));
-            await venue.publishAction({
-              id: `comment:${postId}`,
-              venue: "moltbook",
-              type: "comment_on_post",
-              parentId: postId,
-              content: decision.content,
-              raw: candidate
-            });
+            try {
+              await venue.publishAction({
+                id: `comment:${postId}`,
+                venue: "moltbook",
+                type: "comment_on_post",
+                parentId: postId,
+                content: decision.content,
+                raw: candidate
+              });
+            } catch (error) {
+              recordPublishFailure(`comment on "${candidate.post.title}"`, error);
+              break;
+            }
             await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
             performed.push(`Commented on "${candidate.post.title}".`);
           }
@@ -526,15 +550,20 @@ export async function runHeartbeat(
           } else {
             const pendingWrite = buildPendingWrite(candidate, decision);
             await persistState(addPendingWrite(state, pendingWrite));
-            await venue.publishAction({
-              id: "create-post",
-              venue: "moltbook",
-              type: "create_post",
-              surface: config.defaultSubmolt,
-              title: decision.title!,
-              content: decision.content,
-              raw: candidate
-            });
+            try {
+              await venue.publishAction({
+                id: "create-post",
+                venue: "moltbook",
+                type: "create_post",
+                surface: config.defaultSubmolt,
+                title: decision.title!,
+                content: decision.content,
+                raw: candidate
+              });
+            } catch (error) {
+              recordPublishFailure(`post "${decision.title ?? "Untitled post"}"`, error);
+              break;
+            }
             await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
             performed.push(`Posted "${decision.title}".`);
           }
@@ -601,6 +630,17 @@ function toHeartbeatError(phase: string, error: unknown): HeartbeatErrorEntry {
     phase,
     message: String(error)
   };
+}
+
+function formatErrorMessage(error: unknown): string {
+  if (error instanceof MoltbookApiError) {
+    return `Moltbook API ${error.statusCode}: ${error.message}`;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
 }
 
 function buildPendingWrite(candidate: WriteCandidate, decision: GeneratedWriteDecision): PendingWrite {

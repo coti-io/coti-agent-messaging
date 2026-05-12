@@ -657,6 +657,141 @@ test("heartbeat reports the daily post cap with explicit usage", async () => {
   }
 });
 
+test("heartbeat records failed upvotes without failing the run", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-upvote-failure-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const today = new Date().toISOString().slice(0, 10);
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false,
+    policy: {
+      commentLimitNewAgentPerDay: 20,
+      commentLimitEstablishedPerDay: 50,
+      postLimitNewAgentPerDay: 1,
+      postLimitEstablishedPerDay: 1
+    }
+  };
+  await writeFile(
+    config.statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        dailyPostDate: today,
+        dailyPostCount: 1,
+        lastPostAt: `${today}T08:00:00.000Z`
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: [
+          {
+            id: "post-fails-upvote",
+            post_id: "post-fails-upvote",
+            title: "Private transport",
+            content_preview: "Short note."
+          },
+          {
+            id: "post-upvotes-ok",
+            post_id: "post-upvotes-ok",
+            title: "Private routing",
+            content_preview: "Short note."
+          }
+        ]
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts/post-fails-upvote/upvote" && method === "POST") {
+      return new Response(
+        JSON.stringify({
+          statusCode: 500,
+          message: "Internal server error",
+          error: "Error"
+        }),
+        {
+          status: 500,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      );
+    }
+
+    if (url.pathname === "/api/v1/posts/post-upvotes-ok/upvote" && method === "POST") {
+      return jsonResponse({ success: true });
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    const result = await runHeartbeat(config);
+    assert.match(result.summary, /skipped upvote "Private transport" because Moltbook publish failed/i);
+    assert.match(result.summary, /Upvoted "Private routing"/);
+
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      status?: string;
+      skipped?: string[];
+      performed?: string[];
+      errors?: Array<{ phase?: string; message?: string; name?: string }>;
+    };
+    const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
+      upvotedPostIds?: string[];
+      engagementTotals?: { upvotes?: number };
+    };
+    assert.equal(savedReport.status, "ok");
+    assert.equal(savedReport.errors?.length, 1);
+    assert.equal(savedReport.errors?.[0]?.phase, 'publish:upvote "Private transport"');
+    assert.equal(savedReport.errors?.[0]?.name, "MoltbookApiError");
+    assert.equal(savedReport.performed?.some((entry) => /Upvoted "Private routing"/.test(entry)), true);
+    assert.equal(savedReport.skipped?.some((entry) => /Moltbook API 500/i.test(entry)), true);
+    assert.deepEqual(savedState.upvotedPostIds, ["post-upvotes-ok"]);
+    assert.equal(savedState.engagementTotals?.upvotes, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
     status: 200,

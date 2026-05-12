@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@coti-io/coti-ethers": "^1.0.5",
-    "@coti-io/coti-sdk-private-messaging": "git+https://github.com/coti-io/coti-sdk-private-messaging.git#main",
+    "@coti-io/coti-sdk-private-messaging": "github:coti-io/coti-sdk-private-messaging#main",
     "dotenv": "^16.6.1",
     "sqlite3": "^6.0.1"
   },

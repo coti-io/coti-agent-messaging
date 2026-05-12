@@ -145,6 +145,8 @@ ensure_runtime_prereqs
 mkdir -p "$RUNTIME_DIR"
 
 cd "$REMOTE_PACKAGE_DIR"
+rm -f package-lock.json
+rm -rf node_modules/@coti-io/coti-sdk-private-messaging
 npm install --no-fund --no-audit
 npm run build
 

@@ -151,6 +151,7 @@ allowed_keys = {
     "COTI_MAINNET_RPC_URL",
     "COTI_BLOCKSCOUT_API_URL",
     "MOLTBOOK_ANALYTICS_COTI_CACHE_TTL_MS",
+    "OUTREACH_ATTRIBUTION_DB_PATH",
 }
 
 if not env_file.exists():

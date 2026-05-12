@@ -1,5 +1,5 @@
 [Unit]
-Description=Moltbook analytics dashboard
+Description=Outreach analytics dashboard
 After=network-online.target
 Wants=network-online.target
 

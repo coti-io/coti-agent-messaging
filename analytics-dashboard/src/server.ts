@@ -264,6 +264,6 @@ export function createServer(configInput: AnalyticsConfig = config) {
 if (require.main === module) {
   const server = createServer();
   server.listen(config.port, config.host, () => {
-    console.log(`Moltbook analytics dashboard listening on http://${config.host}:${config.port}`);
+    console.log(`Outreach analytics dashboard listening on http://${config.host}:${config.port}`);
   });
 }

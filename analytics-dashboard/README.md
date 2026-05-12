@@ -1,6 +1,6 @@
-# Moltbook Analytics Dashboard
+# Outreach Analytics Dashboard
 
-Simple server-side dashboard for Moltbook outreach agents and COTI private-message usage.
+Simple server-side dashboard for outreach agents and COTI private-message usage.
 
 ## Run Locally
 

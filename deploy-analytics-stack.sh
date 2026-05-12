@@ -299,7 +299,7 @@ sudo -n systemctl restart "${DASHBOARD_SERVICE_NAME}.service"
 EOF
 
 echo
-echo "Moltbook analytics stack deployed."
+echo "Outreach analytics stack deployed."
 echo "Remote path: $DEPLOY_PATH"
 if [[ "$DASHBOARD_HOST" == "0.0.0.0" ]]; then
   echo "Dashboard: listening on all interfaces at port $DASHBOARD_PORT"

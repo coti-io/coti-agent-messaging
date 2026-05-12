@@ -53,6 +53,10 @@ export interface GeneratedWriteDecision {
   structuralFingerprint?: string;
 }
 
+const MAX_POST_TITLE_CHARS = 110;
+const MAX_POST_CONTENT_CHARS = 1_100;
+const MAX_REPLY_OR_COMMENT_CHARS = 700;
+
 interface LlmReplyGateResponse {
   selectedCommentId: string;
   rationale?: string;
@@ -239,20 +243,21 @@ export async function chooseAndDraftWriteAction(
     ctaLink
   );
 
-  const content = applyCtaToContent(
+  const rawContent = applyCtaToContent(
     normalizeDraftContent(selectedCandidate, (response.content ?? "").trim()),
     resolvedProfile,
     ctaLink
   );
-  if (!content) {
+  if (!rawContent) {
     throw new Error(`LLM returned empty content for candidate ${selectedCandidate.id}`);
   }
 
-  const title =
+  const rawTitle =
     selectedCandidate.type === "create_post" ? (response.title ?? "").trim() : undefined;
-  if (selectedCandidate.type === "create_post" && !title) {
+  if (selectedCandidate.type === "create_post" && !rawTitle) {
     throw new Error("LLM selected a post candidate but did not return a title.");
   }
+  const { title, content } = normalizeDraftForPublish(selectedCandidate, rawTitle, rawContent, ctaLink);
 
   validateDraft(selectedCandidate, title, content, state, resolvedProfile, ctaLink);
   validateDraftAgainstPromptProfile(resolvedProfile, content, ctaLink?.url);
@@ -324,6 +329,56 @@ async function draftCandidate(
       )
     }
   ]);
+}
+
+function normalizeDraftForPublish(
+  candidate: WriteCandidate,
+  title: string | undefined,
+  content: string,
+  ctaLink: CtaLink | undefined
+): {
+  title?: string;
+  content: string;
+} {
+  if (candidate.type !== "create_post") {
+    return { title, content };
+  }
+
+  return {
+    title: title ? trimToLimit(title, MAX_POST_TITLE_CHARS) : title,
+    content: trimPostContentToLimit(content, MAX_POST_CONTENT_CHARS, ctaLink?.url)
+  };
+}
+
+function trimToLimit(value: string, limit: number): string {
+  if (value.length <= limit) {
+    return value;
+  }
+
+  const ellipsis = "...";
+  if (limit <= ellipsis.length) {
+    return value.slice(0, limit);
+  }
+
+  const trimmed = value.slice(0, limit - ellipsis.length).trimEnd();
+  return `${trimmed}${ellipsis}`;
+}
+
+function trimPostContentToLimit(content: string, limit: number, requiredCtaUrl?: string): string {
+  if (content.length <= limit) {
+    return content;
+  }
+
+  const ctaSuffix = requiredCtaUrl && content.includes(requiredCtaUrl) ? `\n\n${requiredCtaUrl}` : "";
+  const bodyWithoutRequiredCta =
+    ctaSuffix && content.endsWith(ctaSuffix) ? content.slice(0, -ctaSuffix.length).trimEnd() : content;
+  const availableBodyChars = limit - ctaSuffix.length;
+  if (availableBodyChars <= 0) {
+    throw new Error("Generated post content is too long to preserve the required tracked CTA URL.");
+  }
+
+  const trimmedBody = trimToLimit(bodyWithoutRequiredCta, availableBodyChars).trimEnd();
+  return `${trimmedBody}${ctaSuffix}`;
 }
 
 function buildSelectionSystemPrompt(): string {
@@ -429,9 +484,13 @@ function buildDraftSystemPrompt(
       return [
         ...commonRules,
         "Write an original top-level post with a title and body.",
-        "Title should be punchy, concrete, and under 110 characters.",
-        "Body should be 350-1100 characters.",
+        "Keep it compact.",
+        "Title should be punchy, concrete, and ideally 55-85 characters; never exceed 100 characters.",
+        "Body should usually land around 280-650 characters; never exceed 900 characters including any CTA URL.",
         "Open with a strong observation or tradeoff, not a slogan.",
+        "Use one compact paragraph by default; only use two short paragraphs if the pivot materially improves the post.",
+        "Make one sharp claim, support it with one concrete mechanic, then stop.",
+        "If a draft starts getting long, cut examples, throat-clearing, and subordinate points instead of adding explanation.",
         "The post should feel like a technical operator talking, not a marketer."
       ].join(" ");
   }
@@ -474,7 +533,7 @@ function buildDraftUserPrompt(
     "",
     "Writing target:",
     candidate.type === "create_post"
-      ? "Make one strong claim and support it with concrete mechanics."
+      ? "Keep it short. Make one strong claim, support it with one concrete mechanic, and end before it turns into an essay."
       : "Keep it sharp. One distinction, one consequence, one memorable closing line beats a well-behaved explanation.",
     "",
     "Active prompt profile:",
@@ -510,15 +569,15 @@ function validateDraft(
   resolvedProfile: ResolvedPromptProfile,
   ctaLink: CtaLink | undefined
 ): void {
-  if (candidate.type === "create_post" && title && title.length > 110) {
+  if (candidate.type === "create_post" && title && title.length > MAX_POST_TITLE_CHARS) {
     throw new Error("Generated post title is too long.");
   }
 
-  if (candidate.type === "create_post" && content.length > 1_100) {
+  if (candidate.type === "create_post" && content.length > MAX_POST_CONTENT_CHARS) {
     throw new Error("Generated post content is too long.");
   }
 
-  if (candidate.type !== "create_post" && content.length > 700) {
+  if (candidate.type !== "create_post" && content.length > MAX_REPLY_OR_COMMENT_CHARS) {
     throw new Error("Generated reply/comment is too long.");
   }
 

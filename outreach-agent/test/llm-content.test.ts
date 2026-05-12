@@ -481,3 +481,90 @@ test("Moltbook CTA profile injects style layout and tracked URL into drafts", as
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("create_post drafts trim overlong title and content without dropping tracked CTA", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-trim-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    promptProfileId: "aggressive-structured",
+    attributionCampaignId: "private_messaging",
+    agentId: "OutreachBot",
+    ctaBaseUrl: "https://example.com/agent-messaging",
+    ctaApprovedDomains: ["example.com"],
+    promptProfile: {
+      id: "aggressive-structured",
+      parameters: {
+        messageStyle: "aggressive",
+        layout: "structured_bullets",
+        aggression: "high",
+        ctaStyle: "direct_next_step"
+      }
+    },
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+        if (String(messages[0]?.content ?? "").includes("selecting exactly one authored Moltbook action")) {
+          return {
+            selectedCandidateId: "A",
+            rationale: "Only one candidate exists."
+          } as T;
+        }
+
+        const ctaMatch = String(messages[1]?.content ?? "").match(/https:\/\/example\.com\/agent-messaging[^\s"]+/);
+        return {
+          selectedCandidateId: "A",
+          title: "Overlong title ".repeat(10).trim(),
+          content: `${"Strong claim. ".repeat(120).trim()}\n\n${ctaMatch?.[0] ?? "https://example.com/agent-messaging"}`,
+          rationale: "Force local trimming instead of failing the heartbeat."
+        } as T;
+      }
+    }
+  };
+  const candidates: WriteCandidate[] = [
+    {
+      id: "create-post",
+      type: "create_post",
+      reason: "Create one top-level post."
+    }
+  ];
+  const factSheet: ProductFactSheet = {
+    claims: [
+      {
+        id: "private-bodies-public-routing",
+        headline: "Private message bodies, queryable routing",
+        detail: "Message bodies are encrypted while routing metadata stays public.",
+        sourcePaths: ["docs/overview.md"],
+        evidence: ["The message body is encrypted while routing metadata remains queryable."],
+        emphasis: "primary"
+      }
+    ],
+    liveSnapshot: {}
+  };
+
+  try {
+    const decision = await chooseAndDraftWriteAction(
+      config,
+      candidates,
+      factSheet,
+      createInitialState()
+    );
+
+    assert.ok(decision.title);
+    assert.equal(decision.title.length <= 110, true);
+    assert.equal(decision.content.length <= 1_100, true);
+    assert.match(decision.title, /\.\.\.$/);
+    assert.match(decision.content, /https:\/\/example\.com\/agent-messaging/);
+    assert.match(decision.ctaUrl ?? "", /utm_source=moltbook/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

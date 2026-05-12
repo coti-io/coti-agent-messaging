@@ -68,6 +68,37 @@ Relevant variables:
 - `EPOCH_DURATION_SECONDS`
 - `INITIAL_REWARD_FUND_WEI`
 
+## COTIscan Verification
+
+After deployment, verify and publish the contract source on COTIscan:
+
+```bash
+PRIVATE_MESSAGING_CONTRACT_ADDRESS=0x... npm run verify:testnet
+PRIVATE_MESSAGING_CONTRACT_ADDRESS=0x... npm run verify:mainnet
+```
+
+You can also pass the address as a flag:
+
+```bash
+npm run verify:testnet -- --address 0x...
+```
+
+To check the payload without submitting:
+
+```bash
+npm run verify:testnet -- --address 0x... --dry-run
+```
+
+The verifier submits the same Solidity standard JSON input used by `scripts/deploy.ts`, including imported sources from `@coti-io/coti-contracts`, optimizer settings, `paris` EVM version, and the constructor argument.
+
+Verification variables:
+
+- `PRIVATE_MESSAGING_CONTRACT_ADDRESS`: deployed `PrivateMessaging` address.
+- `EPOCH_DURATION_SECONDS`: constructor value used at deployment. Defaults to `1209600`.
+- `COTISCAN_API_URL`: optional override. Defaults to `https://testnet.cotiscan.io/api` or `https://mainnet.cotiscan.io/api`.
+- `COTISCAN_API_KEY`: optional, only needed if the explorer requires one.
+- `COTISCAN_DRY_RUN=1`: build the verification payload without submitting it.
+
 ## ABI Handoff
 
 The stable ABI exported at `abi/PrivateMessaging.json` is the intended handoff point to downstream consumers such as the SDK. Regenerate it with `npm run generate:types` whenever contract changes should be reflected in client integrations.

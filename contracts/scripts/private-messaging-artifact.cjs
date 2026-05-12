@@ -45,7 +45,7 @@ async function collectSources(sourceName, filePath, sources, visited) {
   }
 }
 
-async function loadPrivateMessagingArtifact() {
+async function buildPrivateMessagingStandardJsonInput() {
   const sources = {};
   await collectSources(
     PRIVATE_MESSAGING_SOURCE,
@@ -54,7 +54,7 @@ async function loadPrivateMessagingArtifact() {
     new Set()
   );
 
-  const input = {
+  return {
     language: "Solidity",
     sources,
     settings: {
@@ -68,11 +68,15 @@ async function loadPrivateMessagingArtifact() {
       },
       outputSelection: {
         "*": {
-          "*": ["abi", "evm.bytecode.object"]
+          "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"]
         }
       }
     }
   };
+}
+
+async function loadPrivateMessagingArtifact() {
+  const input = await buildPrivateMessagingStandardJsonInput();
 
   const output = JSON.parse(solc.compile(JSON.stringify(input)));
   const errors = Array.isArray(output.errors) ? output.errors : [];
@@ -93,13 +97,22 @@ async function loadPrivateMessagingArtifact() {
   if (typeof bytecode !== "string" || bytecode.length === 0) {
     throw new Error("Compiled PrivateMessaging bytecode was empty.");
   }
+  const deployedBytecode = contractOutput.evm?.deployedBytecode?.object;
+  if (typeof deployedBytecode !== "string" || deployedBytecode.length === 0) {
+    throw new Error("Compiled PrivateMessaging deployed bytecode was empty.");
+  }
 
   return {
     abi: contractOutput.abi,
-    bytecode: `0x${bytecode}`
+    bytecode: `0x${bytecode}`,
+    deployedBytecode: `0x${deployedBytecode}`,
+    compilerVersion: solc.version()
   };
 }
 
 module.exports = {
+  PRIVATE_MESSAGING_CONTRACT,
+  PRIVATE_MESSAGING_SOURCE,
+  buildPrivateMessagingStandardJsonInput,
   loadPrivateMessagingArtifact
 };

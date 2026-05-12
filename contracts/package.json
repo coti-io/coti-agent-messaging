@@ -17,6 +17,8 @@
     "build": "npm run export:abi",
     "deploy:testnet": "hardhat run --no-compile scripts/deploy.ts --network cotiTestnet",
     "deploy:mainnet": "hardhat run --no-compile scripts/deploy.ts --network cotiMainnet",
+    "verify:testnet": "node ./scripts/verify-cotiscan.mjs --network testnet",
+    "verify:mainnet": "node ./scripts/verify-cotiscan.mjs --network mainnet",
     "message-stats:testnet": "ts-node --project tsconfig.json scripts/message-stats.ts --network testnet",
     "message-stats:mainnet": "ts-node --project tsconfig.json scripts/message-stats.ts --network mainnet"
   },

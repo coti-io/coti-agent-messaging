@@ -41,6 +41,22 @@ const PRIVATE_MESSAGING_DOCS: ReadonlyArray<{ path: string; url: string }> = [
     url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/README.md"
   },
   {
+    path: "coti-docs/private-messaging/skills/README.md",
+    url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/skills/README.md"
+  },
+  {
+    path: "coti-docs/private-messaging/skills/coti-private-messaging/SKILL.md",
+    url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/skills/coti-private-messaging/SKILL.md"
+  },
+  {
+    path: "coti-docs/private-messaging/skills/coti-rewards-management/SKILL.md",
+    url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/skills/coti-rewards-management/SKILL.md"
+  },
+  {
+    path: "coti-docs/private-messaging/skills/coti-starter-grant/SKILL.md",
+    url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/skills/coti-starter-grant/SKILL.md"
+  },
+  {
     path: "coti-docs/private-messaging/typescript-sdk.md",
     url: "https://raw.githubusercontent.com/coti-io/documentation/main/private-messaging/typescript-sdk.md"
   },
@@ -112,7 +128,11 @@ async function buildRepoCorpus(projectRoot: string): Promise<RepoCorpus> {
 }
 
 async function loadProjectEntries(projectRoot: string): Promise<RepoEntry[]> {
-  const directories = [path.join(projectRoot, "contracts"), path.join(projectRoot, "docs")];
+  const directories = [
+    path.join(projectRoot, "contracts"),
+    path.join(projectRoot, "docs"),
+    path.join(projectRoot, ".cursor", "skills")
+  ];
   const filePaths = (await Promise.all(directories.map((directory) => collectFiles(directory)))).flat();
   return readRepoEntries(filePaths, projectRoot);
 }

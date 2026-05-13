@@ -27,6 +27,7 @@ import {
   listReplyTargets,
   normalizeState,
   planHeartbeatActions,
+  selectFollowCandidatesFromComments,
   type EngagementSummary,
   type PendingWrite,
   type OutreachAgentState,
@@ -315,6 +316,46 @@ export async function runHeartbeat(
       skipped.push(`skipped ${actionLabel} because Moltbook publish failed: ${formatErrorMessage(error)}`);
     };
     const writeCandidates: WriteCandidate[] = [];
+    const followsAttempted = new Set<string>();
+    const followBudget = Math.max(
+      0,
+      config.policy?.followMaxPerHeartbeat ?? 3
+    );
+    const plannedFollowCount = planned.filter((entry) => entry.type === "follow_agent").length;
+    let commentFollowBudget = Math.max(0, followBudget - plannedFollowCount);
+
+    const tryFollowAgent = async (
+      agentName: string,
+      reason: string,
+      sourceLabel: string
+    ): Promise<boolean> => {
+      if (!agentName || followsAttempted.has(agentName) || state.followedAgentNames.includes(agentName)) {
+        return false;
+      }
+
+      followsAttempted.add(agentName);
+
+      if (config.dryRun) {
+        performed.push(`Would follow ${agentName} (${sourceLabel}).`);
+        return true;
+      }
+
+      try {
+        await venue.publishAction({
+          id: `follow:${agentName}`,
+          venue: "moltbook",
+          type: "follow_account",
+          parentId: agentName,
+          raw: { type: "follow_agent", agentName, reason }
+        });
+      } catch (error) {
+        recordPublishFailure(`follow ${agentName}`, error);
+        return false;
+      }
+      state = applyActionResult(state, { type: "follow_agent", agentName });
+      performed.push(`Followed ${agentName} (${sourceLabel}).`);
+      return true;
+    };
 
     for (const action of planned) {
       try {
@@ -338,6 +379,31 @@ export async function runHeartbeat(
               state,
               agentName: home.your_account.name
             });
+
+            if (commentFollowBudget > 0) {
+              const followCandidates = selectFollowCandidatesFromComments({
+                comments: comments.comments ?? [],
+                state,
+                agentName: home.your_account.name,
+                policy: config.policy,
+                alreadyQueued: followsAttempted,
+                remainingBudget: commentFollowBudget
+              });
+              for (const candidate of followCandidates) {
+                if (commentFollowBudget <= 0) {
+                  break;
+                }
+                const followed = await tryFollowAgent(
+                  candidate.agentName,
+                  candidate.reason,
+                  "comment author"
+                );
+                if (followed) {
+                  commentFollowBudget -= 1;
+                }
+              }
+            }
+
             if (replyTargets.length === 0) {
               skipped.push(`no reply-worthy comment found on "${action.activity.post_title}".`);
               if (!config.dryRun) {
@@ -407,25 +473,7 @@ export async function runHeartbeat(
             break;
           }
           case "follow_agent":
-            if (config.dryRun) {
-              performed.push(`Would follow ${action.agentName}.`);
-              break;
-            }
-
-            try {
-              await venue.publishAction({
-                id: `follow:${action.agentName}`,
-                venue: "moltbook",
-                type: "follow_account",
-                parentId: action.agentName,
-                raw: action
-              });
-            } catch (error) {
-              recordPublishFailure(`follow ${action.agentName}`, error);
-              break;
-            }
-            state = applyActionResult(state, { type: "follow_agent", agentName: action.agentName });
-            performed.push(`Followed ${action.agentName}.`);
+            await tryFollowAgent(action.agentName, action.reason, "post author");
             break;
           case "comment_on_post": {
             if (!canComment(state, newAgent, config.policy)) {

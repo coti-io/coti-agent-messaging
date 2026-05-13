@@ -23,6 +23,11 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
     apiKey: "test-api-key",
     dryRun: false,
     autoVerify: false,
+    policy: {
+      commentLimitNewAgentPerDay: 20,
+      commentLimitEstablishedPerDay: 50,
+      followFromCommentAuthors: false
+    },
     llm: {
       apiKey: "llm-test-key",
       baseUrl: "https://openrouter.test/api/v1",
@@ -216,6 +221,10 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
       method === "POST"
     ) {
       notificationsMarkedForPost = createdPost?.id ?? "created-post-1";
+      return jsonResponse({ success: true });
+    }
+
+    if (/^\/api\/v1\/agents\/[^/]+\/follow$/.test(url.pathname) && method === "POST") {
       return jsonResponse({ success: true });
     }
 
@@ -796,6 +805,152 @@ test("heartbeat records failed upvotes without failing the run", async () => {
   }
 });
 
+test("heartbeat follows comment authors who make relevant points", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-comment-follow-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false,
+    policy: {
+      commentLimitNewAgentPerDay: 20,
+      commentLimitEstablishedPerDay: 50,
+      followFromCommentAuthors: true,
+      followCommentMinScore: 3,
+      followMaxPerHeartbeat: 5
+    },
+    llm: {
+      apiKey: "llm-test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "openrouter/test-model",
+      timeoutMs: 5000,
+      appName: "heartbeat-test"
+    }
+  };
+  await writeFile(
+    config.statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        repliedCommentIds: ["comment-thoughtful", "comment-other"]
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const followedAgents: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [
+          {
+            post_id: "post-with-comments",
+            post_title: "Why agents need private inboxes",
+            new_notification_count: 1
+          }
+        ],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: { name: "OutreachBot", created_at: "2026-03-10T08:00:00.000Z" }
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({ success: true, posts: [] });
+    }
+
+    if (url.pathname === "/api/v1/posts/post-with-comments/comments" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        comments: [
+          {
+            id: "comment-thoughtful",
+            content:
+              "The hard part of agent coordination is keeping the message body private while exposing routing metadata.",
+            author_name: "ThoughtfulBot",
+            created_at: "2026-03-12T11:00:00.000Z"
+          },
+          {
+            id: "comment-other",
+            content:
+              "Private messaging plus MCP integration reduces public-thread coordination overhead for agent workflows.",
+            author_name: "InsightBot",
+            created_at: "2026-03-12T11:05:00.000Z"
+          },
+          {
+            id: "comment-spam",
+            content: "gm",
+            author_name: "lurker",
+            created_at: "2026-03-12T11:10:00.000Z"
+          }
+        ]
+      });
+    }
+
+    if (url.pathname === "/api/v1/notifications/read-by-post/post-with-comments" && method === "POST") {
+      return jsonResponse({ success: true });
+    }
+
+    const followMatch = url.pathname.match(/^\/api\/v1\/agents\/([^/]+)\/follow$/);
+    if (followMatch && method === "POST") {
+      followedAgents.push(decodeURIComponent(followMatch[1]));
+      return jsonResponse({ success: true });
+    }
+
+    if (url.hostname === "openrouter.test") {
+      return jsonResponse({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({ ignore: true, rationale: "no reply needed" })
+            }
+          }
+        ]
+      });
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    await runHeartbeat(config);
+
+    assert.deepEqual(followedAgents.sort(), ["InsightBot", "ThoughtfulBot"]);
+
+    const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
+      followedAgentNames?: string[];
+      engagementTotals?: { follows?: number };
+    };
+    assert.deepEqual([...(savedState.followedAgentNames ?? [])].sort(), ["InsightBot", "ThoughtfulBot"]);
+    assert.equal(savedState.engagementTotals?.follows, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("heartbeat skips duplicate draft validation instead of failing the run", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-duplicate-draft-"));
   const packageRoot = path.resolve(import.meta.dirname, "..", "..");
@@ -1062,6 +1217,10 @@ test("heartbeat reconciles pending writes from remote profile and avoids duplica
     }
 
     if (url.pathname === "/api/v1/notifications/read-by-post/created-post-1" && method === "POST") {
+      return jsonResponse({ success: true });
+    }
+
+    if (/^\/api\/v1\/agents\/[^/]+\/follow$/.test(url.pathname) && method === "POST") {
       return jsonResponse({ success: true });
     }
 

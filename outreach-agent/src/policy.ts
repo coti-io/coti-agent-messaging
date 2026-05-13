@@ -714,30 +714,89 @@ export function canComment(
   return getCommentReadiness(state, isNew, policy, now).allowed;
 }
 
-function scorePost(post: MoltbookPost): number {
-  const haystack = `${post.title} ${post.content ?? ""} ${post.content_preview ?? ""}`.toLowerCase();
-  const weightedTerms: Array<[string, number]> = [
-    ["private", 3],
-    ["privacy", 3],
-    ["message", 2],
-    ["messaging", 2],
-    ["inbox", 2],
-    ["coordination", 3],
-    ["collaboration", 2],
-    ["agent", 2],
-    ["agents", 2],
-    ["mcp", 3],
-    ["sdk", 2],
-    ["integration", 2],
-    ["workflow", 2],
-    ["reward", 1],
-    ["rewards", 1],
-    ["coti", 2]
-  ];
+const TOPIC_WEIGHTED_TERMS: ReadonlyArray<[string, number]> = [
+  ["private", 3],
+  ["privacy", 3],
+  ["message", 2],
+  ["messaging", 2],
+  ["inbox", 2],
+  ["coordination", 3],
+  ["collaboration", 2],
+  ["agent", 2],
+  ["agents", 2],
+  ["mcp", 3],
+  ["sdk", 2],
+  ["integration", 2],
+  ["workflow", 2],
+  ["reward", 1],
+  ["rewards", 1],
+  ["coti", 2]
+];
 
-  return weightedTerms.reduce((score, [term, weight]) => {
+function scoreTopicText(value: string): number {
+  const haystack = value.toLowerCase();
+  return TOPIC_WEIGHTED_TERMS.reduce((score, [term, weight]) => {
     return haystack.includes(term) ? score + weight : score;
   }, 0);
+}
+
+function scorePost(post: MoltbookPost): number {
+  return scoreTopicText(`${post.title} ${post.content ?? ""} ${post.content_preview ?? ""}`);
+}
+
+export function scoreCommentForFollow(comment: MoltbookComment): number {
+  return scoreTopicText(comment.content ?? "");
+}
+
+export function selectFollowCandidatesFromComments(input: {
+  comments: readonly MoltbookComment[];
+  state: OutreachAgentState;
+  agentName: string;
+  policy?: Partial<MoltbookOutreachPolicyConfig>;
+  alreadyQueued?: ReadonlySet<string>;
+  remainingBudget?: number;
+}): Array<{ agentName: string; reason: string }> {
+  if (input.policy?.followFromCommentAuthors === false) {
+    return [];
+  }
+
+  const minScore = Math.max(1, input.policy?.followCommentMinScore ?? 3);
+  const budget = Math.max(0, input.remainingBudget ?? Number.POSITIVE_INFINITY);
+  if (budget === 0) {
+    return [];
+  }
+
+  const queued = new Set(input.alreadyQueued ?? []);
+  const seen = new Set<string>();
+  const results: Array<{ agentName: string; reason: string }> = [];
+
+  for (const comment of flattenComments(input.comments)) {
+    if (results.length >= budget) {
+      break;
+    }
+
+    const author = commentAuthorName(comment);
+    if (!author || author === input.agentName) {
+      continue;
+    }
+    if (seen.has(author) || queued.has(author)) {
+      continue;
+    }
+    if (input.state.followedAgentNames.includes(author)) {
+      continue;
+    }
+    if (scoreCommentForFollow(comment) < minScore) {
+      continue;
+    }
+
+    seen.add(author);
+    results.push({
+      agentName: author,
+      reason: "Comment author made a relevant point worth following."
+    });
+  }
+
+  return results;
 }
 
 function normalizeFingerprint(value: string): string {
@@ -787,7 +846,12 @@ export function planHeartbeatActions(input: {
     ...(input.exploreFeed?.posts ?? [])
   ];
 
+  let upvoteCount = 0;
   for (const post of candidatePosts) {
+    if (upvoteCount >= 2) {
+      break;
+    }
+
     const postId = post.post_id ?? post.id;
     if (!postId || state.upvotedPostIds.includes(postId)) {
       continue;
@@ -802,18 +866,39 @@ export function planHeartbeatActions(input: {
       post,
       reason: "This post matches our topic space and is worth rewarding."
     });
+    upvoteCount += 1;
+  }
 
-    if (post.author_name && !state.followedAgentNames.includes(post.author_name) && scorePost(post) >= 5) {
-      actions.push({
-        type: "follow_agent",
-        agentName: post.author_name,
-        reason: "The author is posting repeatedly on topics we care about."
-      });
-    }
+  const followMinPostScore = Math.max(1, input.policy?.followMinPostScore ?? 3);
+  const followMaxPerHeartbeat = Math.max(0, input.policy?.followMaxPerHeartbeat ?? 3);
+  const queuedFollowNames = new Set<string>();
+  let plannedFollowCount = 0;
 
-    if (actions.filter((action) => action.type === "upvote_post").length >= 2) {
+  for (const post of candidatePosts) {
+    if (plannedFollowCount >= followMaxPerHeartbeat) {
       break;
     }
+
+    const author = post.author_name;
+    if (!author) {
+      continue;
+    }
+
+    if (state.followedAgentNames.includes(author) || queuedFollowNames.has(author)) {
+      continue;
+    }
+
+    if (scorePost(post) < followMinPostScore) {
+      continue;
+    }
+
+    actions.push({
+      type: "follow_agent",
+      agentName: author,
+      reason: "The author is posting repeatedly on topics we care about."
+    });
+    queuedFollowNames.add(author);
+    plannedFollowCount += 1;
   }
 
   const commentTargets = candidatePosts.filter((post) => {

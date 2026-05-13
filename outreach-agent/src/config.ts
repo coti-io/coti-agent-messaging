@@ -42,6 +42,10 @@ export interface MoltbookOutreachPolicyConfig {
   commentLimitEstablishedPerDay: number;
   postLimitNewAgentPerDay?: number;
   postLimitEstablishedPerDay?: number;
+  followMinPostScore?: number;
+  followMaxPerHeartbeat?: number;
+  followFromCommentAuthors?: boolean;
+  followCommentMinScore?: number;
 }
 
 export interface MoltbookRuntimeConfig extends RuntimePaths {
@@ -369,7 +373,13 @@ export async function loadRuntimeConfig(
       postLimitNewAgentPerDay: parseOptionalNumber(process.env.MOLTBOOK_POST_LIMIT_NEW_AGENT_PER_DAY),
       postLimitEstablishedPerDay: parseOptionalNumber(
         process.env.MOLTBOOK_POST_LIMIT_ESTABLISHED_PER_DAY
-      )
+      ),
+      followMinPostScore: parseOptionalNumber(process.env.MOLTBOOK_FOLLOW_MIN_POST_SCORE),
+      followMaxPerHeartbeat: parseOptionalNumber(process.env.MOLTBOOK_FOLLOW_MAX_PER_HEARTBEAT),
+      followFromCommentAuthors: process.env.MOLTBOOK_FOLLOW_FROM_COMMENT_AUTHORS === undefined
+        ? undefined
+        : parseBoolean(process.env.MOLTBOOK_FOLLOW_FROM_COMMENT_AUTHORS, true),
+      followCommentMinScore: parseOptionalNumber(process.env.MOLTBOOK_FOLLOW_COMMENT_MIN_SCORE)
     },
     forceWriteMode: parseForceWriteMode(process.env.MOLTBOOK_FORCE_WRITE_MODE),
     promptProfileId,

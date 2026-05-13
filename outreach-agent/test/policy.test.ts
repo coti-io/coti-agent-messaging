@@ -14,6 +14,7 @@ import {
   getPostReadiness,
   normalizeState,
   planHeartbeatActions,
+  selectFollowCandidatesFromComments,
   type OutreachAgentState
 } from "../src/policy.js";
 import type { ProductFactSheet } from "../src/product-facts.js";
@@ -468,6 +469,136 @@ test("chooseReplyTarget skips generic praise spam and picks the relevant questio
 
   assert.equal(target?.commentId, "comment-relevant");
   assert.match(target?.content ?? "", /coordinate privately/i);
+});
+
+test("planning queues a follow even after the upvote cap is reached", () => {
+  const explorePosts = [
+    {
+      id: "post-1",
+      post_id: "post-1",
+      title: "Private agent coordination beats public threads",
+      content_preview: "Privacy and messaging matter for agent workflows.",
+      author_name: "AlphaBot"
+    },
+    {
+      id: "post-2",
+      post_id: "post-2",
+      title: "Why MCP integration unlocks agent collaboration",
+      content_preview: "MCP integration with private messaging.",
+      author_name: "BetaBot"
+    },
+    {
+      id: "post-3",
+      post_id: "post-3",
+      title: "COTI privacy primitives for agents",
+      content_preview: "Encrypted message bodies and rewards for usage.",
+      author_name: "GammaBot"
+    }
+  ];
+
+  const actions = planHeartbeatActions({
+    home: {
+      your_account: { name: "OutreachBot" },
+      activity_on_your_posts: [],
+      your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+      posts_from_accounts_you_follow: { posts: [] }
+    },
+    exploreFeed: { posts: explorePosts },
+    state: createInitialState(),
+    factSheet,
+    now: new Date("2026-03-11T12:10:00.000Z")
+  });
+
+  const upvoteCount = actions.filter((action) => action.type === "upvote_post").length;
+  const followAuthors = actions
+    .filter((action): action is Extract<typeof action, { type: "follow_agent" }> => action.type === "follow_agent")
+    .map((action) => action.agentName);
+
+  assert.equal(upvoteCount, 2);
+  assert.deepEqual(followAuthors, ["AlphaBot", "BetaBot", "GammaBot"]);
+});
+
+test("planning respects followMaxPerHeartbeat", () => {
+  const explorePosts = Array.from({ length: 5 }, (_, index) => ({
+    id: `post-${index}`,
+    post_id: `post-${index}`,
+    title: `Private agent coordination ${index}`,
+    content_preview: "Privacy and messaging for agents.",
+    author_name: `Author${index}`
+  }));
+
+  const actions = planHeartbeatActions({
+    home: {
+      your_account: { name: "OutreachBot" },
+      activity_on_your_posts: [],
+      your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+      posts_from_accounts_you_follow: { posts: [] }
+    },
+    exploreFeed: { posts: explorePosts },
+    state: createInitialState(),
+    policy: {
+      commentLimitNewAgentPerDay: 30,
+      commentLimitEstablishedPerDay: 100,
+      followMaxPerHeartbeat: 1
+    },
+    factSheet,
+    now: new Date("2026-03-11T12:10:00.000Z")
+  });
+
+  const followCount = actions.filter((action) => action.type === "follow_agent").length;
+  assert.equal(followCount, 1);
+});
+
+test("selectFollowCandidatesFromComments picks high-signal authors and respects budget", () => {
+  const candidates = selectFollowCandidatesFromComments({
+    comments: [
+      {
+        id: "c-self",
+        content: "Privacy and messaging coordination workflow are core MCP topics for agents.",
+        author_name: "OutreachBot"
+      },
+      {
+        id: "c-spam",
+        content: "gm",
+        author_name: "lurker"
+      },
+      {
+        id: "c-good",
+        content:
+          "The hard part of agent coordination is keeping the message body private while exposing routing metadata.",
+        author_name: "ThoughtfulBot"
+      },
+      {
+        id: "c-other",
+        content:
+          "Private messaging plus MCP integration reduces public-thread coordination overhead for agent workflows.",
+        author_name: "InsightBot"
+      }
+    ],
+    state: createInitialState(),
+    agentName: "OutreachBot",
+    remainingBudget: 1
+  });
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0]?.agentName, "ThoughtfulBot");
+});
+
+test("selectFollowCandidatesFromComments returns nothing when disabled", () => {
+  const candidates = selectFollowCandidatesFromComments({
+    comments: [
+      {
+        id: "c-good",
+        content: "Private messaging coordination matters for agent workflows.",
+        author_name: "ThoughtfulBot"
+      }
+    ],
+    state: createInitialState(),
+    agentName: "OutreachBot",
+    policy: { commentLimitNewAgentPerDay: 30, commentLimitEstablishedPerDay: 100, followFromCommentAuthors: false }
+  });
+
+  assert.equal(candidates.length, 0);
 });
 
 test("chooseReplyTarget returns nothing when only low-signal comments remain", () => {

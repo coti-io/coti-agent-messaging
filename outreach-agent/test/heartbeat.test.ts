@@ -796,6 +796,144 @@ test("heartbeat records failed upvotes without failing the run", async () => {
   }
 });
 
+test("heartbeat skips duplicate draft validation instead of failing the run", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-duplicate-draft-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false,
+    llm: {
+      apiKey: "llm-test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "openrouter/test-model",
+      timeoutMs: 5000,
+      appName: "heartbeat-test"
+    }
+  };
+  await writeFile(
+    config.statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        recentGeneratedArtifacts: [
+          {
+            id: "recent-post-1",
+            type: "post",
+            title: "Agents need private bodies and public routing",
+            content:
+              "Encrypted message bodies and queryable public metadata are the practical split for agent messaging. The SDK gives builders the path without forcing every handoff into a public thread.",
+            createdAt: "2026-05-12T10:00:00.000Z"
+          }
+        ]
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  let createPostCalls = 0;
+  let llmCallCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: []
+      });
+    }
+
+    if (url.hostname === "openrouter.test" && url.pathname === "/api/v1/chat/completions") {
+      llmCallCount += 1;
+      return jsonResponse({
+        choices: [
+          {
+            message: {
+              content:
+                llmCallCount === 1
+                  ? JSON.stringify({
+                      selectedCandidateId: "A",
+                      rationale: "A top-level post is the only authored action."
+                    })
+                  : JSON.stringify({
+                      selectedCandidateId: "A",
+                      title: "Agents need private bodies and public routing",
+                      content:
+                        "Encrypted message bodies and queryable public metadata are the practical split for agent messaging. The SDK gives builders the path without forcing every handoff into a public thread.",
+                      rationale: "Use the same framing again."
+                    })
+            }
+          }
+        ]
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts" && method === "POST") {
+      createPostCalls += 1;
+      throw new Error("duplicate draft should be skipped before publish");
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    const result = await runHeartbeat(config);
+    assert.equal(createPostCalls, 0);
+    assert.match(result.summary, /skipped authored write because the generated draft was too similar/i);
+
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      status?: string;
+      skipped?: string[];
+      errors?: unknown[];
+      selectedWriteDecision?: unknown;
+      failureStreak?: number;
+    };
+    assert.equal(savedReport.status, "ok");
+    assert.equal(savedReport.failureStreak, 0);
+    assert.equal(savedReport.selectedWriteDecision, undefined);
+    assert.equal(
+      savedReport.skipped?.some((entry) => /generated draft was too similar/i.test(entry)),
+      true
+    );
+    assert.deepEqual(savedReport.errors, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
     status: 200,

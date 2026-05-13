@@ -8,6 +8,7 @@ import {
 import {
   chooseReplyTargetOrIgnore,
   chooseAndDraftWriteAction,
+  isDuplicateDraftError,
   type GeneratedWriteDecision,
   type WriteCandidate
 } from "./llm-content.js";
@@ -492,108 +493,120 @@ export async function runHeartbeat(
     }));
 
     if (eligibleWriteCandidates.length > 0) {
-      const decision = await chooseAndDraftWriteAction(
-        config,
-        eligibleWriteCandidates,
-        factSheet,
-        state
-      );
-      report.selectedWriteDecision = decision;
-      const candidate = eligibleWriteCandidates.find(
-        (entry) => entry.id === decision.selectedCandidateId
-      );
-      if (!candidate) {
-        throw new Error(`Selected write candidate not found: ${decision.selectedCandidateId}`);
+      let decision: GeneratedWriteDecision | undefined;
+      try {
+        decision = await chooseAndDraftWriteAction(
+          config,
+          eligibleWriteCandidates,
+          factSheet,
+          state
+        );
+      } catch (error) {
+        if (isDuplicateDraftError(error)) {
+          skipped.push("skipped authored write because the generated draft was too similar to recent authored history.");
+        } else {
+          throw error;
+        }
       }
 
-      switch (candidate.type) {
-        case "reply_to_activity":
-          if (config.dryRun) {
-            performed.push(
-              `Would reply to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`
-            );
-          } else {
-            const pendingWrite = buildPendingWrite(candidate, decision);
-            await persistState(addPendingWrite(state, pendingWrite));
-            try {
-              await venue.publishAction({
-                id: `reply:${candidate.postId}:${candidate.target.commentId}`,
-                venue: "moltbook",
-                type: "reply_to_comment",
-                parentId: candidate.postId,
-                candidateId: candidate.target.commentId,
-                content: decision.content,
-                raw: candidate
-              });
-            } catch (error) {
-              recordPublishFailure(`reply on "${candidate.postTitle}"`, error);
+      if (decision) {
+        report.selectedWriteDecision = decision;
+        const candidate = eligibleWriteCandidates.find(
+          (entry) => entry.id === decision.selectedCandidateId
+        );
+        if (!candidate) {
+          throw new Error(`Selected write candidate not found: ${decision.selectedCandidateId}`);
+        }
+
+        switch (candidate.type) {
+          case "reply_to_activity":
+            if (config.dryRun) {
+              performed.push(
+                `Would reply to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`
+              );
+            } else {
+              const pendingWrite = buildPendingWrite(candidate, decision);
+              await persistState(addPendingWrite(state, pendingWrite));
+              try {
+                await venue.publishAction({
+                  id: `reply:${candidate.postId}:${candidate.target.commentId}`,
+                  venue: "moltbook",
+                  type: "reply_to_comment",
+                  parentId: candidate.postId,
+                  candidateId: candidate.target.commentId,
+                  content: decision.content,
+                  raw: candidate
+                });
+              } catch (error) {
+                recordPublishFailure(`reply on "${candidate.postTitle}"`, error);
+                break;
+              }
+              await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
+              await venue.markNotificationsReadByPost(candidate.postId);
+              performed.push(
+                `Replied to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`
+              );
+            }
+            break;
+          case "comment_on_post": {
+            const postId = candidate.post.post_id ?? candidate.post.id;
+            if (!postId) {
+              skipped.push(`could not comment on "${candidate.post.title}" because the post id was missing.`);
               break;
             }
-            await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
-            await venue.markNotificationsReadByPost(candidate.postId);
-            performed.push(
-              `Replied to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`
-            );
-          }
-          break;
-        case "comment_on_post": {
-          const postId = candidate.post.post_id ?? candidate.post.id;
-          if (!postId) {
-            skipped.push(`could not comment on "${candidate.post.title}" because the post id was missing.`);
+
+            if (config.dryRun) {
+              performed.push(`Would comment on "${candidate.post.title}".`);
+            } else {
+              const pendingWrite = buildPendingWrite(candidate, decision);
+              await persistState(addPendingWrite(state, pendingWrite));
+              try {
+                await venue.publishAction({
+                  id: `comment:${postId}`,
+                  venue: "moltbook",
+                  type: "comment_on_post",
+                  parentId: postId,
+                  content: decision.content,
+                  raw: candidate
+                });
+              } catch (error) {
+                recordPublishFailure(`comment on "${candidate.post.title}"`, error);
+                break;
+              }
+              await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
+              performed.push(`Commented on "${candidate.post.title}".`);
+            }
             break;
           }
-
-          if (config.dryRun) {
-            performed.push(`Would comment on "${candidate.post.title}".`);
-          } else {
-            const pendingWrite = buildPendingWrite(candidate, decision);
-            await persistState(addPendingWrite(state, pendingWrite));
-            try {
-              await venue.publishAction({
-                id: `comment:${postId}`,
-                venue: "moltbook",
-                type: "comment_on_post",
-                parentId: postId,
-                content: decision.content,
-                raw: candidate
-              });
-            } catch (error) {
-              recordPublishFailure(`comment on "${candidate.post.title}"`, error);
-              break;
+          case "create_post":
+            if (config.dryRun) {
+              performed.push(`Would post "${decision.title ?? "Untitled post"}".`);
+            } else {
+              const pendingWrite = buildPendingWrite(candidate, decision);
+              await persistState(addPendingWrite(state, pendingWrite));
+              try {
+                await venue.publishAction({
+                  id: "create-post",
+                  venue: "moltbook",
+                  type: "create_post",
+                  surface: config.defaultSubmolt,
+                  title: decision.title!,
+                  content: decision.content,
+                  raw: candidate
+                });
+              } catch (error) {
+                recordPublishFailure(`post "${decision.title ?? "Untitled post"}"`, error);
+                break;
+              }
+              await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
+              performed.push(`Posted "${decision.title}".`);
             }
-            await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
-            performed.push(`Commented on "${candidate.post.title}".`);
-          }
-          break;
+            break;
         }
-        case "create_post":
-          if (config.dryRun) {
-            performed.push(`Would post "${decision.title ?? "Untitled post"}".`);
-          } else {
-            const pendingWrite = buildPendingWrite(candidate, decision);
-            await persistState(addPendingWrite(state, pendingWrite));
-            try {
-              await venue.publishAction({
-                id: "create-post",
-                venue: "moltbook",
-                type: "create_post",
-                surface: config.defaultSubmolt,
-                title: decision.title!,
-                content: decision.content,
-                raw: candidate
-              });
-            } catch (error) {
-              recordPublishFailure(`post "${decision.title ?? "Untitled post"}"`, error);
-              break;
-            }
-            await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
-            performed.push(`Posted "${decision.title}".`);
-          }
-          break;
-      }
 
-      if (eligibleWriteCandidates.length > 1) {
-        skipped.push("deferred other write candidates after selecting one authored action for this heartbeat.");
+        if (eligibleWriteCandidates.length > 1) {
+          skipped.push("deferred other write candidates after selecting one authored action for this heartbeat.");
+        }
       }
     }
 

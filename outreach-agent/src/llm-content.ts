@@ -56,6 +56,8 @@ export interface GeneratedWriteDecision {
 const MAX_POST_TITLE_CHARS = 110;
 const MAX_POST_CONTENT_CHARS = 1_100;
 const MAX_REPLY_OR_COMMENT_CHARS = 700;
+const DUPLICATE_DRAFT_ERROR_PATTERN =
+  /^Generated content is too similar to recent authored (?:history|artifact\b)/;
 
 interface LlmReplyGateResponse {
   selectedCommentId: string;
@@ -77,6 +79,10 @@ interface LlmDraftResponse {
 interface LabeledCandidate {
   label: string;
   candidate: WriteCandidate;
+}
+
+export function isDuplicateDraftError(error: unknown): boolean {
+  return error instanceof Error && DUPLICATE_DRAFT_ERROR_PATTERN.test(error.message);
 }
 
 const PROMPT_VERSION = "v4-coti-attribution";

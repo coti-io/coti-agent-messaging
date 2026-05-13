@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../documentation"
+		},
+		{
+			"path": "../coti-sdk-private-messaging"
+		}
+	],
+	"settings": {}
+}

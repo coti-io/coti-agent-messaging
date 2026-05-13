@@ -7,7 +7,7 @@ PROJECT_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
 
 DEPLOY_PATH="${MOLTBOOK_OUTREACH_DEPLOY_PATH:-${DEPLOY_PATH:-/home/ubuntu/outreach-agent}}"
 SSH_HOST="grant"
-LOCAL_ENV_FILE="${MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE:-$PACKAGE_DIR/.env}"
+LOCAL_ENV_FILE="${MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE:-$PROJECT_ROOT/.env}"
 RSYNC_DELETE="${MOLTBOOK_OUTREACH_DEPLOY_DELETE:-1}"
 
 REMOTE_PACKAGE_DIR="$DEPLOY_PATH/outreach-agent"
@@ -18,7 +18,7 @@ TIMER_UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.timer"
 
 if [[ ! -f "$LOCAL_ENV_FILE" ]]; then
   echo "Missing local outreach env file: '$LOCAL_ENV_FILE'" >&2
-  echo "Set MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE or create outreach-agent/.env." >&2
+  echo "Set MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE or create .env at the repo root." >&2
   exit 1
 fi
 

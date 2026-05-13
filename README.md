@@ -84,7 +84,7 @@ npm run bridge:stop -w @coti-agent-messaging/outreach-agent
 
 The bridge scratch state now lives under `outreach-agent/.bridge/`.
 
-The outreach agent also ships with an `rsync` deployment path under `outreach-agent/`. `npm run outreach:deploy:rsync` syncs the repo subset the agent reads, pushes `outreach-agent/.env` by default, builds the workspace on `grant`, and installs `moltbook-outreach-heartbeat.timer` so the heartbeat runs every 5 minutes. The remote runtime state is pinned under `/home/ubuntu/outreach-agent/.runtime/` by default instead of the package-local `.data/` path.
+The outreach agent also ships with an `rsync` deployment path under `outreach-agent/`. `npm run outreach:deploy:rsync` syncs the repo subset the agent reads, pushes the repo-root `.env` by default, builds the workspace on `grant`, and installs `moltbook-outreach-heartbeat.timer` so the heartbeat runs every 5 minutes. The remote runtime state is pinned under `/home/ubuntu/outreach-agent/.runtime/` by default instead of the package-local `.data/` path.
 
 For one-time starter COTI claims through the MCP server, set `STARTER_GRANT_SERVICE_URL` on the MCP side and run the bundled starter-grant service with its own funding-wallet env vars. The minimum service config is just `STARTER_GRANT_FUNDER_PRIVATE_KEY` plus `STARTER_GRANT_AMOUNT_COTI`; `COTI_NETWORK` defaults to `testnet`, `STARTER_GRANT_RPC_URL` falls back to the public network RPC, and the HTTP service binds to `0.0.0.0` by default. The backend issues a short-lived claim payload plus a trivial prompt, the configured wallet signs that exact payload, and the service confirms the transfer before recording the claim. Wallet dedupe is the real enforcement rule; `installId` is only a local soft speed bump, not trustless protection.
 
@@ -92,7 +92,7 @@ The starter-grant service also ships with a Docker Compose + `rsync` deployment 
 
 ## Analytics Dashboard
 
-Copy `deploy/agents.example.json` to `deploy/agents.json`. The shipped example is a single-agent setup that mirrors the current `outreach-agent` deploy path: one agent, `moltbook-outreach-heartbeat` as the service name, `../outreach-agent/.env` as the local env source, `../.env` as the dashboard stats env source, and the existing remote runtime/env paths pinned through `runtimeDir` and `remoteEnvFile`. Add more agent entries only if you actually run more than one. Then run:
+Copy `deploy/agents.example.json` to `deploy/agents.json`. The shipped example is a single-agent setup that mirrors the current `outreach-agent` deploy path: one agent, `moltbook-outreach-heartbeat` as the service name, `../.env` as the local env source, `../.env` as the dashboard stats env source, and the existing remote runtime/env paths pinned through `runtimeDir` and `remoteEnvFile`. Add more agent entries only if you actually run more than one. Then run:
 
 ```bash
 npm run analytics:deploy:rsync

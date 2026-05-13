@@ -48,7 +48,7 @@ Default remote settings:
 
 - SSH host alias: `grant`
 - Deploy path: `/home/ubuntu/outreach-agent`
-- Local env file to sync: `outreach-agent/.env`
+- Local env file to sync: `.env` at the repo root
 - Timer unit: `moltbook-outreach-heartbeat.timer`
 
 The deploy script also installs missing Ubuntu prerequisites when needed:

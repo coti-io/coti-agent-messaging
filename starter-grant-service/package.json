@@ -13,7 +13,8 @@
     "docker:build": "docker compose build",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down",
-    "deploy:rsync": "bash ./deploy-rsync.sh"
+    "deploy:rsync": "bash ./deploy-rsync.sh",
+    "setup:public-host": "bash ./setup-public-host.sh"
   },
   "dependencies": {
     "@coti-io/coti-ethers": "^1.0.5",

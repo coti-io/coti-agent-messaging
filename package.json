@@ -19,6 +19,7 @@
     "starter-grant:docker:up": "npm run docker:up -w @coti-agent-messaging/starter-grant-service",
     "starter-grant:docker:down": "npm run docker:down -w @coti-agent-messaging/starter-grant-service",
     "starter-grant:deploy:rsync": "npm run deploy:rsync -w @coti-agent-messaging/starter-grant-service",
+    "starter-grant:setup-public-host": "npm run setup:public-host -w @coti-agent-messaging/starter-grant-service",
     "outreach:deploy:rsync": "npm run deploy:rsync -w @coti-agent-messaging/outreach-agent",
     "outreach:remote:inspect": "npm run remote:inspect -w @coti-agent-messaging/outreach-agent",
     "outreach:remote:status": "npm run remote:status -w @coti-agent-messaging/outreach-agent",

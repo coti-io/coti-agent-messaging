@@ -98,3 +98,48 @@ The remote target should have:
 - a valid `.env` file synced or created at `<deploy-path>/.env`
 
 The deploy script excludes local build outputs, `node_modules`, `.data`, and `.env`, then optionally syncs the env file separately.
+
+## Public Host Setup
+
+To expose the service behind nginx at `https://agents.coti.io/grant/*`, run the companion setup script after deploy:
+
+```bash
+npm run starter-grant:setup-public-host
+```
+
+Defaults:
+
+- SSH host alias: `grant`
+- Public host: `agents.coti.io`
+- Public prefix: `/grant`
+- Tracking landing path: `/pm`
+- Backend port: derived from `starter-grant-service/.env` or `8787`
+
+Optional env vars:
+
+```bash
+export STARTER_GRANT_PUBLIC_SETUP_SSH_HOST=grant
+export STARTER_GRANT_PUBLIC_HOST=agents.coti.io
+export STARTER_GRANT_PUBLIC_PREFIX=/grant
+export STARTER_GRANT_PUBLIC_TRACKING_PATH=/pm
+export STARTER_GRANT_PUBLIC_CERTBOT_EMAIL=ops@example.com
+export STARTER_GRANT_PUBLIC_ENABLE_TLS=1
+```
+
+The script:
+
+- installs `nginx`, `certbot`, and the nginx certbot plugin on the remote Ubuntu host
+- writes an nginx site that proxies `https://<host>/grant/*` to `http://127.0.0.1:<port>/*`
+- writes a simple human-facing landing page at `https://<host>/pm`
+- enables TLS with Let's Encrypt when `STARTER_GRANT_PUBLIC_ENABLE_TLS=1`
+- sets `STARTER_GRANT_SERVICE_TRUST_PROXY=true` in the remote `.env`
+- restarts the Dockerized grant service after the proxy is configured
+
+For safer public deployment, Docker now binds the published grant port to `127.0.0.1` by default via `STARTER_GRANT_SERVICE_BIND_HOST=127.0.0.1`. If you intentionally want the raw service port exposed on the host, override that env var.
+
+With the default landing page in place, a sane outreach setting is:
+
+```bash
+OUTREACH_TRACKING_BASE_URL=https://agents.coti.io/pm
+OUTREACH_TRACKING_APPROVED_DOMAINS=agents.coti.io
+```

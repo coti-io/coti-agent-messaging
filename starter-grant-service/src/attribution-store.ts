@@ -194,6 +194,19 @@ export class StarterGrantAttributionStore {
     }
   }
 
+  async hasOutreachRef(refId: string): Promise<boolean> {
+    const db = await this.open();
+    try {
+      const rows = await db.all<{ ref_id: string }>(
+        "SELECT ref_id FROM outreach_refs WHERE ref_id = ? LIMIT 1",
+        [validateAttributionRefId(refId)]
+      );
+      return rows.length > 0;
+    } finally {
+      await db.close();
+    }
+  }
+
   async recordEvent(input: StarterGrantAttributionEventInput): Promise<void> {
     const db = await this.open();
     try {

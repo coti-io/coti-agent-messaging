@@ -130,6 +130,9 @@ function testConfig(agentRoot: string, attributionDbPath?: string): AnalyticsCon
     host: "127.0.0.1",
     port: 0,
     attributionDbPath,
+    trackingBaseUrl: undefined,
+    starterGrantServiceUrl: undefined,
+    starterGrantServiceAuthToken: undefined,
     cotiNetwork: "testnet",
     cotiRpcUrl: "http://127.0.0.1:8545",
     contractAddress: undefined,
@@ -212,6 +215,77 @@ test("attribution API and summary include attribution payload", async () => {
     assert.equal(summary.attribution.topRefs.length, 2);
     assert.equal(summary.attribution.topRefs.some((ref) => ref.refId === "ref-a"), true);
   } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve()))
+    );
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("manual ref builder API mints and persists tracked links through starter grant service", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "analytics-manual-builder-"));
+  const originalFetch = globalThis.fetch;
+  let forwardedAuthorization: string | null = null;
+  let forwardedBody: Record<string, unknown> | undefined;
+
+  globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    assert.equal(url, "https://agents.coti.io/grant/attribution/ref");
+    forwardedAuthorization = init?.headers
+      ? new Headers(init.headers).get("authorization")
+      : null;
+    forwardedBody = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 201,
+      headers: { "Content-Type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  const server = createServer({
+    ...testConfig(tempDir),
+    trackingBaseUrl: "https://agents.coti.io/pm",
+    starterGrantServiceUrl: "https://agents.coti.io/grant",
+    starterGrantServiceAuthToken: "secret-token"
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+
+  try {
+    const response = await originalFetch(`http://127.0.0.1:${port}/api/attribution/ref`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        venue: "twitter",
+        contentType: "post",
+        campaignId: "private_messaging",
+        promptProfileId: "manual-twitter",
+        messageStyle: "direct",
+        layout: "single_link",
+        ctaStyle: "manual_cta",
+        promotionLevel: "explicit",
+        rewardEmphasis: "balanced",
+        audience: "builders",
+        label: "x thread"
+      })
+    });
+    const payload = (await response.json()) as {
+      ref: string;
+      trackedUrl: string;
+      outreachRef: { utm: { source: string; campaign: string } };
+    };
+
+    assert.equal(response.status, 201);
+    assert.equal(forwardedAuthorization, "Bearer secret-token");
+    assert.equal(typeof forwardedBody?.outreachRef, "object");
+    assert.match(payload.ref, /^manual_twitter_/);
+    assert.match(payload.trackedUrl, /^https:\/\/agents\.coti\.io\/pm\?/);
+    assert.equal(payload.outreachRef.utm.source, "twitter");
+    assert.equal(payload.outreachRef.utm.campaign, "private_messaging");
+  } finally {
+    globalThis.fetch = originalFetch;
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve()))
     );

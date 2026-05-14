@@ -65,6 +65,8 @@ export interface AnalyticsConfig {
   port: number;
   attributionDbPath?: string;
   trackingBaseUrl?: string;
+  starterGrantServiceUrl?: string;
+  starterGrantServiceAuthToken?: string;
   cotiNetwork: "mainnet" | "testnet";
   cotiRpcUrl: string;
   contractAddress?: string;

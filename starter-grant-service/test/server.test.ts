@@ -389,3 +389,79 @@ test("shared attribution db joins outreach refs with grant and usage events", as
     await service.close();
   }
 });
+
+test("manual ref registration persists refs for later public click events", async () => {
+  const service = await startTestServer({
+    authToken: "secret-token",
+    attributionDbPath: path.join(os.tmpdir(), `starter-grant-manual-ref-${Date.now()}-${Math.random()}.sqlite`)
+  });
+
+  try {
+    const registerResponse = await fetch(`${service.baseUrl}/attribution/ref`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer secret-token"
+      },
+      body: JSON.stringify({
+        outreachRef: buildOutreachRef("manual-twitter-ref")
+      })
+    });
+    assert.equal(registerResponse.status, 201);
+
+    const clickResponse = await fetch(`${service.baseUrl}/attribution/event`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ref: "manual-twitter-ref",
+        type: "click",
+        venue: "twitter",
+        metadata: {
+          utm_source: "twitter"
+        }
+      })
+    });
+    assert.equal(clickResponse.status, 202);
+
+    const summaryResponse = await fetch(
+      `${service.baseUrl}/attribution/summary?campaignId=private_messaging`,
+      {
+        headers: {
+          Authorization: "Bearer secret-token"
+        }
+      }
+    );
+    assert.equal(summaryResponse.status, 200);
+    const summary = await summaryResponse.json();
+    assert.equal(summary.groups.length, 1);
+    assert.equal(summary.groups[0].clicks, 1);
+  } finally {
+    await service.close();
+  }
+});
+
+test("public attribution events reject non-click traffic when auth is required", async () => {
+  const service = await startTestServer({
+    authToken: "secret-token",
+    attributionDbPath: path.join(os.tmpdir(), `starter-grant-public-event-${Date.now()}-${Math.random()}.sqlite`)
+  });
+
+  try {
+    const response = await fetch(`${service.baseUrl}/attribution/event`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ref: "manual-twitter-ref",
+        type: "skill_usage",
+        skillId: "private-message-send"
+      })
+    });
+    assert.equal(response.status, 401);
+  } finally {
+    await service.close();
+  }
+});

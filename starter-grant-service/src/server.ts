@@ -199,6 +199,22 @@ function parseAttributionInput(body: Record<string, unknown>): {
   };
 }
 
+function buildAttributionEvent(
+  body: Record<string, unknown>,
+  refId: string
+): StarterGrantAttributionEventInput {
+  return {
+    refId,
+    type: parseAttributionEventType(asString(body.type, "type")),
+    venue: asOptionalString(body.venue, "venue"),
+    walletAddress: asOptionalString(body.walletAddress, "walletAddress"),
+    installId: asOptionalString(body.installId, "installId"),
+    sessionId: asOptionalString(body.sessionId, "sessionId"),
+    skillId: asOptionalString(body.skillId, "skillId"),
+    metadata: parseOptionalMetadata(body.metadata)
+  };
+}
+
 function resolveRequesterIp(
   request: http.IncomingMessage,
   config: StarterGrantServiceConfig
@@ -331,8 +347,43 @@ export async function startStarterGrantService(
       }
 
       const requesterKey = requestKeyFromIp(resolveRequesterIp(request, config));
+      const isAuthorized = authorize(request, config);
 
-      if (!authorize(request, config)) {
+      if (request.method === "POST" && url.pathname === "/attribution/event") {
+        requireJsonRequest(request);
+        const body = await readJsonBody(request, config.maxBodyBytes);
+        const attribution = parseAttributionInput(body);
+        const refId = attribution.refId ?? validateAttributionRefId(asString(body.ref, "ref"));
+        const event = buildAttributionEvent(body, refId);
+
+        if (!attributionStore) {
+          writeJsonResponse(response, jsonResponse(503, { error: "Attribution store is not configured." }));
+          return;
+        }
+
+        if (!isAuthorized) {
+          if (event.type !== "click") {
+            writeJsonResponse(response, jsonResponse(401, { error: "Unauthorized starter grant request." }));
+            return;
+          }
+          if (attribution.outreachRef) {
+            writeJsonResponse(response, jsonResponse(401, { error: "Public click events cannot register refs." }));
+            return;
+          }
+          if (!(await attributionStore.hasOutreachRef(refId))) {
+            writeJsonResponse(response, jsonResponse(404, { error: "Unknown attribution ref." }));
+            return;
+          }
+        } else {
+          await persistOutreachRef(attributionStore, attribution.outreachRef, logger);
+        }
+
+        await attributionStore.recordEvent(event);
+        writeJsonResponse(response, jsonResponse(202, { ok: true, ref: refId, type: event.type }));
+        return;
+      }
+
+      if (!isAuthorized) {
         writeJsonResponse(response, jsonResponse(401, { error: "Unauthorized starter grant request." }));
         return;
       }
@@ -476,28 +527,20 @@ export async function startStarterGrantService(
         return;
       }
 
-      if (request.method === "POST" && url.pathname === "/attribution/event") {
+      if (request.method === "POST" && url.pathname === "/attribution/ref") {
         requireJsonRequest(request);
         const body = await readJsonBody(request, config.maxBodyBytes);
-        const attribution = parseAttributionInput(body);
-        await persistOutreachRef(attributionStore, attribution.outreachRef, logger);
-        const refId = attribution.refId ?? validateAttributionRefId(asString(body.ref, "ref"));
-        const event: StarterGrantAttributionEventInput = {
-          refId,
-          type: parseAttributionEventType(asString(body.type, "type")),
-          venue: asOptionalString(body.venue, "venue"),
-          walletAddress: asOptionalString(body.walletAddress, "walletAddress"),
-          installId: asOptionalString(body.installId, "installId"),
-          sessionId: asOptionalString(body.sessionId, "sessionId"),
-          skillId: asOptionalString(body.skillId, "skillId"),
-          metadata: parseOptionalMetadata(body.metadata)
-        };
+        const outreachRef = parseOptionalOutreachRef(body.outreachRef);
         if (!attributionStore) {
           writeJsonResponse(response, jsonResponse(503, { error: "Attribution store is not configured." }));
           return;
         }
-        await attributionStore.recordEvent(event);
-        writeJsonResponse(response, jsonResponse(202, { ok: true, ref: refId, type: event.type }));
+        if (!outreachRef) {
+          writeJsonResponse(response, jsonResponse(400, { error: 'Expected "outreachRef" object.' }));
+          return;
+        }
+        await attributionStore.upsertOutreachRef(outreachRef);
+        writeJsonResponse(response, jsonResponse(201, { ok: true, ref: outreachRef.id }));
         return;
       }
 

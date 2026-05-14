@@ -3,6 +3,11 @@ const timeFmt = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
   timeStyle: "short"
 });
+const manualBuilderState = {
+  busy: false,
+  enabled: false,
+  result: null
+};
 
 function formatNumber(value) {
   return numberFmt.format(Number(value || 0));
@@ -186,6 +191,114 @@ function promptSummaryMarkup(ref) {
   return chips || '<span class="subtle">No prompt params</span>';
 }
 
+function setBuilderStatus(message, isWarn = false) {
+  const status = document.getElementById("cta-builder-status");
+  status.textContent = message;
+  status.classList.toggle("warn", Boolean(isWarn));
+}
+
+function setBuilderFormDisabled(disabled) {
+  const elements = document.querySelectorAll("#cta-builder-form input, #cta-builder-form select, #cta-builder-form button");
+  elements.forEach((element) => {
+    element.disabled = disabled;
+  });
+}
+
+function renderBuilderResult() {
+  const panel = document.getElementById("cta-builder-result");
+  const refInput = document.getElementById("cta-builder-ref");
+  const urlInput = document.getElementById("cta-builder-url");
+  if (!manualBuilderState.result) {
+    panel.hidden = true;
+    refInput.value = "";
+    urlInput.value = "";
+    return;
+  }
+
+  refInput.value = manualBuilderState.result.ref || "";
+  urlInput.value = manualBuilderState.result.trackedUrl || "";
+  panel.hidden = false;
+}
+
+function renderManualBuilder(config = {}) {
+  const note = document.getElementById("cta-builder-note");
+  manualBuilderState.enabled = Boolean(config.manualRefBuilderEnabled && config.trackingBaseUrl);
+  if (!manualBuilderState.enabled) {
+    note.textContent = "Builder needs both STARTER_GRANT_SERVICE_URL and OUTREACH_TRACKING_BASE_URL.";
+    setBuilderStatus("Builder unavailable", true);
+    setBuilderFormDisabled(true);
+    renderBuilderResult();
+    return;
+  }
+
+  note.textContent = `Links use ${config.trackingBaseUrl}. Landing-page visits log click events automatically.`;
+  setBuilderStatus(manualBuilderState.busy ? "Creating link..." : "Ready");
+  setBuilderFormDisabled(manualBuilderState.busy);
+  renderBuilderResult();
+}
+
+async function copyBuilderValue(targetId) {
+  const input = document.getElementById(targetId);
+  if (!input?.value) {
+    return;
+  }
+  await navigator.clipboard.writeText(input.value);
+  setBuilderStatus(targetId === "cta-builder-url" ? "Link copied" : "Ref copied");
+}
+
+async function submitManualBuilder(event) {
+  event.preventDefault();
+  if (!manualBuilderState.enabled || manualBuilderState.busy) {
+    return;
+  }
+
+  const form = document.getElementById("cta-builder-form");
+  const formData = new FormData(form);
+  const payload = Object.fromEntries(
+    Array.from(formData.entries()).filter(([, value]) => String(value ?? "").trim().length > 0)
+  );
+
+  manualBuilderState.busy = true;
+  renderManualBuilder(window.__dashboardConfig || {});
+
+  try {
+    const response = await fetch("/api/attribution/ref", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.error || `Builder request failed (${response.status})`);
+    }
+    manualBuilderState.result = body;
+    setBuilderStatus("Link ready");
+    await refresh();
+  } catch (error) {
+    setBuilderStatus(error.message || "Failed to create tracked link.", true);
+  } finally {
+    manualBuilderState.busy = false;
+    renderManualBuilder(window.__dashboardConfig || {});
+  }
+}
+
+function bindManualBuilder() {
+  document.getElementById("cta-builder-form").addEventListener("submit", (event) => {
+    submitManualBuilder(event).catch((error) => {
+      setBuilderStatus(error.message || "Failed to create tracked link.", true);
+    });
+  });
+  document.querySelectorAll("[data-copy-target]").forEach((button) => {
+    button.addEventListener("click", () => {
+      copyBuilderValue(button.dataset.copyTarget).catch((error) => {
+        setBuilderStatus(error.message || "Copy failed.", true);
+      });
+    });
+  });
+}
+
 function renderAttribution(attribution, config = {}) {
   const subtitle = document.getElementById("attribution-subtitle");
   const cards = document.getElementById("attribution-cards");
@@ -289,12 +402,16 @@ function renderAttribution(attribution, config = {}) {
 async function refresh() {
   const response = await fetch("/api/summary");
   const payload = await response.json();
+  window.__dashboardConfig = payload.config || {};
   document.getElementById("last-refresh").textContent = `Updated ${formatTime(payload.generatedAt)}`;
   renderEngagementCards(payload.aggregateEngagements);
   renderAgents(payload.agents);
   renderCoti(payload.coti);
   renderAttribution(payload.attribution, payload.config);
+  renderManualBuilder(payload.config);
 }
+
+bindManualBuilder();
 
 refresh().catch((error) => {
   document.getElementById("last-refresh").textContent = `Error: ${error.message}`;

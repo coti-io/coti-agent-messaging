@@ -59,6 +59,96 @@
           <h2>Outreach Attribution</h2>
           <p class="subtle" id="attribution-subtitle">Shared ref, grant, private-message, and skill-usage performance.</p>
         </div>
+        <section class="cta-builder" id="cta-builder">
+          <div class="builder-header">
+            <div>
+              <h3>Manual CTA Builder</h3>
+              <p class="subtle" id="cta-builder-note">Create tracked links for external channels like Twitter/X.</p>
+            </div>
+            <div class="status-pill" id="cta-builder-status">Waiting for config</div>
+          </div>
+          <form class="builder-form" id="cta-builder-form">
+            <label>
+              <span>Channel / source</span>
+              <input name="venue" value="twitter" required />
+            </label>
+            <label>
+              <span>Campaign ID</span>
+              <input name="campaignId" value="private_messaging" required />
+            </label>
+            <label>
+              <span>Prompt profile</span>
+              <input name="promptProfileId" value="manual-twitter" required />
+            </label>
+            <label>
+              <span>Message style</span>
+              <input name="messageStyle" value="direct" required />
+            </label>
+            <label>
+              <span>Layout</span>
+              <input name="layout" value="single_link" required />
+            </label>
+            <label>
+              <span>Content type</span>
+              <select name="contentType">
+                <option value="post" selected>post</option>
+                <option value="comment">comment</option>
+                <option value="reply">reply</option>
+              </select>
+            </label>
+            <label>
+              <span>Surface</span>
+              <input name="surface" value="timeline" />
+            </label>
+            <label>
+              <span>CTA style</span>
+              <input name="ctaStyle" value="manual_cta" />
+            </label>
+            <label>
+              <span>Promotion level</span>
+              <input name="promotionLevel" value="explicit" />
+            </label>
+            <label>
+              <span>Product specificity</span>
+              <input name="productSpecificity" value="product_named" />
+            </label>
+            <label>
+              <span>Reward emphasis</span>
+              <input name="rewardEmphasis" value="balanced" />
+            </label>
+            <label>
+              <span>Audience</span>
+              <input name="audience" value="builders" />
+            </label>
+            <label class="builder-wide">
+              <span>Label / note</span>
+              <input name="label" value="x_thread" />
+            </label>
+            <label>
+              <span>UTM medium</span>
+              <input name="utmMedium" value="manual_outreach" />
+            </label>
+            <div class="builder-actions">
+              <button type="submit" id="cta-builder-submit">Create tracked link</button>
+            </div>
+          </form>
+          <div class="builder-result" id="cta-builder-result" hidden>
+            <label>
+              <span>Ref ID</span>
+              <div class="copy-row">
+                <input id="cta-builder-ref" readonly />
+                <button type="button" data-copy-target="cta-builder-ref">Copy ref</button>
+              </div>
+            </label>
+            <label>
+              <span>Tracked CTA URL</span>
+              <div class="copy-row">
+                <input id="cta-builder-url" readonly />
+                <button type="button" data-copy-target="cta-builder-url">Copy link</button>
+              </div>
+            </label>
+          </div>
+        </section>
         <div class="grid cards compact" id="attribution-cards"></div>
         <div class="table-wrap">
           <table>

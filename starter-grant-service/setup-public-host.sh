@@ -253,14 +253,40 @@ write_tracking_page() {
         </div>
         <div class="meta">
           Tracking ref: <code id="ref-value">none</code>
+          <div id="click-status"></div>
         </div>
       </section>
     </main>
     <script>
       const params = new URLSearchParams(window.location.search);
       const ref = params.get("ref");
+      const clickStatus = document.getElementById("click-status");
       if (ref) {
         document.getElementById("ref-value").textContent = ref;
+        const metadata = {
+          path: window.location.pathname,
+          utm_source: params.get("utm_source") || undefined,
+          utm_medium: params.get("utm_medium") || undefined,
+          utm_campaign: params.get("utm_campaign") || undefined,
+          utm_content: params.get("utm_content") || undefined
+        };
+        fetch("${PUBLIC_PREFIX}/attribution/event", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          keepalive: true,
+          body: JSON.stringify({
+            ref,
+            type: "click",
+            venue: "landing_page",
+            metadata
+          })
+        }).then((response) => {
+          clickStatus.textContent = response.ok ? "Click tracked." : "";
+        }).catch(() => {
+          clickStatus.textContent = "";
+        });
       }
     </script>
   </body>

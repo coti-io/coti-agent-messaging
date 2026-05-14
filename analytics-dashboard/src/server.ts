@@ -6,6 +6,7 @@ import { collectMessageStats, type MessageStatsReport } from "../../contracts/sr
 import { loadAnalyticsConfig } from "./config";
 import { discoverAgents, readDeployMetadata } from "./discovery";
 import { aggregateEngagementSummaries } from "./engagements";
+import { buildManualOutreachRef, buildTrackedCtaUrl, type ManualRefBuilderInput } from "./manual-cta";
 import { readAttributionSummary } from "./storage";
 import type { AnalyticsConfig } from "./types";
 
@@ -14,6 +15,15 @@ type CachedCotiStats = {
   value?: MessageStatsReport;
   error?: string;
 };
+
+class RequestError extends Error {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
 
 const config = loadAnalyticsConfig();
 let cotiCache: CachedCotiStats | undefined;
@@ -40,6 +50,147 @@ function textResponse(response: http.ServerResponse, statusCode: number, body: s
     "content-type": "text/plain; charset=utf-8"
   });
   response.end(body);
+}
+
+function badRequest(message: string): never {
+  throw new RequestError(400, message);
+}
+
+async function readJsonBody(request: http.IncomingMessage, maxBodyBytes = 32 * 1024) {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > maxBodyBytes) {
+      badRequest("Request body is too large.");
+    }
+    chunks.push(buffer);
+  }
+  if (chunks.length === 0) {
+    return {} as Record<string, unknown>;
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  } catch {
+    badRequest("Request body must be valid JSON.");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    badRequest("Expected a JSON object request body.");
+  }
+  return body as Record<string, unknown>;
+}
+
+function requireJsonRequest(request: http.IncomingMessage): void {
+  const contentType = request.headers["content-type"];
+  if (!contentType || !contentType.toLowerCase().startsWith("application/json")) {
+    badRequest("Manual CTA routes require application/json.");
+  }
+}
+
+function requireString(body: Record<string, unknown>, field: string): string {
+  const value = body[field];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    badRequest(`Expected non-empty string for "${field}".`);
+  }
+  return value.trim();
+}
+
+function optionalString(body: Record<string, unknown>, field: string): string | undefined {
+  const value = body[field];
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    badRequest(`Expected string for "${field}".`);
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function parseManualRefBuilderInput(body: Record<string, unknown>): ManualRefBuilderInput {
+  return {
+    venue: requireString(body, "venue"),
+    surface: optionalString(body, "surface"),
+    contentType: requireString(body, "contentType"),
+    campaignId: requireString(body, "campaignId"),
+    promptProfileId: requireString(body, "promptProfileId"),
+    messageStyle: requireString(body, "messageStyle"),
+    layout: requireString(body, "layout"),
+    ctaStyle: optionalString(body, "ctaStyle"),
+    promotionLevel: optionalString(body, "promotionLevel"),
+    productSpecificity: optionalString(body, "productSpecificity"),
+    rewardEmphasis: optionalString(body, "rewardEmphasis"),
+    audience: optionalString(body, "audience"),
+    label: optionalString(body, "label"),
+    utmMedium: optionalString(body, "utmMedium")
+  };
+}
+
+function joinServiceUrl(baseUrl: string, relativePath: string): string {
+  const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+  return new URL(relativePath.replace(/^\/+/, ""), normalizedBase).toString();
+}
+
+async function createManualAttributionRef(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  configInput: AnalyticsConfig
+) {
+  if (!configInput.starterGrantServiceUrl) {
+    jsonResponse(response, 503, { error: "STARTER_GRANT_SERVICE_URL is not configured." });
+    return;
+  }
+  if (!configInput.trackingBaseUrl) {
+    jsonResponse(response, 503, { error: "OUTREACH_TRACKING_BASE_URL is not configured." });
+    return;
+  }
+
+  requireJsonRequest(request);
+  const body = await readJsonBody(request);
+  const outreachRef = buildManualOutreachRef(parseManualRefBuilderInput(body));
+  const upstreamUrl = joinServiceUrl(configInput.starterGrantServiceUrl, "/attribution/ref");
+  const upstreamResponse = await fetch(upstreamUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(configInput.starterGrantServiceAuthToken
+        ? { Authorization: `Bearer ${configInput.starterGrantServiceAuthToken}` }
+        : {})
+    },
+    body: JSON.stringify({ outreachRef })
+  });
+  const upstreamText = await upstreamResponse.text();
+  let upstreamBody: unknown;
+  if (upstreamText) {
+    try {
+      upstreamBody = JSON.parse(upstreamText);
+    } catch {
+      upstreamBody = undefined;
+    }
+  }
+
+  if (!upstreamResponse.ok) {
+    jsonResponse(response, upstreamResponse.status, {
+      error:
+        (upstreamBody &&
+          typeof upstreamBody === "object" &&
+          upstreamBody &&
+          "error" in upstreamBody &&
+          typeof upstreamBody.error === "string" &&
+          upstreamBody.error) ||
+        "Failed to persist manual attribution ref."
+    });
+    return;
+  }
+
+  jsonResponse(response, 201, {
+    ok: true,
+    ref: outreachRef.id,
+    trackedUrl: buildTrackedCtaUrl(configInput.trackingBaseUrl, outreachRef),
+    outreachRef
+  });
 }
 
 function contentType(filePath: string): string {
@@ -181,6 +332,7 @@ async function summaryPayload(configInput: AnalyticsConfig) {
       agentRoot: configInput.agentRoot,
       attributionConfigured: Boolean(configInput.attributionDbPath),
       trackingBaseUrl: configInput.trackingBaseUrl,
+      manualRefBuilderEnabled: Boolean(configInput.trackingBaseUrl && configInput.starterGrantServiceUrl),
       cotiNetwork: configInput.cotiNetwork,
       contractAddress: configInput.contractAddress,
       cotiCacheTtlMs: configInput.cotiCacheTtlMs
@@ -196,19 +348,24 @@ async function summaryPayload(configInput: AnalyticsConfig) {
   };
 }
 
-async function handleApi(pathname: string, response: http.ServerResponse, configInput: AnalyticsConfig) {
-  if (pathname === "/api/summary") {
+async function handleApi(
+  request: http.IncomingMessage,
+  pathname: string,
+  response: http.ServerResponse,
+  configInput: AnalyticsConfig
+) {
+  if (request.method === "GET" && pathname === "/api/summary") {
     jsonResponse(response, 200, await summaryPayload(configInput));
     return;
   }
 
-  if (pathname === "/api/agents") {
+  if (request.method === "GET" && pathname === "/api/agents") {
     const agents = await discoverAgents(configInput.agentRoot);
     jsonResponse(response, 200, { agents: agents.map(publicAgent) });
     return;
   }
 
-  if (pathname === "/api/engagements") {
+  if (request.method === "GET" && pathname === "/api/engagements") {
     const agents = await discoverAgents(configInput.agentRoot);
     const publicAgents = agents.map(publicAgent);
     jsonResponse(response, 200, {
@@ -222,17 +379,22 @@ async function handleApi(pathname: string, response: http.ServerResponse, config
     return;
   }
 
-  if (pathname === "/api/attribution") {
+  if (request.method === "GET" && pathname === "/api/attribution") {
     jsonResponse(response, 200, await readAttributionSummary(configInput.attributionDbPath));
     return;
   }
 
-  if (pathname === "/api/coti/messages") {
+  if (request.method === "POST" && pathname === "/api/attribution/ref") {
+    await createManualAttributionRef(request, response, configInput);
+    return;
+  }
+
+  if (request.method === "GET" && pathname === "/api/coti/messages") {
     jsonResponse(response, 200, await getCotiStats(configInput));
     return;
   }
 
-  if (pathname === "/api/deploy") {
+  if (request.method === "GET" && pathname === "/api/deploy") {
     jsonResponse(response, 200, {
       ...(await readDeployMetadata(configInput.agentRoot)),
       host: configInput.host,
@@ -249,13 +411,13 @@ export function createServer(configInput: AnalyticsConfig = config) {
     void (async () => {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
       if (url.pathname.startsWith("/api/")) {
-        await handleApi(url.pathname, response, configInput);
+        await handleApi(request, url.pathname, response, configInput);
         return;
       }
 
       await staticResponse(response, url.pathname);
     })().catch((error) => {
-      jsonResponse(response, 500, {
+      jsonResponse(response, error instanceof RequestError ? error.status : 500, {
         error: error instanceof Error ? error.message : String(error)
       });
     });

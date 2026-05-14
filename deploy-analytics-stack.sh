@@ -20,7 +20,7 @@ data = json.loads(path.read_text())
 data.setdefault("deployPath", "/home/ubuntu/coti-agent-messaging")
 data.setdefault("sshHost", "grant")
 data.setdefault("dashboard", {})
-data["dashboard"].setdefault("host", "0.0.0.0")
+data["dashboard"].setdefault("host", "127.0.0.1")
 data["dashboard"].setdefault("port", 8788)
 data["dashboard"].setdefault("serviceName", "moltbook-analytics-dashboard")
 data["dashboard"].setdefault("envFile", "../.env")
@@ -306,9 +306,9 @@ EOF
 echo
 echo "Outreach analytics stack deployed."
 echo "Remote path: $DEPLOY_PATH"
-if [[ "$DASHBOARD_HOST" == "0.0.0.0" ]]; then
-  echo "Dashboard: listening on all interfaces at port $DASHBOARD_PORT"
-  echo "Open: http://<server-ip>:$DASHBOARD_PORT"
+if [[ "$DASHBOARD_HOST" == "127.0.0.1" ]]; then
+  echo "Dashboard: bound locally on 127.0.0.1:$DASHBOARD_PORT"
+  echo "Open it through nginx or an SSH tunnel."
 else
   echo "Dashboard: http://$DASHBOARD_HOST:$DASHBOARD_PORT"
 fi

@@ -10,6 +10,11 @@ LOCAL_ENV_FILE="${STARTER_GRANT_DEPLOY_ENV_FILE:-$PACKAGE_DIR/.env}"
 PUBLIC_HOST="${STARTER_GRANT_PUBLIC_HOST:-agents.coti.io}"
 PUBLIC_PREFIX="${STARTER_GRANT_PUBLIC_PREFIX:-/grant}"
 TRACKING_PATH="${STARTER_GRANT_PUBLIC_TRACKING_PATH:-/pm}"
+ANALYTICS_PATH="${STARTER_GRANT_PUBLIC_ANALYTICS_PATH:-/analytics}"
+ANALYTICS_PORT="${STARTER_GRANT_PUBLIC_ANALYTICS_PORT:-8788}"
+ANALYTICS_AUTH_USER="${STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_USER:-}"
+ANALYTICS_AUTH_PASSWORD="${STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_PASSWORD:-}"
+ANALYTICS_AUTH_REALM="${STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_REALM:-Restricted Analytics}"
 SERVICE_PORT="${STARTER_GRANT_SERVICE_PORT:-8787}"
 ENABLE_TLS="${STARTER_GRANT_PUBLIC_ENABLE_TLS:-1}"
 CERTBOT_EMAIL="${STARTER_GRANT_PUBLIC_CERTBOT_EMAIL:-}"
@@ -30,6 +35,15 @@ fi
 TRACKING_PATH="${TRACKING_PATH%/}"
 if [[ -z "$TRACKING_PATH" ]]; then
   echo "STARTER_GRANT_PUBLIC_TRACKING_PATH cannot be empty." >&2
+  exit 1
+fi
+
+if [[ ! "$ANALYTICS_PATH" =~ ^/ ]]; then
+  ANALYTICS_PATH="/$ANALYTICS_PATH"
+fi
+ANALYTICS_PATH="${ANALYTICS_PATH%/}"
+if [[ -z "$ANALYTICS_PATH" ]]; then
+  echo "STARTER_GRANT_PUBLIC_ANALYTICS_PATH cannot be empty." >&2
   exit 1
 fi
 
@@ -59,12 +73,38 @@ if [[ -f "$LOCAL_ENV_FILE" ]]; then
           [[ "$TRACKING_PATH" =~ ^/ ]] || TRACKING_PATH="/$TRACKING_PATH"
         fi
         ;;
+      STARTER_GRANT_PUBLIC_ANALYTICS_PATH)
+        if [[ -n "${value:-}" && "$ANALYTICS_PATH" == "/analytics" ]]; then
+          ANALYTICS_PATH="${value%/}"
+          [[ "$ANALYTICS_PATH" =~ ^/ ]] || ANALYTICS_PATH="/$ANALYTICS_PATH"
+        fi
+        ;;
+      STARTER_GRANT_PUBLIC_ANALYTICS_PORT)
+        if [[ -n "${value:-}" && "$ANALYTICS_PORT" == "8788" ]]; then
+          ANALYTICS_PORT="$value"
+        fi
+        ;;
+      STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_USER)
+        if [[ -n "${value:-}" && -z "$ANALYTICS_AUTH_USER" ]]; then
+          ANALYTICS_AUTH_USER="$value"
+        fi
+        ;;
+      STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_PASSWORD)
+        if [[ -n "${value:-}" && -z "$ANALYTICS_AUTH_PASSWORD" ]]; then
+          ANALYTICS_AUTH_PASSWORD="$value"
+        fi
+        ;;
+      STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_REALM)
+        if [[ -n "${value:-}" && "$ANALYTICS_AUTH_REALM" == "Restricted Analytics" ]]; then
+          ANALYTICS_AUTH_REALM="$value"
+        fi
+        ;;
     esac
   done < "$LOCAL_ENV_FILE"
 fi
 
 ssh "$SSH_HOST" \
-  "PUBLIC_HOST='$PUBLIC_HOST' PUBLIC_PREFIX='$PUBLIC_PREFIX' TRACKING_PATH='$TRACKING_PATH' SERVICE_PORT='$SERVICE_PORT' DEPLOY_PATH='$DEPLOY_PATH' ENABLE_TLS='$ENABLE_TLS' CERTBOT_EMAIL='$CERTBOT_EMAIL' REPO_URL='$REPO_URL' bash -se" <<'EOF'
+  "PUBLIC_HOST='$PUBLIC_HOST' PUBLIC_PREFIX='$PUBLIC_PREFIX' TRACKING_PATH='$TRACKING_PATH' ANALYTICS_PATH='$ANALYTICS_PATH' ANALYTICS_PORT='$ANALYTICS_PORT' ANALYTICS_AUTH_USER='$ANALYTICS_AUTH_USER' ANALYTICS_AUTH_PASSWORD='$ANALYTICS_AUTH_PASSWORD' ANALYTICS_AUTH_REALM='$ANALYTICS_AUTH_REALM' SERVICE_PORT='$SERVICE_PORT' DEPLOY_PATH='$DEPLOY_PATH' ENABLE_TLS='$ENABLE_TLS' CERTBOT_EMAIL='$CERTBOT_EMAIL' REPO_URL='$REPO_URL' bash -se" <<'EOF'
 set -euo pipefail
 
 require_sudo() {
@@ -77,7 +117,7 @@ require_sudo() {
 install_packages() {
   export DEBIAN_FRONTEND=noninteractive
   sudo -n apt-get update
-  sudo -n apt-get install -y nginx certbot python3-certbot-nginx
+  sudo -n apt-get install -y nginx certbot python3-certbot-nginx apache2-utils
 }
 
 upsert_env_var() {
@@ -127,10 +167,57 @@ ${listen_directives}
         alias /var/www/${PUBLIC_HOST}${TRACKING_PATH}/index.html;
     }
 
+    $(write_analytics_location)
+
     location / {
         return 404;
     }
 }
+NGINX
+}
+
+analytics_enabled() {
+  [[ -n "$ANALYTICS_AUTH_USER" && -n "$ANALYTICS_AUTH_PASSWORD" ]]
+}
+
+validate_analytics_auth() {
+  if [[ -z "$ANALYTICS_AUTH_USER" && -z "$ANALYTICS_AUTH_PASSWORD" ]]; then
+    return
+  fi
+  if [[ -z "$ANALYTICS_AUTH_USER" || -z "$ANALYTICS_AUTH_PASSWORD" ]]; then
+    echo "Both STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_USER and STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_PASSWORD are required." >&2
+    exit 1
+  fi
+}
+
+analytics_auth_file() {
+  printf '/etc/nginx/.htpasswd-%s-analytics' "$PUBLIC_HOST"
+}
+
+write_analytics_location() {
+  if ! analytics_enabled; then
+    return
+  fi
+
+  cat <<NGINX
+    location = ${ANALYTICS_PATH} {
+        return 301 ${ANALYTICS_PATH}/;
+    }
+
+    location ${ANALYTICS_PATH}/ {
+        auth_basic "${ANALYTICS_AUTH_REALM}";
+        auth_basic_user_file $(analytics_auth_file);
+        rewrite ^${ANALYTICS_PATH}(/.*)$ \$1 break;
+        proxy_pass http://127.0.0.1:${ANALYTICS_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Prefix ${ANALYTICS_PATH};
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "no-store" always;
+    }
 NGINX
 }
 
@@ -294,6 +381,18 @@ write_tracking_page() {
 HTML
 }
 
+write_analytics_auth_file() {
+  if ! analytics_enabled; then
+    return
+  fi
+
+  local auth_file
+  auth_file="$(analytics_auth_file)"
+  sudo -n htpasswd -bc "$auth_file" "$ANALYTICS_AUTH_USER" "$ANALYTICS_AUTH_PASSWORD" >/dev/null
+  sudo -n chown root:www-data "$auth_file"
+  sudo -n chmod 640 "$auth_file"
+}
+
 reload_nginx() {
   sudo -n nginx -t
   sudo -n systemctl enable --now nginx
@@ -337,10 +436,12 @@ restart_service() {
 }
 
 require_sudo
+validate_analytics_auth
 install_packages
 upsert_env_var "$DEPLOY_PATH/.env" "STARTER_GRANT_SERVICE_TRUST_PROXY" "true"
 upsert_env_var "$DEPLOY_PATH/.env" "STARTER_GRANT_SERVICE_BIND_HOST" "127.0.0.1"
 write_tracking_page
+write_analytics_auth_file
 write_nginx_config
 reload_nginx
 maybe_open_firewall
@@ -354,9 +455,19 @@ if [[ "$ENABLE_TLS" == "1" ]]; then
   echo "Health URL: https://${PUBLIC_HOST}${PUBLIC_PREFIX}/health"
   echo "Grant base URL: https://${PUBLIC_HOST}${PUBLIC_PREFIX}"
   echo "Tracking base URL: https://${PUBLIC_HOST}${TRACKING_PATH}"
+  if analytics_enabled; then
+    echo "Analytics URL: https://${PUBLIC_HOST}${ANALYTICS_PATH}"
+  else
+    echo "Analytics URL: not configured (set STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_USER/PASSWORD)"
+  fi
 else
   echo "Health URL: http://${PUBLIC_HOST}${PUBLIC_PREFIX}/health"
   echo "Grant base URL: http://${PUBLIC_HOST}${PUBLIC_PREFIX}"
   echo "Tracking base URL: http://${PUBLIC_HOST}${TRACKING_PATH}"
+  if analytics_enabled; then
+    echo "Analytics URL: http://${PUBLIC_HOST}${ANALYTICS_PATH}"
+  else
+    echo "Analytics URL: not configured (set STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_USER/PASSWORD)"
+  fi
 fi
 EOF

@@ -254,16 +254,28 @@ select {
   margin-bottom: 18px;
   border: 1px solid var(--line);
   border-radius: 18px;
-  padding: 18px;
   background: rgba(8, 17, 31, 0.32);
 }
 
-.builder-header {
+.builder-summary {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
+  padding: 18px;
+  list-style: none;
+}
+
+.builder-summary::-webkit-details-marker {
+  display: none;
+}
+
+.cta-builder[open] .builder-summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.cta-builder > section {
+  padding: 18px;
 }
 
 .builder-form,
@@ -344,7 +356,7 @@ summary {
 @media (max-width: 900px) {
   .hero,
   .section-heading,
-  .builder-header {
+  .builder-summary {
     display: block;
   }
 

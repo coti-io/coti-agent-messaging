@@ -205,6 +205,7 @@ function setBuilderFormDisabled(disabled) {
 }
 
 function renderBuilderResult() {
+  const disclosure = document.getElementById("cta-builder-disclosure");
   const panel = document.getElementById("cta-builder-result");
   const refInput = document.getElementById("cta-builder-ref");
   const urlInput = document.getElementById("cta-builder-url");
@@ -217,6 +218,7 @@ function renderBuilderResult() {
 
   refInput.value = manualBuilderState.result.ref || "";
   urlInput.value = manualBuilderState.result.trackedUrl || "";
+  disclosure.open = true;
   panel.hidden = false;
 }
 
@@ -262,7 +264,7 @@ async function submitManualBuilder(event) {
   renderManualBuilder(window.__dashboardConfig || {});
 
   try {
-    const response = await fetch("/api/attribution/ref", {
+    const response = await fetch("api/attribution/ref", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -400,7 +402,7 @@ function renderAttribution(attribution, config = {}) {
 }
 
 async function refresh() {
-  const response = await fetch("/api/summary");
+  const response = await fetch("api/summary");
   const payload = await response.json();
   window.__dashboardConfig = payload.config || {};
   document.getElementById("last-refresh").textContent = `Updated ${formatTime(payload.generatedAt)}`;

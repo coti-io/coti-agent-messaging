@@ -146,6 +146,10 @@ async function createManualAttributionRef(
     jsonResponse(response, 503, { error: "OUTREACH_TRACKING_BASE_URL is not configured." });
     return;
   }
+  if (!configInput.starterGrantServiceAuthToken) {
+    jsonResponse(response, 503, { error: "STARTER_GRANT_SERVICE_AUTH_TOKEN is required for CTA creation." });
+    return;
+  }
 
   requireJsonRequest(request);
   const body = await readJsonBody(request);
@@ -155,9 +159,7 @@ async function createManualAttributionRef(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(configInput.starterGrantServiceAuthToken
-        ? { Authorization: `Bearer ${configInput.starterGrantServiceAuthToken}` }
-        : {})
+      Authorization: `Bearer ${configInput.starterGrantServiceAuthToken}`
     },
     body: JSON.stringify({ outreachRef })
   });
@@ -332,7 +334,11 @@ async function summaryPayload(configInput: AnalyticsConfig) {
       agentRoot: configInput.agentRoot,
       attributionConfigured: Boolean(configInput.attributionDbPath),
       trackingBaseUrl: configInput.trackingBaseUrl,
-      manualRefBuilderEnabled: Boolean(configInput.trackingBaseUrl && configInput.starterGrantServiceUrl),
+      manualRefBuilderEnabled: Boolean(
+        configInput.trackingBaseUrl &&
+        configInput.starterGrantServiceUrl &&
+        configInput.starterGrantServiceAuthToken
+      ),
       cotiNetwork: configInput.cotiNetwork,
       contractAddress: configInput.contractAddress,
       cotiCacheTtlMs: configInput.cotiCacheTtlMs

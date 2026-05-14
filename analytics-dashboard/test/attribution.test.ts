@@ -292,3 +292,40 @@ test("manual ref builder API mints and persists tracked links through starter gr
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("manual ref builder API requires starter grant auth token", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "analytics-manual-builder-auth-"));
+  const server = createServer({
+    ...testConfig(tempDir),
+    trackingBaseUrl: "https://agents.coti.io/pm",
+    starterGrantServiceUrl: "https://agents.coti.io/grant"
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/attribution/ref`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        venue: "twitter",
+        contentType: "post",
+        campaignId: "private_messaging",
+        promptProfileId: "manual-twitter",
+        messageStyle: "direct",
+        layout: "single_link"
+      })
+    });
+    const payload = (await response.json()) as { error?: string };
+    assert.equal(response.status, 503);
+    assert.match(payload.error ?? "", /STARTER_GRANT_SERVICE_AUTH_TOKEN/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve()))
+    );
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

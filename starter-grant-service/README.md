@@ -46,11 +46,12 @@ Grant routes accept optional `ref` and `outreachRef` fields. The `ref` is the sh
 Additional routes:
 
 ```bash
+POST /attribution/ref
 POST /attribution/event
 GET /attribution/summary?campaignId=private_messaging
 ```
 
-Use `POST /attribution/event` for private-message and skill-usage events keyed by the same `ref`. The summary groups results by venue, campaign, prompt profile, message style, and layout.
+Use `POST /attribution/ref` to pre-register a manual CTA ref, and `POST /attribution/event` for clicks, private-message, and skill-usage events keyed by the same `ref`. The summary groups results by venue, campaign, prompt profile, message style, and layout.
 
 ## Rsync Deploy
 
@@ -122,20 +123,28 @@ export STARTER_GRANT_PUBLIC_SETUP_SSH_HOST=grant
 export STARTER_GRANT_PUBLIC_HOST=agents.coti.io
 export STARTER_GRANT_PUBLIC_PREFIX=/grant
 export STARTER_GRANT_PUBLIC_TRACKING_PATH=/pm
+export STARTER_GRANT_PUBLIC_ANALYTICS_PATH=/analytics
+export STARTER_GRANT_PUBLIC_ANALYTICS_PORT=8788
+export STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_USER=analytics
+export STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_PASSWORD=replace_me
+export STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_REALM="Restricted Analytics"
 export STARTER_GRANT_PUBLIC_CERTBOT_EMAIL=ops@example.com
 export STARTER_GRANT_PUBLIC_ENABLE_TLS=1
 ```
 
 The script:
 
-- installs `nginx`, `certbot`, and the nginx certbot plugin on the remote Ubuntu host
+- installs `nginx`, `certbot`, the nginx certbot plugin, and `apache2-utils` on the remote Ubuntu host
 - writes an nginx site that proxies `https://<host>/grant/*` to `http://127.0.0.1:<port>/*`
 - writes a simple human-facing landing page at `https://<host>/pm`
+- optionally proxies `https://<host>/analytics/*` to the analytics dashboard on `127.0.0.1:8788` behind nginx Basic Auth when `STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_USER/PASSWORD` are set
 - enables TLS with Let's Encrypt when `STARTER_GRANT_PUBLIC_ENABLE_TLS=1`
 - sets `STARTER_GRANT_SERVICE_TRUST_PROXY=true` in the remote `.env`
 - restarts the Dockerized grant service after the proxy is configured
 
 For safer public deployment, Docker now binds the published grant port to `127.0.0.1` by default via `STARTER_GRANT_SERVICE_BIND_HOST=127.0.0.1`. If you intentionally want the raw service port exposed on the host, override that env var.
+
+If you expose analytics publicly, keep `STARTER_GRANT_SERVICE_AUTH_TOKEN` set. The dashboard CTA builder now depends on that token for upstream privileged writes; leaving it empty is insecure.
 
 With the default landing page in place, a sane outreach setting is:
 

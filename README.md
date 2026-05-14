@@ -86,7 +86,7 @@ The bridge scratch state now lives under `outreach-agent/.bridge/`.
 
 The outreach agent also ships with an `rsync` deployment path under `outreach-agent/`. `npm run outreach:deploy:rsync` syncs the repo subset the agent reads, pushes the repo-root `.env` by default, builds the workspace on `grant`, and installs `moltbook-outreach-heartbeat.timer` so the heartbeat runs every 5 minutes. The remote runtime state is pinned under `/home/ubuntu/outreach-agent/.runtime/` by default instead of the package-local `.data/` path.
 
-For one-time starter COTI claims through the MCP server, set `STARTER_GRANT_SERVICE_URL` on the MCP side and run the bundled starter-grant service with its own funding-wallet env vars. The minimum service config is just `STARTER_GRANT_FUNDER_PRIVATE_KEY` plus `STARTER_GRANT_AMOUNT_COTI`; `COTI_NETWORK` defaults to `testnet`, `STARTER_GRANT_RPC_URL` falls back to the public network RPC, and the HTTP service binds to `0.0.0.0` by default. The backend issues a short-lived claim payload plus a trivial prompt, the configured wallet signs that exact payload, and the service confirms the transfer before recording the claim. Wallet dedupe is the real enforcement rule; `installId` is only a local soft speed bump, not trustless protection.
+For one-time starter COTI claims through the MCP server, set `STARTER_GRANT_SERVICE_URL` on the MCP side and run the bundled starter-grant service with its own funding-wallet env vars. The minimum service config is just `STARTER_GRANT_FUNDER_PRIVATE_KEY` plus `STARTER_GRANT_AMOUNT_COTI`; `COTI_NETWORK` defaults to `testnet`, `STARTER_GRANT_RPC_URL` falls back to the public network RPC, and the HTTP service binds to `0.0.0.0` by default. The backend issues a short-lived claim payload plus a trivial prompt, the configured wallet signs that exact payload, and the service confirms the transfer before recording the claim. Wallet dedupe is the real enforcement rule; `installId` is only a local soft speed bump, not trustless protection. For public deployment, keep `STARTER_GRANT_SERVICE_AUTH_TOKEN` set; the analytics CTA builder now requires it for upstream privileged writes.
 
 The starter-grant service also ships with a Docker Compose + `rsync` deployment path under `starter-grant-service/`. Use `npm run starter-grant:docker:up` for local container runs or `npm run starter-grant:deploy:rsync` for remote sync-and-restart deploys to the SSH config host `grant`. The deploy script defaults to `/home/ubuntu/starter-grant-service` and can bootstrap Docker on an Ubuntu host when needed. See `starter-grant-service/README.md` for the exact env surface.
 
@@ -98,7 +98,7 @@ Copy `deploy/agents.example.json` to `deploy/agents.json`. The shipped example i
 npm run analytics:deploy:rsync
 ```
 
-The coordinated deploy installs one heartbeat timer per agent and one dashboard service. By default the dashboard binds to `0.0.0.0:8788`, so it is reachable from outside the box if your firewall or cloud security group allows inbound TCP on that port. Override `dashboard.host` in the manifest if you want to keep it private.
+The coordinated deploy installs one heartbeat timer per agent and one dashboard service. By default the dashboard now binds to `127.0.0.1:8788`, so it is private unless you intentionally proxy it. Pair that with `starter-grant-service/setup-public-host.sh` plus `STARTER_GRANT_PUBLIC_ANALYTICS_AUTH_USER/PASSWORD` if you want `https://agents.coti.io/analytics` behind nginx Basic Auth.
 
 ## Notes
 

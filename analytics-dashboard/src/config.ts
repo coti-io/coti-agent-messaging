@@ -67,7 +67,7 @@ export function loadAnalyticsConfig(env: NodeJS.ProcessEnv = process.env): Analy
     agentRoot:
       env.MOLTBOOK_ANALYTICS_AGENT_ROOT ??
       path.resolve(process.cwd(), "outreach-agent", ".data", "agents"),
-    host: env.MOLTBOOK_ANALYTICS_HOST ?? "0.0.0.0",
+    host: env.MOLTBOOK_ANALYTICS_HOST ?? "127.0.0.1",
     port: parsePort(env.MOLTBOOK_ANALYTICS_PORT, 8788),
     attributionDbPath: env.OUTREACH_ATTRIBUTION_DB_PATH,
     trackingBaseUrl: env.OUTREACH_TRACKING_BASE_URL ?? env.OUTREACH_CTA_BASE_URL,

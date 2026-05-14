@@ -2,9 +2,11 @@ import { buildVerificationLlmProvider, getOutreachAgentConfig, type MoltbookRunt
 import {
   MoltbookApiClient,
   type MoltbookAgentProfileResponse,
+  type MoltbookComment,
   type MoltbookCommentsResponse,
   type MoltbookFeedResponse,
   type MoltbookHomeResponse,
+  type MoltbookPost,
   type MoltbookSearchResponse
 } from "./moltbook-api.js";
 import type { ProductFactSheet } from "./product-facts.js";
@@ -24,6 +26,8 @@ export interface MoltbookHeartbeatSources {
   exploreFeed: MoltbookFeedResponse;
   factSheet: ProductFactSheet;
 }
+
+const MOLTBOOK_WEB_BASE_URL = "https://www.moltbook.com";
 
 export class MoltbookVenueProvider implements VenueProvider {
   readonly id = "moltbook";
@@ -132,40 +136,107 @@ export class MoltbookVenueProvider implements VenueProvider {
         if (!action.parentId || !action.content) {
           throw new Error("Moltbook comment action requires parentId and content.");
         }
-        await this.api.createComment(action.parentId, { content: action.content });
-        return buildOutcome(action, "posted");
+        return buildOutcome(
+          action,
+          "posted",
+          buildCommentOutcomeMetadata(
+            (await this.api.createComment(action.parentId, { content: action.content })).comment,
+            action.parentId
+          )
+        );
       case "reply_to_comment":
         if (!action.parentId || !action.candidateId || !action.content) {
           throw new Error("Moltbook reply action requires post id, comment id, and content.");
         }
-        await this.api.createComment(action.parentId, {
-          content: action.content,
-          parent_id: action.candidateId
-        });
-        return buildOutcome(action, "posted");
+        return buildOutcome(
+          action,
+          "posted",
+          buildCommentOutcomeMetadata(
+            (
+              await this.api.createComment(action.parentId, {
+                content: action.content,
+                parent_id: action.candidateId
+              })
+            ).comment,
+            action.parentId
+          )
+        );
       case "create_post":
         if (!action.title || !action.content) {
           throw new Error("Moltbook create_post action requires title and content.");
         }
-        await this.api.createPost({
-          submolt_name: action.surface ?? this.config.defaultSubmolt,
-          title: action.title,
-          content: action.content
-        });
-        return buildOutcome(action, "posted");
+        return buildOutcome(
+          action,
+          "posted",
+          buildPostOutcomeMetadata(
+            (
+              await this.api.createPost({
+                submolt_name: action.surface ?? this.config.defaultSubmolt,
+                title: action.title,
+                content: action.content
+              })
+            ).post
+          )
+        );
       default:
         throw new Error(`Moltbook cannot publish action type ${action.type}.`);
     }
   }
 }
 
-function buildOutcome(action: VenueAction, type: VenueOutcome["type"]): VenueOutcome {
+function buildOutcome(
+  action: VenueAction,
+  type: VenueOutcome["type"],
+  extra: Partial<VenueOutcome> = {}
+): VenueOutcome {
   return {
     id: `${action.id}:${type}`,
     venue: "moltbook",
     actionId: action.id,
     candidateId: action.candidateId,
+    remoteContentId: extra.remoteContentId,
+    remoteContentUrl: extra.remoteContentUrl,
     type,
-    occurredAt: new Date().toISOString()
+    occurredAt: new Date().toISOString(),
+    raw: extra.raw
   };
+}
+
+function buildPostOutcomeMetadata(post: MoltbookPost | undefined): Partial<VenueOutcome> {
+  const postId = post?.post_id ?? post?.id;
+  return {
+    remoteContentId: postId,
+    remoteContentUrl: normalizeMoltbookUrl(post?.url) ?? buildMoltbookPostUrl(postId),
+    raw: post
+  };
+}
+
+function buildCommentOutcomeMetadata(
+  comment: MoltbookComment | undefined,
+  fallbackPostId: string | undefined
+): Partial<VenueOutcome> {
+  const postId = comment?.post_id ?? fallbackPostId;
+  return {
+    remoteContentId: comment?.id,
+    remoteContentUrl: buildMoltbookPostUrl(postId),
+    raw: comment
+  };
+}
+
+function buildMoltbookPostUrl(postId: string | undefined): string | undefined {
+  if (!postId) {
+    return undefined;
+  }
+  return `${MOLTBOOK_WEB_BASE_URL}/posts/${encodeURIComponent(postId)}`;
+}
+
+function normalizeMoltbookUrl(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return new URL(value, MOLTBOOK_WEB_BASE_URL).toString();
+  } catch {
+    return undefined;
+  }
 }

@@ -62,6 +62,8 @@ export interface VenueOutcome {
   venue: OutreachVenueId;
   actionId?: string;
   candidateId?: string;
+  remoteContentId?: string;
+  remoteContentUrl?: string;
   type:
     | "drafted"
     | "posted"

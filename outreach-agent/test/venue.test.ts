@@ -110,7 +110,13 @@ test("Moltbook venue provider delegates publish actions through the API", async 
   const fakeApi = {
     async createComment(postId: string, body: { content: string; parent_id?: string }) {
       calls.push(`comment:${postId}:${body.parent_id ?? "root"}:${body.content}`);
-      return {};
+      return {
+        comment: {
+          id: "comment-42",
+          post_id: postId,
+          content: body.content
+        }
+      };
     }
   } as unknown as MoltbookApiClient;
   const provider = new MoltbookVenueProvider(createConfig(), fakeApi);
@@ -126,6 +132,8 @@ test("Moltbook venue provider delegates publish actions through the API", async 
 
   assert.deepEqual(calls, ["comment:post-1:comment-1:Useful reply."]);
   assert.equal(outcome.type, "posted");
+  assert.equal(outcome.remoteContentId, "comment-42");
+  assert.equal(outcome.remoteContentUrl, "https://www.moltbook.com/posts/post-1");
 });
 
 test("Reddit venue provider returns review candidates and refuses publishing", async () => {

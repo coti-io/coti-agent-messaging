@@ -139,7 +139,54 @@ function renderCoti(coti) {
     .join("");
 }
 
-function renderAttribution(attribution) {
+function buildTrackedCtaUrl(baseUrl, ref) {
+  if (!baseUrl) {
+    return undefined;
+  }
+  try {
+    const url = new URL(baseUrl);
+    if (ref.utm?.source) url.searchParams.set("utm_source", ref.utm.source);
+    if (ref.utm?.medium) url.searchParams.set("utm_medium", ref.utm.medium);
+    if (ref.utm?.campaign) url.searchParams.set("utm_campaign", ref.utm.campaign);
+    if (ref.utm?.content) url.searchParams.set("utm_content", ref.utm.content);
+    url.searchParams.set("ref", ref.refId);
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function attributionLink(label, href) {
+  if (!href) {
+    return `<span class="subtle">${escapeHtml(label)}</span>`;
+  }
+  return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`;
+}
+
+function promptChip(label, value) {
+  if (!value) {
+    return "";
+  }
+  return `<span class="prompt-chip"><span class="subtle">${escapeHtml(label)}</span> ${escapeHtml(value)}</span>`;
+}
+
+function promptSummaryMarkup(ref) {
+  const chips = [
+    promptChip("profile", ref.promptProfileId),
+    promptChip("style", ref.messageStyle),
+    promptChip("layout", ref.layout),
+    promptChip("cta", ref.ctaStyle),
+    promptChip("promo", ref.promotionLevel),
+    promptChip("product", ref.productSpecificity),
+    promptChip("reward", ref.rewardEmphasis),
+    promptChip("audience", ref.audience)
+  ]
+    .filter(Boolean)
+    .join("");
+  return chips || '<span class="subtle">No prompt params</span>';
+}
+
+function renderAttribution(attribution, config = {}) {
   const subtitle = document.getElementById("attribution-subtitle");
   const cards = document.getElementById("attribution-cards");
   const groups = document.getElementById("attribution-groups");
@@ -194,13 +241,15 @@ function renderAttribution(attribution) {
   }
 
   if (!attribution.topRefs?.length) {
-    refs.innerHTML = `<tr><td colspan="5" class="subtle">No successful refs found yet.</td></tr>`;
+    refs.innerHTML = `<tr><td colspan="5" class="subtle">No refs found yet.</td></tr>`;
     return;
   }
 
   refs.innerHTML = attribution.topRefs
     .map((ref) => {
       const promptParams = JSON.stringify(ref.promptParameters || {}, null, 2);
+      const ctaUrl = buildTrackedCtaUrl(config.trackingBaseUrl, ref);
+      const contentUrl = ref.remoteContentUrl;
       const utm = Object.entries(ref.utm || {})
         .map(([key, value]) => `${escapeHtml(key)}=${escapeHtml(value)}`)
         .join("<br>");
@@ -209,15 +258,23 @@ function renderAttribution(attribution) {
           <td>
             <div class="agent-name">${escapeHtml(ref.refId)}</div>
             <div class="agent-id">${escapeHtml(ref.venue)} / ${escapeHtml(ref.surface || "n/a")}</div>
-            <div class="card-detail">${escapeHtml(ref.contentType)} · ${escapeHtml(ref.remoteContentId || ref.generatedContentId)}</div>
+            <div class="card-detail">${escapeHtml(ref.contentType)} · remote ${escapeHtml(ref.remoteContentId || "n/a")}</div>
+            <div class="card-detail">generated ${escapeHtml(ref.generatedContentId)}</div>
+            <div class="inline-links">
+              ${attributionLink(ref.contentType === "post" ? "View post" : "View thread", contentUrl)}
+            </div>
           </td>
           <td>
+            <div class="prompt-chips">${promptSummaryMarkup(ref)}</div>
             <details>
-              <summary>${escapeHtml(ref.messageStyle)} · ${escapeHtml(ref.layout)}</summary>
+              <summary>Full prompt params</summary>
               <pre class="prompt-json">${escapeHtml(promptParams)}</pre>
             </details>
           </td>
-          <td>${utm || '<span class="subtle">n/a</span>'}</td>
+          <td>
+            ${utm || '<span class="subtle">n/a</span>'}
+            <div class="inline-links">${attributionLink("Open CTA", ctaUrl)}</div>
+          </td>
           <td>
             <div>${formatNumber(ref.totals.clicks)} clicks · ${formatNumber(ref.totals.privateMessagesReceived)} PMs</div>
             <div>${formatNumber(ref.totals.grantClaimsSucceeded)} grants · ${formatNumber(ref.totals.skillUsages)} skills</div>
@@ -236,7 +293,7 @@ async function refresh() {
   renderEngagementCards(payload.aggregateEngagements);
   renderAgents(payload.agents);
   renderCoti(payload.coti);
-  renderAttribution(payload.attribution);
+  renderAttribution(payload.attribution, payload.config);
 }
 
 refresh().catch((error) => {

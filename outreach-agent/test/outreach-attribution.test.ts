@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
+import sqlite3 from "sqlite3";
+
 import {
   readMessageFunnelSummaryFromStore,
   readAttributionSummaryFromStore,
@@ -20,6 +22,36 @@ import {
   type AttributionEvent
 } from "../src/outreach-attribution.js";
 import { DEFAULT_PROMPT_PARAMETERS } from "../src/prompt-profile.js";
+
+async function readRemoteIdentity(databasePath: string, refId: string): Promise<{
+  remoteContentId: string | null;
+  remoteContentUrl: string | null;
+}> {
+  return await new Promise((resolve, reject) => {
+    const db = new sqlite3.Database(databasePath, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      db.get(
+        "SELECT remote_content_id AS remoteContentId, remote_content_url AS remoteContentUrl FROM outreach_refs WHERE ref_id = ?",
+        [refId],
+        (queryError, row) => {
+          db.close(() => {
+            if (queryError) {
+              reject(queryError);
+              return;
+            }
+            resolve((row ?? { remoteContentId: null, remoteContentUrl: null }) as {
+              remoteContentId: string | null;
+              remoteContentUrl: string | null;
+            });
+          });
+        }
+      );
+    });
+  });
+}
 
 test("tracked links include stable UTM fields and full prompt/ref metadata", () => {
   const ref = buildOutreachRef({
@@ -107,6 +139,37 @@ test("shared sqlite attribution store persists refs and downstream events", asyn
     assert.equal(summary.groups[0]?.layout, "structured_bullets");
     assert.equal(summary.groups[0]?.privateMessagesReceived, 1);
     assert.equal(summary.groups[0]?.skillUsages, 1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("shared sqlite attribution store backfills remote content identity on ref upsert", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "outreach-attribution-upsert-"));
+  const dbPath = path.join(tempDir, "attribution.sqlite");
+  const ref = buildOutreachRef({
+    venue: "moltbook",
+    venueAccountId: "OutreachBot",
+    surface: "general",
+    contentType: "post",
+    promptProfileId: "technical-regular",
+    parameters: DEFAULT_PROMPT_PARAMETERS,
+    campaignId: "private_messaging",
+    candidateId: "create-post",
+    generatedContentId: "generated-remote"
+  });
+
+  try {
+    await saveOutreachRefToAttributionStore(dbPath, ref);
+    await saveOutreachRefToAttributionStore(dbPath, {
+      ...ref,
+      remoteContentId: "remote-post-1",
+      remoteContentUrl: "https://www.moltbook.com/posts/remote-post-1"
+    });
+
+    const stored = await readRemoteIdentity(dbPath, ref.id);
+    assert.equal(stored.remoteContentId, "remote-post-1");
+    assert.equal(stored.remoteContentUrl, "https://www.moltbook.com/posts/remote-post-1");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

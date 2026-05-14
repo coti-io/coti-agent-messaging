@@ -31,6 +31,7 @@ export interface OutreachRefInput {
   candidateId: string;
   generatedContentId: string;
   remoteContentId?: string;
+  remoteContentUrl?: string;
   timestamp?: Date;
 }
 
@@ -53,6 +54,7 @@ export interface OutreachRef {
   candidateId: string;
   generatedContentId: string;
   remoteContentId?: string;
+  remoteContentUrl?: string;
   timestampBucket: string;
   utm: {
     source: string;
@@ -128,6 +130,7 @@ export function buildOutreachRef(input: OutreachRefInput): OutreachRef {
     candidateId: input.candidateId,
     generatedContentId: input.generatedContentId,
     remoteContentId: input.remoteContentId,
+    remoteContentUrl: input.remoteContentUrl,
     timestampBucket,
     utm: {
       source: input.venue,

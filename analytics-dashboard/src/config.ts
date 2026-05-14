@@ -70,6 +70,7 @@ export function loadAnalyticsConfig(env: NodeJS.ProcessEnv = process.env): Analy
     host: env.MOLTBOOK_ANALYTICS_HOST ?? "0.0.0.0",
     port: parsePort(env.MOLTBOOK_ANALYTICS_PORT, 8788),
     attributionDbPath: env.OUTREACH_ATTRIBUTION_DB_PATH,
+    trackingBaseUrl: env.OUTREACH_TRACKING_BASE_URL ?? env.OUTREACH_CTA_BASE_URL,
     cotiNetwork,
     cotiRpcUrl: resolveMessageStatsRpcUrl(cotiNetwork, env),
     contractAddress: env.CONTRACT_ADDRESS,

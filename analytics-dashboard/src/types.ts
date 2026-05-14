@@ -64,6 +64,7 @@ export interface AnalyticsConfig {
   host: string;
   port: number;
   attributionDbPath?: string;
+  trackingBaseUrl?: string;
   cotiNetwork: "mainnet" | "testnet";
   cotiRpcUrl: string;
   contractAddress?: string;
@@ -126,6 +127,7 @@ export interface AttributionRefDetail {
   candidateId: string;
   generatedContentId: string;
   remoteContentId?: string;
+  remoteContentUrl?: string;
   utm?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;

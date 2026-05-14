@@ -33,6 +33,7 @@ export interface StarterGrantOutreachRef {
   candidateId: string;
   generatedContentId: string;
   remoteContentId?: string;
+  remoteContentUrl?: string;
   utm?: Record<string, unknown>;
   createdAt?: string;
 }
@@ -320,6 +321,7 @@ async function ensureAttributionSchema(db: SqliteDatabase): Promise<void> {
       candidate_id TEXT NOT NULL,
       generated_content_id TEXT NOT NULL,
       remote_content_id TEXT,
+      remote_content_url TEXT,
       utm_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -343,6 +345,7 @@ async function ensureAttributionSchema(db: SqliteDatabase): Promise<void> {
     CREATE INDEX IF NOT EXISTS attribution_events_type_idx
       ON attribution_events(event_type, created_at);
   `);
+  await ensureColumn(db, "outreach_refs", "remote_content_url", "TEXT");
 }
 
 async function upsertOutreachRef(db: SqliteDatabase, ref: StarterGrantOutreachRef): Promise<void> {
@@ -369,12 +372,14 @@ async function upsertOutreachRef(db: SqliteDatabase, ref: StarterGrantOutreachRe
         candidate_id,
         generated_content_id,
         remote_content_id,
+        remote_content_url,
         utm_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(ref_id) DO UPDATE SET
         remote_content_id = COALESCE(excluded.remote_content_id, outreach_refs.remote_content_id),
+        remote_content_url = COALESCE(excluded.remote_content_url, outreach_refs.remote_content_url),
         utm_json = COALESCE(excluded.utm_json, outreach_refs.utm_json),
         updated_at = excluded.updated_at
     `,
@@ -397,11 +402,25 @@ async function upsertOutreachRef(db: SqliteDatabase, ref: StarterGrantOutreachRe
       ref.candidateId,
       ref.generatedContentId,
       ref.remoteContentId ?? null,
+      ref.remoteContentUrl ?? null,
       ref.utm ? JSON.stringify(ref.utm) : null,
       ref.createdAt ?? now,
       now
     ]
   );
+}
+
+async function ensureColumn(
+  db: SqliteDatabase,
+  tableName: string,
+  columnName: string,
+  columnDefinition: string
+): Promise<void> {
+  const columns = await db.all<{ name: string }>(`PRAGMA table_info(${tableName})`);
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+  await db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
 }
 
 async function recordAttributionEvent(

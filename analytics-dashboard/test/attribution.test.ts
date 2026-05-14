@@ -52,6 +52,7 @@ function attributionSchemaSql(): string {
       candidate_id TEXT NOT NULL,
       generated_content_id TEXT NOT NULL,
       remote_content_id TEXT,
+      remote_content_url TEXT,
       utm_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -94,12 +95,24 @@ function populatedAttributionSql(): string {
       ref_id, venue, venue_account_id, surface, content_type, campaign_id, prompt_profile_id,
       prompt_parameters_json, message_style, layout, cta_style, promotion_level,
       product_specificity, reward_emphasis, audience, candidate_id, generated_content_id,
-      remote_content_id, utm_json, created_at, updated_at
+      remote_content_id, remote_content_url, utm_json, created_at, updated_at
     ) VALUES (
       'ref-a', 'moltbook', 'agent-a', 'timeline', 'post', 'campaign-a', 'profile-a',
       '${prompt}', 'informative', 'structured', 'soft', 'low', 'generic', 'medium',
-      'builders', 'candidate-a', 'generated-a', 'remote-a', '${utm}',
+      'builders', 'candidate-a', 'generated-a', 'remote-a', 'https://www.moltbook.com/posts/remote-a', '${utm}',
       '2026-05-04T10:00:00.000Z', '2026-05-04T10:00:00.000Z'
+    );
+
+    INSERT INTO outreach_refs(
+      ref_id, venue, venue_account_id, surface, content_type, campaign_id, prompt_profile_id,
+      prompt_parameters_json, message_style, layout, cta_style, promotion_level,
+      product_specificity, reward_emphasis, audience, candidate_id, generated_content_id,
+      remote_content_id, remote_content_url, utm_json, created_at, updated_at
+    ) VALUES (
+      'ref-zero', 'moltbook', 'agent-a', 'timeline', 'reply', 'campaign-a', 'profile-a',
+      '${prompt}', 'informative', 'structured', 'soft', 'low', 'generic', 'medium',
+      'builders', 'candidate-zero', 'generated-zero', 'comment-zero', 'https://www.moltbook.com/posts/post-zero', '${utm}',
+      '2026-05-04T10:06:00.000Z', '2026-05-04T10:06:00.000Z'
     );
 
     INSERT INTO attribution_events(event_id, ref_id, event_type, venue, wallet_address, install_id, session_id, skill_id, metadata_json, created_at) VALUES
@@ -151,7 +164,7 @@ test("readAttributionSummary groups conversions and exposes per-ref prompt drill
     const summary = await readAttributionSummary(databasePath, new Date("2026-05-04T12:00:00.000Z"));
 
     assert.equal(summary.configured, true);
-    assert.equal(summary.totals.refs, 1);
+    assert.equal(summary.totals.refs, 2);
     assert.equal(summary.totals.clicks, 2);
     assert.equal(summary.totals.unresolvedEvents, 1);
     assert.equal(summary.totals.privateMessagesReceived, 1);
@@ -163,6 +176,8 @@ test("readAttributionSummary groups conversions and exposes per-ref prompt drill
     assert.equal(summary.groups[0]?.conversionRates.clickToSkillUsage, 1);
     assert.equal(summary.topRefs[0]?.promptParameters.intent, "starter-grant");
     assert.equal(summary.topRefs[0]?.utm?.campaign, "campaign-a");
+    assert.equal(summary.topRefs[0]?.remoteContentUrl, "https://www.moltbook.com/posts/remote-a");
+    assert.equal(summary.topRefs.some((ref) => ref.refId === "ref-zero"), true);
     assert.equal("walletAddress" in summary.topRefs[0]!, false);
     assert.equal("installId" in summary.topRefs[0]!, false);
     assert.equal("sessionId" in summary.topRefs[0]!, false);
@@ -185,7 +200,7 @@ test("attribution API and summary include attribution payload", async () => {
     const attributionResponse = await fetch(`http://127.0.0.1:${port}/api/attribution`);
     const attribution = await attributionResponse.json() as { totals: { refs: number } };
     assert.equal(attributionResponse.status, 200);
-    assert.equal(attribution.totals.refs, 1);
+    assert.equal(attribution.totals.refs, 2);
 
     const summaryResponse = await fetch(`http://127.0.0.1:${port}/api/summary`);
     const summary = await summaryResponse.json() as {
@@ -194,7 +209,8 @@ test("attribution API and summary include attribution payload", async () => {
     };
     assert.equal(summaryResponse.status, 200);
     assert.equal(summary.config.attributionConfigured, true);
-    assert.equal(summary.attribution.topRefs[0]?.refId, "ref-a");
+    assert.equal(summary.attribution.topRefs.length, 2);
+    assert.equal(summary.attribution.topRefs.some((ref) => ref.refId === "ref-a"), true);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve()))

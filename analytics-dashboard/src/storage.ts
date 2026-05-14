@@ -472,6 +472,7 @@ export async function readAttributionSummary(
       candidateId: string;
       generatedContentId: string;
       remoteContentId: string | null;
+      remoteContentUrl: string | null;
       utmJson: string | null;
       createdAt: string;
       updatedAt: string;
@@ -504,6 +505,7 @@ export async function readAttributionSummary(
         r.candidate_id AS candidateId,
         r.generated_content_id AS generatedContentId,
         r.remote_content_id AS remoteContentId,
+        r.remote_content_url AS remoteContentUrl,
         r.utm_json AS utmJson,
         r.created_at AS createdAt,
         r.updated_at AS updatedAt,
@@ -519,8 +521,7 @@ export async function readAttributionSummary(
       FROM outreach_refs r
       LEFT JOIN attribution_events e ON e.ref_id = r.ref_id
       GROUP BY r.ref_id
-      HAVING COUNT(e.event_id) > 0
-      ORDER BY skillUsages DESC, privateMessagesReceived DESC, grantClaimsSucceeded DESC, clicks DESC, r.created_at DESC
+      ORDER BY skillUsages DESC, privateMessagesReceived DESC, grantClaimsSucceeded DESC, clicks DESC, COALESCE(lastEventAt, r.created_at) DESC
       LIMIT 25
     `);
 
@@ -579,6 +580,7 @@ export async function readAttributionSummary(
           candidateId: row.candidateId,
           generatedContentId: row.generatedContentId,
           remoteContentId: row.remoteContentId ?? undefined,
+          remoteContentUrl: row.remoteContentUrl ?? undefined,
           utm: sanitizeAttributionMetadata(parseJsonRecord(row.utmJson)),
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,

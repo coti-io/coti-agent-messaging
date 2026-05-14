@@ -180,6 +180,7 @@ async function summaryPayload(configInput: AnalyticsConfig) {
     config: {
       agentRoot: configInput.agentRoot,
       attributionConfigured: Boolean(configInput.attributionDbPath),
+      trackingBaseUrl: configInput.trackingBaseUrl,
       cotiNetwork: configInput.cotiNetwork,
       contractAddress: configInput.contractAddress,
       cotiCacheTtlMs: configInput.cotiCacheTtlMs

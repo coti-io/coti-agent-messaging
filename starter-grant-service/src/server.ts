@@ -170,6 +170,7 @@ function parseOptionalOutreachRef(value: unknown): StarterGrantOutreachRef | und
     candidateId: asString(ref.candidateId, "outreachRef.candidateId"),
     generatedContentId: asString(ref.generatedContentId, "outreachRef.generatedContentId"),
     remoteContentId: asOptionalString(ref.remoteContentId, "outreachRef.remoteContentId"),
+    remoteContentUrl: asOptionalString(ref.remoteContentUrl, "outreachRef.remoteContentUrl"),
     utm: optionalRecord(ref.utm, "outreachRef.utm"),
     createdAt: asOptionalString(ref.createdAt, "outreachRef.createdAt")
   };

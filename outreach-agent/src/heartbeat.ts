@@ -38,6 +38,9 @@ import {
   saveHeartbeatRunToStorage,
   saveStateToStorage
 } from "./storage.js";
+import { saveOutreachRefToAttributionStore } from "./attribution-store.js";
+import type { OutreachRef } from "./outreach-attribution.js";
+import type { VenueOutcome } from "./venue.js";
 export interface HeartbeatResult {
   summary: string;
   performed: string[];
@@ -576,7 +579,7 @@ export async function runHeartbeat(
               const pendingWrite = buildPendingWrite(candidate, decision);
               await persistState(addPendingWrite(state, pendingWrite));
               try {
-                await venue.publishAction({
+                const outcome = await venue.publishAction({
                   id: `reply:${candidate.postId}:${candidate.target.commentId}`,
                   venue: "moltbook",
                   type: "reply_to_comment",
@@ -585,11 +588,13 @@ export async function runHeartbeat(
                   content: decision.content,
                   raw: candidate
                 });
+                const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
+                await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
+                await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
               } catch (error) {
                 recordPublishFailure(`reply on "${candidate.postTitle}"`, error);
                 break;
               }
-              await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
               await venue.markNotificationsReadByPost(candidate.postId);
               performed.push(
                 `Replied to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`
@@ -609,7 +614,7 @@ export async function runHeartbeat(
               const pendingWrite = buildPendingWrite(candidate, decision);
               await persistState(addPendingWrite(state, pendingWrite));
               try {
-                await venue.publishAction({
+                const outcome = await venue.publishAction({
                   id: `comment:${postId}`,
                   venue: "moltbook",
                   type: "comment_on_post",
@@ -617,11 +622,13 @@ export async function runHeartbeat(
                   content: decision.content,
                   raw: candidate
                 });
+                const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
+                await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
+                await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
               } catch (error) {
                 recordPublishFailure(`comment on "${candidate.post.title}"`, error);
                 break;
               }
-              await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
               performed.push(`Commented on "${candidate.post.title}".`);
             }
             break;
@@ -633,7 +640,7 @@ export async function runHeartbeat(
               const pendingWrite = buildPendingWrite(candidate, decision);
               await persistState(addPendingWrite(state, pendingWrite));
               try {
-                await venue.publishAction({
+                const outcome = await venue.publishAction({
                   id: "create-post",
                   venue: "moltbook",
                   type: "create_post",
@@ -642,11 +649,13 @@ export async function runHeartbeat(
                   content: decision.content,
                   raw: candidate
                 });
+                const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
+                await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
+                await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
               } catch (error) {
                 recordPublishFailure(`post "${decision.title ?? "Untitled post"}"`, error);
                 break;
               }
-              await persistState(removePendingWrite(recoverPendingWrite(state, pendingWrite), pendingWrite.id));
               performed.push(`Posted "${decision.title}".`);
             }
             break;
@@ -810,6 +819,46 @@ function buildPendingWrite(candidate: WriteCandidate, decision: GeneratedWriteDe
         createdAt
       };
   }
+}
+
+function enrichPendingWriteWithOutcome(pendingWrite: PendingWrite, outcome: VenueOutcome): PendingWrite {
+  const outreachRef = enrichOutreachRef(pendingWrite.outreachRef, outcome);
+  if (outreachRef === pendingWrite.outreachRef) {
+    return pendingWrite;
+  }
+  return {
+    ...pendingWrite,
+    outreachRef
+  };
+}
+
+function enrichOutreachRef(
+  outreachRef: OutreachRef | undefined,
+  outcome: Pick<VenueOutcome, "remoteContentId" | "remoteContentUrl">
+): OutreachRef | undefined {
+  if (!outreachRef) {
+    return undefined;
+  }
+  const remoteContentId = outcome.remoteContentId ?? outreachRef.remoteContentId;
+  const remoteContentUrl = outcome.remoteContentUrl ?? outreachRef.remoteContentUrl;
+  if (remoteContentId === outreachRef.remoteContentId && remoteContentUrl === outreachRef.remoteContentUrl) {
+    return outreachRef;
+  }
+  return {
+    ...outreachRef,
+    remoteContentId,
+    remoteContentUrl
+  };
+}
+
+async function persistPublishedOutreachRef(
+  config: MoltbookRuntimeConfig,
+  outreachRef: OutreachRef | undefined
+): Promise<void> {
+  if (!outreachRef?.remoteContentId && !outreachRef?.remoteContentUrl) {
+    return;
+  }
+  await saveOutreachRefToAttributionStore(config.attributionDbPath, outreachRef).catch(() => undefined);
 }
 
 function addPendingWrite(state: OutreachAgentState, pendingWrite: PendingWrite): OutreachAgentState {

@@ -133,7 +133,7 @@ test("Moltbook venue provider delegates publish actions through the API", async 
   assert.deepEqual(calls, ["comment:post-1:comment-1:Useful reply."]);
   assert.equal(outcome.type, "posted");
   assert.equal(outcome.remoteContentId, "comment-42");
-  assert.equal(outcome.remoteContentUrl, "https://www.moltbook.com/posts/post-1");
+  assert.equal(outcome.remoteContentUrl, "https://www.moltbook.com/post/post-1");
 });
 
 test("Reddit venue provider returns review candidates and refuses publishing", async () => {

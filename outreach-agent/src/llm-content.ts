@@ -58,6 +58,13 @@ const MAX_POST_CONTENT_CHARS = 1_100;
 const MAX_REPLY_OR_COMMENT_CHARS = 700;
 const DUPLICATE_DRAFT_ERROR_PATTERN =
   /^Generated content is too similar to recent authored (?:history|artifact\b)/;
+const EXPLICIT_RESOURCE_REQUEST_PATTERNS = [
+  /\b(?:link|docs?|documentation|repo|repository|quickstart|guide|tutorial|walkthrough|example|sample|how[- ]to)\b.{0,24}\?/i,
+  /\b(?:can you|could you|would you|do you have|got|share|send|drop|post|show)\b.{0,40}\b(?:link|docs?|documentation|repo|repository|quickstart|guide|tutorial|walkthrough|example|sample)\b/i,
+  /\bhow\s+(?:do|would)\s+(?:i|we)\b/i,
+  /\bwhere\s+can\s+(?:i|we)\b.{0,24}\b(?:read|learn|find|get)\b/i,
+  /\b(?:looking for|need|want)\b.{0,24}\b(?:docs?|documentation|repo|repository|quickstart|guide|tutorial|walkthrough|example|sample)\b/i
+] as const;
 
 interface LlmReplyGateResponse {
   selectedCommentId: string;
@@ -446,6 +453,7 @@ function buildDraftSystemPrompt(
     BASE_PERSONALITY,
     "Follow the active prompt profile and layout instructions unless they conflict with safety rules.",
     "Ground claims only in the provided facts and repo snippets.",
+    "If no exact CTA URL is provided in the prompt, do not include or invent any link.",
     "Do not sound like docs, release notes, or a pitch deck.",
     "Do not lead with rewards unless the target is explicitly discussing rewards.",
     "Use at most two concrete product claims unless the target explicitly asks for more.",
@@ -559,7 +567,9 @@ function buildDraftUserPrompt(
           null,
           2
         )
-      : "No tracked CTA URL is required for this draft.",
+      : candidate.type === "create_post"
+        ? "No tracked CTA URL is required for this draft."
+        : "No link is allowed in this draft unless an exact tracked URL is provided.",
     "",
     "Recent authored history:",
     buildRecentHistorySummary(state),
@@ -686,7 +696,11 @@ function buildCandidateCtaLink(
   candidate: WriteCandidate,
   resolvedProfile: ResolvedPromptProfile
 ): CtaLink | undefined {
-  if (resolvedProfile.cta.requirement !== "required" || !resolvedProfile.cta.baseUrl) {
+  if (
+    resolvedProfile.cta.requirement === "forbidden" ||
+    !resolvedProfile.cta.baseUrl ||
+    !shouldGenerateCtaLink(candidate, resolvedProfile)
+  ) {
     return undefined;
   }
 
@@ -714,6 +728,28 @@ function buildCandidateCtaLink(
     placement: resolvedProfile.cta.placement,
     approvedDomains: resolvedProfile.cta.approvedDomains
   });
+}
+
+function shouldGenerateCtaLink(
+  candidate: WriteCandidate,
+  resolvedProfile: ResolvedPromptProfile
+): boolean {
+  if (resolvedProfile.actionType === "create_post") {
+    return true;
+  }
+
+  return targetExplicitlyRequestsResource(candidate);
+}
+
+function targetExplicitlyRequestsResource(candidate: WriteCandidate): boolean {
+  const sourceText =
+    candidate.type === "comment_on_post"
+      ? `${candidate.post.title}\n${candidate.post.content ?? candidate.post.content_preview ?? ""}`
+      : candidate.type === "reply_to_activity"
+        ? candidate.target.content
+        : "";
+
+  return EXPLICIT_RESOURCE_REQUEST_PATTERNS.some((pattern) => pattern.test(sourceText));
 }
 
 function applyCtaToContent(

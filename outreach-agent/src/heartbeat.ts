@@ -27,7 +27,9 @@ import {
   listReplyTargets,
   normalizeState,
   planHeartbeatActions,
+  replyParentKey,
   selectFollowCandidatesFromComments,
+  topLevelCommentParentKey,
   type EngagementSummary,
   type PendingWrite,
   type OutreachAgentState,
@@ -913,7 +915,7 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
     case "comment":
       return applyActionResult(state, {
         type: "comment",
-        commentId: `post:${pendingWrite.postId ?? pendingWrite.id}`,
+        commentId: topLevelCommentParentKey(pendingWrite.postId ?? pendingWrite.id),
         content: pendingWrite.content,
         targetSummary: pendingWrite.targetSummary,
         promptProfileId: pendingWrite.promptProfileId,
@@ -927,7 +929,7 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
     case "reply":
       return applyActionResult(state, {
         type: "comment",
-        commentId: pendingWrite.targetCommentId ?? pendingWrite.id,
+        commentId: replyParentKey(pendingWrite.targetCommentId ?? pendingWrite.id),
         content: pendingWrite.content,
         targetSummary: pendingWrite.targetSummary,
         replyToAuthor: pendingWrite.replyToAuthor,

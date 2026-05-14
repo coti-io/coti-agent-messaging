@@ -482,6 +482,156 @@ test("Moltbook CTA profile injects style layout and tracked URL into drafts", as
   }
 });
 
+test("Moltbook comments do not get a CTA unless the target explicitly asks for a resource", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-comment-no-cta-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const capturedMessages: ChatMessage[][] = [];
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    attributionCampaignId: "private_messaging",
+    agentId: "OutreachBot",
+    ctaBaseUrl: "https://example.com/agent-messaging",
+    ctaApprovedDomains: ["example.com"],
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+        capturedMessages.push([...messages]);
+        if (capturedMessages.length === 1) {
+          return {
+            selectedCandidateId: "A",
+            rationale: "Only one candidate exists."
+          } as T;
+        }
+
+        return {
+          selectedCandidateId: "A",
+          content: "The real issue is repeated counterparties, not profile aesthetics.",
+          rationale: "No resource request, so no link."
+        } as T;
+      }
+    }
+  };
+  const candidates: WriteCandidate[] = [
+    {
+      id: "comment:post-1",
+      type: "comment_on_post",
+      reason: "Add one sharp technical angle.",
+      post: {
+        id: "post-1",
+        title: "Identity theater is cheap",
+        content_preview: "Most systems confuse visibility with continuity.",
+        content: "Most systems confuse visibility with continuity."
+      }
+    }
+  ];
+  const factSheet: ProductFactSheet = {
+    claims: [
+      {
+        id: "private-bodies-public-routing",
+        headline: "Private message bodies, queryable routing",
+        detail: "Message bodies are encrypted while routing metadata stays public.",
+        sourcePaths: ["docs/overview.md"],
+        evidence: ["The message body is encrypted while routing metadata remains queryable."],
+        emphasis: "primary"
+      }
+    ],
+    liveSnapshot: {}
+  };
+
+  try {
+    const decision = await chooseAndDraftWriteAction(config, candidates, factSheet, createInitialState());
+
+    assert.equal(decision.ctaUrl, undefined);
+    assert.doesNotMatch(decision.content, /https?:\/\//i);
+    assert.match(String(capturedMessages[1]?.[1]?.content ?? ""), /No link is allowed in this draft/i);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("Moltbook replies can include a tracked CTA when the target explicitly asks for docs", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-reply-explicit-cta-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    attributionCampaignId: "private_messaging",
+    agentId: "OutreachBot",
+    ctaBaseUrl: "https://example.com/agent-messaging",
+    ctaApprovedDomains: ["example.com"],
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+        if (String(messages[0]?.content ?? "").includes("selecting exactly one authored Moltbook action")) {
+          return {
+            selectedCandidateId: "A",
+            rationale: "Only one candidate exists."
+          } as T;
+        }
+
+        const ctaMatch = String(messages[1]?.content ?? "").match(/https:\/\/example\.com\/agent-messaging[^\s"]+/);
+        return {
+          selectedCandidateId: "A",
+          content: `You want the concrete path, not another thesis. Start with the quickstart here: ${ctaMatch?.[0] ?? "https://example.com/agent-messaging"}`,
+          rationale: "The target explicitly asked for docs."
+        } as T;
+      }
+    }
+  };
+  const candidates: WriteCandidate[] = [
+    {
+      id: "reply:post-1:comment-1",
+      type: "reply_to_activity",
+      reason: "Answer the request directly.",
+      postId: "post-1",
+      postTitle: "Track records beat identity theater",
+      target: {
+        commentId: "comment-1",
+        postId: "post-1",
+        authorName: "BuilderBot",
+        content: "Fair point. Do you have docs or a quickstart link for how to wire this?"
+      }
+    }
+  ];
+  const factSheet: ProductFactSheet = {
+    claims: [
+      {
+        id: "private-bodies-public-routing",
+        headline: "Private message bodies, queryable routing",
+        detail: "Message bodies are encrypted while routing metadata stays public.",
+        sourcePaths: ["docs/overview.md"],
+        evidence: ["The message body is encrypted while routing metadata remains queryable."],
+        emphasis: "primary"
+      }
+    ],
+    liveSnapshot: {}
+  };
+
+  try {
+    const decision = await chooseAndDraftWriteAction(config, candidates, factSheet, createInitialState());
+
+    assert.match(decision.ctaUrl ?? "", /utm_source=moltbook/);
+    assert.match(decision.content, /https:\/\/example\.com\/agent-messaging/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("create_post drafts trim overlong title and content without dropping tracked CTA", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-trim-"));
   const packageRoot = path.resolve(import.meta.dirname, "..", "..");

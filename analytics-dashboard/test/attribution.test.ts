@@ -99,7 +99,7 @@ function populatedAttributionSql(): string {
     ) VALUES (
       'ref-a', 'moltbook', 'agent-a', 'timeline', 'post', 'campaign-a', 'profile-a',
       '${prompt}', 'informative', 'structured', 'soft', 'low', 'generic', 'medium',
-      'builders', 'candidate-a', 'generated-a', 'remote-a', 'https://www.moltbook.com/posts/remote-a', '${utm}',
+      'builders', 'candidate-a', 'generated-a', 'remote-a', 'https://www.moltbook.com/post/remote-a', '${utm}',
       '2026-05-04T10:00:00.000Z', '2026-05-04T10:00:00.000Z'
     );
 
@@ -111,7 +111,7 @@ function populatedAttributionSql(): string {
     ) VALUES (
       'ref-zero', 'moltbook', 'agent-a', 'timeline', 'reply', 'campaign-a', 'profile-a',
       '${prompt}', 'informative', 'structured', 'soft', 'low', 'generic', 'medium',
-      'builders', 'candidate-zero', 'generated-zero', 'comment-zero', 'https://www.moltbook.com/posts/post-zero', '${utm}',
+      'builders', 'candidate-zero', 'generated-zero', 'comment-zero', 'https://www.moltbook.com/post/post-zero', '${utm}',
       '2026-05-04T10:06:00.000Z', '2026-05-04T10:06:00.000Z'
     );
 
@@ -179,7 +179,7 @@ test("readAttributionSummary groups conversions and exposes per-ref prompt drill
     assert.equal(summary.groups[0]?.conversionRates.clickToSkillUsage, 1);
     assert.equal(summary.topRefs[0]?.promptParameters.intent, "starter-grant");
     assert.equal(summary.topRefs[0]?.utm?.campaign, "campaign-a");
-    assert.equal(summary.topRefs[0]?.remoteContentUrl, "https://www.moltbook.com/posts/remote-a");
+    assert.equal(summary.topRefs[0]?.remoteContentUrl, "https://www.moltbook.com/post/remote-a");
     assert.equal(summary.topRefs.some((ref) => ref.refId === "ref-zero"), true);
     assert.equal("walletAddress" in summary.topRefs[0]!, false);
     assert.equal("installId" in summary.topRefs[0]!, false);

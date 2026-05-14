@@ -164,12 +164,12 @@ test("shared sqlite attribution store backfills remote content identity on ref u
     await saveOutreachRefToAttributionStore(dbPath, {
       ...ref,
       remoteContentId: "remote-post-1",
-      remoteContentUrl: "https://www.moltbook.com/posts/remote-post-1"
+      remoteContentUrl: "https://www.moltbook.com/post/remote-post-1"
     });
 
     const stored = await readRemoteIdentity(dbPath, ref.id);
     assert.equal(stored.remoteContentId, "remote-post-1");
-    assert.equal(stored.remoteContentUrl, "https://www.moltbook.com/posts/remote-post-1");
+    assert.equal(stored.remoteContentUrl, "https://www.moltbook.com/post/remote-post-1");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

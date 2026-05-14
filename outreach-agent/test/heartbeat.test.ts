@@ -274,7 +274,7 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
         previousEngagementTotals?: { total?: number };
         nextEngagementTotals?: { total?: number };
       });
-    assert.deepEqual(savedState.repliedCommentIds?.includes("comment-newest"), true);
+    assert.deepEqual(savedState.repliedCommentIds?.includes("comment:comment-newest"), true);
     assert.equal((savedState.createdPostFingerprints?.length ?? 0) > 0, true);
     assert.equal((savedState.recentGeneratedArtifacts?.length ?? 0) >= 2, true);
     assert.equal(savedState.engagementTotals?.posts, 1);
@@ -1248,7 +1248,7 @@ test("heartbeat reconciles pending writes from remote profile and avoids duplica
     };
 
     assert.deepEqual(savedState.pendingWrites, []);
-    assert.equal(savedState.repliedCommentIds?.includes("comment-newest"), true);
+    assert.equal(savedState.repliedCommentIds?.includes("comment:comment-newest"), true);
     assert.equal(savedReport.status, "ok");
     assert.deepEqual(savedReport.errors, []);
     assert.deepEqual(savedReport.reconciledPendingWrites, [
@@ -1370,6 +1370,116 @@ test("heartbeat recovery preserves the original day for older replies", async ()
     assert.equal(savedState.dailyCommentCount, 0);
     assert.equal(savedState.dailyReplyCount, 0);
     assert.equal(savedState.lastCommentAt, "2026-03-15T13:49:00.000Z");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat does not comment twice on the same external post parent", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-comment-parent-dedupe-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false,
+    policy: {
+      commentLimitNewAgentPerDay: 20,
+      commentLimitEstablishedPerDay: 50,
+      postLimitNewAgentPerDay: 0,
+      postLimitEstablishedPerDay: 0
+    }
+  };
+  await writeFile(
+    config.statePath,
+    JSON.stringify(
+      {
+        ...createInitialState(),
+        repliedCommentIds: ["post:target-post"]
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  let createdCommentCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: [
+          {
+            id: "target-post",
+            title: "Private messaging needs stable counterparties",
+            content_preview: "SDK continuity matters more than profile theater for agent coordination.",
+            content: "SDK continuity matters more than profile theater for agent coordination.",
+            author_name: "SignalFoundry",
+            upvotes: 7
+          }
+        ]
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts/target-post/comments" && method === "POST") {
+      createdCommentCalls += 1;
+      throw new Error("duplicate top-level comment should not be created");
+    }
+
+    if (url.pathname === "/api/v1/posts/target-post/upvote" && method === "POST") {
+      return jsonResponse({ success: true });
+    }
+
+    if (/^\/api\/v1\/agents\/[^/]+\/follow$/.test(url.pathname) && method === "POST") {
+      return jsonResponse({ success: true });
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    const result = await runHeartbeat(config);
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      errors?: unknown[];
+      writeCandidates?: Array<{ id?: string }>;
+    };
+
+    assert.equal(createdCommentCalls, 0);
+    assert.equal(savedReport.writeCandidates?.some((entry) => entry.id === "comment:target-post"), false);
+    assert.deepEqual(savedReport.errors, []);
+    assert.match(result.summary, /Skipped|noop|heartbeat/i);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(tempDir, { recursive: true, force: true });

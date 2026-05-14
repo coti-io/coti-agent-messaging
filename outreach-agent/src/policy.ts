@@ -219,6 +219,22 @@ export function createInitialState(): OutreachAgentState {
   };
 }
 
+export function topLevelCommentParentKey(postId: string): string {
+  return `post:${postId}`;
+}
+
+export function replyParentKey(commentId: string): string {
+  return `comment:${commentId}`;
+}
+
+function hasHandledTopLevelCommentParent(handledParentIds: readonly string[], postId: string): boolean {
+  return handledParentIds.includes(topLevelCommentParentKey(postId));
+}
+
+function hasHandledReplyParent(handledParentIds: readonly string[], commentId: string): boolean {
+  return handledParentIds.includes(replyParentKey(commentId)) || handledParentIds.includes(commentId);
+}
+
 function createEmptyEngagementCounts(): EngagementCounts {
   return {
     posts: 0,
@@ -906,6 +922,7 @@ export function planHeartbeatActions(input: {
     return (
       Boolean(postId) &&
       !pendingCommentPostIds.has(postId!) &&
+      !hasHandledTopLevelCommentParent(state.repliedCommentIds, postId!) &&
       scorePost(post) >= 4 &&
       commentReadiness.allowed
     );
@@ -1041,7 +1058,7 @@ export function listReplyTargets(input: {
       }
 
       return (
-        !input.state.repliedCommentIds.includes(comment.id) &&
+        !hasHandledReplyParent(input.state.repliedCommentIds, comment.id) &&
         !pendingReplyTargetIds.has(comment.id) &&
         isReplyWorthyComment(comment, input.postTitle)
       );

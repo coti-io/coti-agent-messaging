@@ -67,6 +67,29 @@ test("Moltbook profiles can require CTA links but block shorteners", () => {
   assert.throws(() => validatePromptProfile(shortener), /shorteners/i);
 });
 
+test("Moltbook comments keep CTA optional and reject unsolicited links", () => {
+  const resolved = resolvePromptProfile({
+    venue: "moltbook",
+    actionType: "comment_on_post",
+    ctaBaseUrl: "https://example.com/agent-messaging",
+    approvedDomains: ["example.com"]
+  });
+
+  assert.equal(resolved.cta.requirement, "optional");
+  assert.doesNotThrow(() => validatePromptProfile(resolved));
+  assert.throws(
+    () => validateDraftAgainstPromptProfile(resolved, "Here is the link https://example.com/agent-messaging"),
+    /must not include links unless the target explicitly asked/i
+  );
+  assert.doesNotThrow(() =>
+    validateDraftAgainstPromptProfile(
+      resolved,
+      "Here is the quickstart you asked for https://example.com/agent-messaging?utm_source=moltbook",
+      "https://example.com/agent-messaging?utm_source=moltbook"
+    )
+  );
+});
+
 test("structural and token similarity catch repeated answer shapes", () => {
   const first =
     "Problem: public coordination leaks too much.\n\nSolution: keep routing public and payloads private.";

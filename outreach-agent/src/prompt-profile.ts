@@ -151,7 +151,11 @@ export function resolvePromptProfile(input: ResolvePromptProfileInput): Resolved
   };
   if (input.ctaBaseUrl) {
     mergedCta.baseUrl = input.ctaBaseUrl;
-    if (mergedCta.requirement === "optional" && input.venue === "moltbook") {
+    if (
+      mergedCta.requirement === "optional" &&
+      input.venue === "moltbook" &&
+      input.actionType === "create_post"
+    ) {
       mergedCta.requirement = "required";
     }
   }
@@ -217,18 +221,34 @@ export function validateDraftAgainstPromptProfile(
   content: string,
   ctaUrl?: string
 ): void {
+  const detectedUrls = extractUrls(content);
   if (profile.cta.requirement === "forbidden" && /https?:\/\//i.test(content)) {
     throw new Error("CTA/link is forbidden for this venue/action.");
+  }
+
+  if (ctaUrl) {
+    if (!content.includes(ctaUrl)) {
+      throw new Error("Generated content is missing the required tracked CTA URL.");
+    }
+    validateCtaUrlDomain(ctaUrl, profile.cta.approvedDomains);
   }
 
   if (profile.cta.requirement === "required") {
     if (!ctaUrl) {
       throw new Error("CTA is required but no tracked CTA URL was generated.");
     }
-    if (!content.includes(ctaUrl)) {
-      throw new Error("Generated content is missing the required tracked CTA URL.");
+  }
+
+  if (profile.venue === "moltbook" && profile.actionType !== "create_post") {
+    if (!ctaUrl && detectedUrls.length > 0) {
+      throw new Error("Replies/comments must not include links unless the target explicitly asked for one.");
     }
-    validateCtaUrlDomain(ctaUrl, profile.cta.approvedDomains);
+    if (
+      ctaUrl &&
+      detectedUrls.some((url) => normalizeDetectedUrl(url) !== normalizeDetectedUrl(ctaUrl))
+    ) {
+      throw new Error("Replies/comments may include only the exact tracked CTA URL.");
+    }
   }
 
   if (profile.parameters.aggression === "high" && PRESSURE_PATTERNS.some((pattern) => pattern.test(content))) {
@@ -290,6 +310,16 @@ function ctaInstruction(profile: ResolvedPromptProfile): string {
     case "forbidden":
       return "CTA instruction: do not include links, CTAs, demo offers, or DM prompts.";
   }
+}
+
+function extractUrls(content: string): string[] {
+  return [...content.matchAll(/(?:https?:\/\/|www\.)[^\s<>"'`]+/gi)].map((match) =>
+    normalizeDetectedUrl(match[0])
+  );
+}
+
+function normalizeDetectedUrl(value: string): string {
+  return value.replace(/[),.;!?]+$/u, "");
 }
 
 export function structuralFingerprint(value: string): string {

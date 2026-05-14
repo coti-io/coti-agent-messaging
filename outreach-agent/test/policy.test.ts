@@ -88,6 +88,36 @@ test("heartbeat planning prioritizes replies before outreach posts", () => {
   assert.equal(actions.some((action) => action.type === "create_post"), false);
 });
 
+test("heartbeat planning skips external posts we already commented on", () => {
+  const actions = planHeartbeatActions({
+    home: {
+      your_account: { name: "OutreachBot" },
+      activity_on_your_posts: [],
+      your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+      posts_from_accounts_you_follow: { posts: [] }
+    },
+    exploreFeed: {
+      posts: [
+        {
+          id: "post-2",
+          title: "Private coordination needs continuity",
+          content_preview: "Track record only matters if counterparties persist.",
+          author_name: "SignalFoundry",
+          upvotes: 7
+        }
+      ]
+    },
+    state: {
+      ...createInitialState(),
+      repliedCommentIds: ["post:post-2"]
+    },
+    factSheet,
+    now: new Date("2026-03-11T12:00:00.000Z")
+  });
+
+  assert.equal(actions.some((action) => action.type === "comment_on_post"), false);
+});
+
 test("recent posts block new post creation during cooldown", () => {
   const state: OutreachAgentState = {
     ...createInitialState(),

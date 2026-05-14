@@ -227,7 +227,7 @@ function buildMoltbookPostUrl(postId: string | undefined): string | undefined {
   if (!postId) {
     return undefined;
   }
-  return `${MOLTBOOK_WEB_BASE_URL}/posts/${encodeURIComponent(postId)}`;
+  return `${MOLTBOOK_WEB_BASE_URL}/post/${encodeURIComponent(postId)}`;
 }
 
 function normalizeMoltbookUrl(value: string | undefined): string | undefined {

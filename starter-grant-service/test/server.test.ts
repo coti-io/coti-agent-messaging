@@ -465,3 +465,91 @@ test("public attribution events reject non-click traffic when auth is required",
     await service.close();
   }
 });
+
+test("grant routes stay public while analytics routes require auth", async () => {
+  const wallet = Wallet.createRandom();
+  const service = await startTestServer({
+    authToken: "secret-token",
+    attributionDbPath: path.join(os.tmpdir(), `starter-grant-auth-split-${Date.now()}-${Math.random()}.sqlite`)
+  }, {
+    funder: {
+      async getFundingAvailability() {
+        return {
+          funderAddress: "0xfunder",
+          onChainBalanceWei: "1000",
+          reservedPendingAmountWei: "0",
+          availableBalanceWei: "1000",
+          estimatedGasCostWei: "1",
+          requiredBalanceWei: "26",
+          hasSufficientBalance: true
+        };
+      },
+      async createStarterGrantTransfer() {
+        return {
+          transactionHash: "0xgrant",
+          waitForConfirmation: async () => undefined
+        };
+      }
+    }
+  });
+
+  try {
+    const challengeResponse = await fetch(`${service.baseUrl}/challenge`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        walletAddress: wallet.address,
+        installId: "install-public-grant"
+      })
+    });
+    assert.equal(challengeResponse.status, 200);
+    const challenge = await challengeResponse.json();
+
+    const statusResponse = await fetch(`${service.baseUrl}/status`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        walletAddress: wallet.address,
+        installId: "install-public-grant"
+      })
+    });
+    assert.equal(statusResponse.status, 200);
+
+    const claimPayload = String(challenge.claimPayload);
+    const claimResponse = await fetch(`${service.baseUrl}/claim`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        challengeId: challenge.challengeId,
+        walletAddress: wallet.address,
+        installId: "install-public-grant",
+        challengeAnswer: solveChallengePrompt(String(challenge.prompt)),
+        claimPayload,
+        signature: await wallet.signMessage(claimPayload)
+      })
+    });
+    assert.equal(claimResponse.status, 200);
+
+    const registerRefResponse = await fetch(`${service.baseUrl}/attribution/ref`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        outreachRef: buildOutreachRef("unauthorized-ref")
+      })
+    });
+    assert.equal(registerRefResponse.status, 401);
+
+    const summaryResponse = await fetch(`${service.baseUrl}/attribution/summary`);
+    assert.equal(summaryResponse.status, 401);
+  } finally {
+    await service.close();
+  }
+});

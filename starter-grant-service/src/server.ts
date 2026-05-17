@@ -383,11 +383,6 @@ export async function startStarterGrantService(
         return;
       }
 
-      if (!isAuthorized) {
-        writeJsonResponse(response, jsonResponse(401, { error: "Unauthorized starter grant request." }));
-        return;
-      }
-
       if (request.method === "POST" && url.pathname === config.challengeRoute) {
         requireJsonRequest(request);
         const rateLimit = await consumeStarterGrantRateLimit(store, {
@@ -528,6 +523,10 @@ export async function startStarterGrantService(
       }
 
       if (request.method === "POST" && url.pathname === "/attribution/ref") {
+        if (!isAuthorized) {
+          writeJsonResponse(response, jsonResponse(401, { error: "Unauthorized starter grant request." }));
+          return;
+        }
         requireJsonRequest(request);
         const body = await readJsonBody(request, config.maxBodyBytes);
         const outreachRef = parseOptionalOutreachRef(body.outreachRef);
@@ -545,6 +544,10 @@ export async function startStarterGrantService(
       }
 
       if (request.method === "GET" && url.pathname === "/attribution/summary") {
+        if (!isAuthorized) {
+          writeJsonResponse(response, jsonResponse(401, { error: "Unauthorized starter grant request." }));
+          return;
+        }
         if (!attributionStore) {
           writeJsonResponse(
             response,

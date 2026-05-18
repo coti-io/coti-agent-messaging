@@ -34,6 +34,9 @@ export interface StarterGrantOutreachRef {
   generatedContentId: string;
   remoteContentId?: string;
   remoteContentUrl?: string;
+  attributionMode?: string;
+  publicValueDeliveredFirst?: boolean;
+  privateMessageEscalationReason?: string;
   utm?: Record<string, unknown>;
   createdAt?: string;
 }
@@ -61,6 +64,9 @@ export interface StarterGrantAttributionSummary {
     promptProfileId: string;
     messageStyle: string;
     layout: string;
+    attributionMode: string;
+    publicValueDeliveredFirst: boolean;
+    privateMessageEscalationReason?: string;
     clicks: number;
     grantChallenges: number;
     grantClaimAttempts: number;
@@ -237,6 +243,9 @@ export class StarterGrantAttributionStore {
         prompt_profile_id: string;
         message_style: string;
         layout: string;
+        attribution_mode: string;
+        public_value_delivered_first: number | null;
+        private_message_escalation_reason: string | null;
         clicks: number;
         grant_challenges: number;
         grant_claim_attempts: number;
@@ -252,7 +261,10 @@ export class StarterGrantAttributionStore {
             COALESCE(r.campaign_id, 'unresolved') || ':' ||
             COALESCE(r.prompt_profile_id, 'unresolved') || ':' ||
             COALESCE(r.message_style, 'unresolved') || ':' ||
-            COALESCE(r.layout, 'unresolved') AS key,
+            COALESCE(r.layout, 'unresolved') || ':' ||
+            COALESCE(r.attribution_mode, 'tracked_link') || ':' ||
+            CASE COALESCE(r.public_value_delivered_first, 1) WHEN 1 THEN 'public_first' ELSE 'private_first' END || ':' ||
+            COALESCE(r.private_message_escalation_reason, 'none') AS key,
             COUNT(DISTINCT r.ref_id) AS ref_count,
             SUM(CASE WHEN r.ref_id IS NULL THEN 1 ELSE 0 END) AS unresolved_event_count,
             COALESCE(r.venue, e.venue, 'unresolved') AS venue,
@@ -260,6 +272,9 @@ export class StarterGrantAttributionStore {
             COALESCE(r.prompt_profile_id, 'unresolved') AS prompt_profile_id,
             COALESCE(r.message_style, 'unresolved') AS message_style,
             COALESCE(r.layout, 'unresolved') AS layout,
+          COALESCE(r.attribution_mode, 'tracked_link') AS attribution_mode,
+          COALESCE(r.public_value_delivered_first, 1) AS public_value_delivered_first,
+          r.private_message_escalation_reason AS private_message_escalation_reason,
             SUM(CASE WHEN e.event_type = 'click' THEN 1 ELSE 0 END) AS clicks,
             SUM(CASE WHEN e.event_type = 'grant_challenge' THEN 1 ELSE 0 END) AS grant_challenges,
             SUM(CASE WHEN e.event_type = 'grant_claim_attempted' THEN 1 ELSE 0 END) AS grant_claim_attempts,
@@ -271,7 +286,7 @@ export class StarterGrantAttributionStore {
           FROM attribution_events e
           LEFT JOIN outreach_refs r ON r.ref_id = e.ref_id
           ${where}
-          GROUP BY 1, 4, 5, 6, 7, 8
+          GROUP BY 1, 4, 5, 6, 7, 8, 9, 10, 11
           ORDER BY skill_usages DESC, private_messages_received DESC, clicks DESC, key ASC
         `,
         params
@@ -288,6 +303,9 @@ export class StarterGrantAttributionStore {
           promptProfileId: row.prompt_profile_id,
           messageStyle: row.message_style,
           layout: row.layout,
+          attributionMode: row.attribution_mode,
+          publicValueDeliveredFirst: Number(row.public_value_delivered_first ?? 1) !== 0,
+          privateMessageEscalationReason: row.private_message_escalation_reason ?? undefined,
           clicks: Number(row.clicks) || 0,
           grantChallenges: Number(row.grant_challenges) || 0,
           grantClaimAttempts: Number(row.grant_claim_attempts) || 0,
@@ -335,6 +353,9 @@ async function ensureAttributionSchema(db: SqliteDatabase): Promise<void> {
       generated_content_id TEXT NOT NULL,
       remote_content_id TEXT,
       remote_content_url TEXT,
+      attribution_mode TEXT,
+      public_value_delivered_first INTEGER,
+      private_message_escalation_reason TEXT,
       utm_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -359,6 +380,9 @@ async function ensureAttributionSchema(db: SqliteDatabase): Promise<void> {
       ON attribution_events(event_type, created_at);
   `);
   await ensureColumn(db, "outreach_refs", "remote_content_url", "TEXT");
+  await ensureColumn(db, "outreach_refs", "attribution_mode", "TEXT");
+  await ensureColumn(db, "outreach_refs", "public_value_delivered_first", "INTEGER");
+  await ensureColumn(db, "outreach_refs", "private_message_escalation_reason", "TEXT");
 }
 
 async function upsertOutreachRef(db: SqliteDatabase, ref: StarterGrantOutreachRef): Promise<void> {
@@ -386,13 +410,25 @@ async function upsertOutreachRef(db: SqliteDatabase, ref: StarterGrantOutreachRe
         generated_content_id,
         remote_content_id,
         remote_content_url,
+        attribution_mode,
+        public_value_delivered_first,
+        private_message_escalation_reason,
         utm_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(ref_id) DO UPDATE SET
         remote_content_id = COALESCE(excluded.remote_content_id, outreach_refs.remote_content_id),
         remote_content_url = COALESCE(excluded.remote_content_url, outreach_refs.remote_content_url),
+        attribution_mode = COALESCE(excluded.attribution_mode, outreach_refs.attribution_mode),
+        public_value_delivered_first = COALESCE(
+          excluded.public_value_delivered_first,
+          outreach_refs.public_value_delivered_first
+        ),
+        private_message_escalation_reason = COALESCE(
+          excluded.private_message_escalation_reason,
+          outreach_refs.private_message_escalation_reason
+        ),
         utm_json = COALESCE(excluded.utm_json, outreach_refs.utm_json),
         updated_at = excluded.updated_at
     `,
@@ -416,6 +452,9 @@ async function upsertOutreachRef(db: SqliteDatabase, ref: StarterGrantOutreachRe
       ref.generatedContentId,
       ref.remoteContentId ?? null,
       ref.remoteContentUrl ?? null,
+      ref.attributionMode ?? null,
+      ref.publicValueDeliveredFirst === undefined ? null : ref.publicValueDeliveredFirst ? 1 : 0,
+      ref.privateMessageEscalationReason ?? null,
       ref.utm ? JSON.stringify(ref.utm) : null,
       ref.createdAt ?? now,
       now

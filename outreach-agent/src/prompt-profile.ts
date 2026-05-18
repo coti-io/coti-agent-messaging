@@ -72,6 +72,12 @@ export interface ResolvedPromptProfile {
   warnings: string[];
 }
 
+export interface ProductSpecificFollowUpPolicyInput {
+  venue: OutreachVenue;
+  explicitInterest: boolean;
+  publicValueDeliveredFirst: boolean;
+}
+
 export interface ResolvePromptProfileInput {
   venue: OutreachVenue;
   actionType: OutreachActionType;
@@ -109,6 +115,34 @@ export const DEFAULT_PROMPT_PROFILE: PromptProfile = {
   cta: {
     requirement: "optional",
     placement: "end"
+  },
+  venueOverrides: {
+    reddit: {
+      intent: "educate",
+      technicalDepth: "practical",
+      tone: "operator",
+      messageStyle: "informative",
+      layout: "question_answer",
+      ctaStyle: "none",
+      promotionLevel: "none",
+      productSpecificity: "generic_category",
+      rewardEmphasis: "none",
+      cta: {
+        requirement: "forbidden"
+      }
+    }
+  },
+  actionOverrides: {
+    reply_to_activity: {
+      intent: "answer_objection",
+      layout: "problem_solution",
+      messageStyle: "informative"
+    },
+    comment_on_post: {
+      intent: "educate",
+      layout: "question_answer",
+      messageStyle: "informative"
+    }
   }
 };
 
@@ -284,6 +318,38 @@ export function promptProfileToPromptText(profile: ResolvedPromptProfile): strin
     layoutInstruction(profile.parameters.layout),
     ctaInstruction(profile)
   ].join("\n");
+}
+
+export function canUseProductSpecificFollowUp(
+  input: ProductSpecificFollowUpPolicyInput
+): { allowed: boolean; reason: string } {
+  if (input.venue !== "reddit") {
+    return {
+      allowed: input.publicValueDeliveredFirst,
+      reason: input.publicValueDeliveredFirst
+        ? "Product-specific follow-up is allowed after the public answer delivered value first."
+        : "Deliver public value before switching into product-specific follow-up."
+    };
+  }
+
+  if (!input.publicValueDeliveredFirst) {
+    return {
+      allowed: false,
+      reason: "Reddit follow-up stays generic until the public answer is already useful on its own."
+    };
+  }
+
+  if (!input.explicitInterest) {
+    return {
+      allowed: false,
+      reason: "Reddit follow-up cannot become product-specific until the user explicitly asks for a tool, product, or implementation reference."
+    };
+  }
+
+  return {
+    allowed: true,
+    reason: "The user explicitly asked for product/tool specifics after receiving a useful public answer."
+  };
 }
 
 export function layoutInstruction(layout: LayoutVariant): string {

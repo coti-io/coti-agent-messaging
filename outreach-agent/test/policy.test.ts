@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   MAX_OUTREACH_STATE_BYTES,
+  assessPrivateMessageEscalation,
   applyActionResult,
   canCreatePost,
   commentMinimumIntervalMs,
@@ -86,6 +87,25 @@ test("heartbeat planning prioritizes replies before outreach posts", () => {
 
   assert.equal(actions[0]?.type, "reply_to_activity");
   assert.equal(actions.some((action) => action.type === "create_post"), false);
+});
+
+test("private-message escalation stays off when a public answer is enough", () => {
+  const assessment = assessPrivateMessageEscalation({
+    text: "How should I structure private agent messaging without exposing payloads publicly?"
+  });
+
+  assert.equal(assessment.shouldEscalate, false);
+  assert.equal(assessment.requiresPublicReplyFirst, true);
+});
+
+test("private-message escalation allows sensitive account debugging", () => {
+  const assessment = assessPrivateMessageEscalation({
+    text: "My account is failing after I rotate the API key and now the logs show a session mismatch."
+  });
+
+  assert.equal(assessment.shouldEscalate, true);
+  assert.equal(assessment.reason, "credentials_or_secrets");
+  assert.equal(assessment.requiresPublicReplyFirst, false);
 });
 
 test("heartbeat planning skips external posts we already commented on", () => {

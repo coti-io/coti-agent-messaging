@@ -279,3 +279,37 @@ test("attribution summary groups clicks and private messages by style and layout
   assert.equal(summary.groups[0]?.messageStyle, "technical");
   assert.equal(summary.groups[0]?.layout, "regular_paragraph");
 });
+
+test("manual no-link refs preserve attribution mode and PM escalation metadata", () => {
+  const ref = buildOutreachRef({
+    venue: "reddit",
+    contentType: "reply",
+    promptProfileId: "reddit-value-first",
+    parameters: {
+      ...DEFAULT_PROMPT_PARAMETERS,
+      messageStyle: "informative",
+      layout: "question_answer"
+    },
+    campaignId: "private_messaging",
+    candidateId: "reddit-thread-1",
+    generatedContentId: "reddit-reply-1",
+    attributionMode: "manual_ref",
+    publicValueDeliveredFirst: true,
+    privateMessageEscalationReason: "privacy_sensitive",
+    timestamp: new Date("2026-05-10T08:00:00.000Z")
+  });
+
+  assert.equal(ref.attributionMode, "manual_ref");
+  assert.equal(ref.publicValueDeliveredFirst, true);
+  assert.equal(ref.privateMessageEscalationReason, "privacy_sensitive");
+
+  const summary = summarizeAttribution({
+    refs: [ref],
+    events: [buildAttributionEvent({ refId: ref.id, type: "private_message_received" })],
+    now: new Date("2026-05-10T09:00:00.000Z")
+  });
+
+  assert.equal(summary.groups[0]?.attributionMode, "manual_ref");
+  assert.equal(summary.groups[0]?.privateMessageEscalationReason, "privacy_sensitive");
+  assert.equal(summary.groups[0]?.publicValueDeliveredFirst, true);
+});

@@ -99,6 +99,20 @@ export interface OutreachAgentState {
   engagementTotals: EngagementCounts;
 }
 
+export type PrivateMessageEscalationReason =
+  | "user_requested"
+  | "credentials_or_secrets"
+  | "privacy_sensitive"
+  | "account_specific"
+  | "complex_troubleshooting";
+
+export interface PrivateMessageEscalationAssessment {
+  shouldEscalate: boolean;
+  reason?: PrivateMessageEscalationReason;
+  requiresPublicReplyFirst: boolean;
+  explanation: string;
+}
+
 export const MAX_OUTREACH_STATE_BYTES = 64 * 1024;
 const MAX_UPVOTED_POST_IDS = 250;
 const MAX_FOLLOWED_AGENT_NAMES = 100;
@@ -160,6 +174,52 @@ const REPLY_OVERLAP_STOP_WORDS = new Set([
   "you",
   "your"
 ]);
+const PM_USER_REQUEST_PATTERNS = [
+  /\b(?:dm|pm|message)\b.{0,16}\b(?:me|you)\b/i,
+  /\btake (?:this|it) (?:to|into) (?:dm|pm|message)s?\b/i,
+  /\bcan (?:i|we) (?:dm|pm|message)\b/i
+] as const;
+const PM_CREDENTIAL_OR_SECRET_PATTERNS = [
+  /\bapi[- ]?key\b/i,
+  /\bprivate key\b/i,
+  /\bseed phrase\b/i,
+  /\bmnemonic\b/i,
+  /\bsecret\b/i,
+  /\btoken\b.{0,16}\bleak|leaked\b/i,
+  /\bcredential(?:s)?\b/i
+] as const;
+const PM_PRIVACY_PATTERNS = [
+  /\bprivacy-sensitive\b/i,
+  /\bprivate\b.{0,24}\bdetails?\b/i,
+  /\bconfidential\b/i,
+  /\bsecurity incident\b/i,
+  /\bbreach\b/i,
+  /\bwallet address\b/i,
+  /\bpii\b/i
+] as const;
+const PM_ACCOUNT_SPECIFIC_PATTERNS = [
+  /\bmy account\b/i,
+  /\bour account\b/i,
+  /\btenant\b/i,
+  /\bworkspace\b/i,
+  /\buser id\b/i,
+  /\binstall id\b/i,
+  /\bsession id\b/i,
+  /\btx hash\b/i,
+  /\border id\b/i
+] as const;
+const PM_COMPLEX_TROUBLESHOOTING_PATTERNS = [
+  /\bdebug\b/i,
+  /\btroubleshoot(?:ing)?\b/i,
+  /\blog(?:s)?\b/i,
+  /\bstack trace\b/i,
+  /\brepro(?:duction)?\b/i,
+  /\bconfig(?:uration)?\b/i,
+  /\btrace\b/i,
+  /\berror\b/i,
+  /\bfailing\b/i,
+  /\bdoes not work\b/i
+] as const;
 
 export type PlannedAction =
   | {
@@ -194,6 +254,66 @@ export type PlannedAction =
       type: "noop";
       reason: string;
     };
+
+export function assessPrivateMessageEscalation(input: {
+  text: string;
+  userRequestedPrivateReply?: boolean;
+}): PrivateMessageEscalationAssessment {
+  const text = input.text.trim();
+  const userRequestedPrivateReply =
+    input.userRequestedPrivateReply ?? PM_USER_REQUEST_PATTERNS.some((pattern) => pattern.test(text));
+  if (userRequestedPrivateReply) {
+    return {
+      shouldEscalate: true,
+      reason: "user_requested",
+      requiresPublicReplyFirst: false,
+      explanation: "The user explicitly asked to move the conversation into a private channel."
+    };
+  }
+
+  if (PM_CREDENTIAL_OR_SECRET_PATTERNS.some((pattern) => pattern.test(text))) {
+    return {
+      shouldEscalate: true,
+      reason: "credentials_or_secrets",
+      requiresPublicReplyFirst: false,
+      explanation: "The thread references credentials, secrets, or other details that should not stay public."
+    };
+  }
+
+  if (PM_ACCOUNT_SPECIFIC_PATTERNS.some((pattern) => pattern.test(text))) {
+    return {
+      shouldEscalate: true,
+      reason: "account_specific",
+      requiresPublicReplyFirst: true,
+      explanation: "The user appears to need account-specific investigation rather than a generic public answer."
+    };
+  }
+
+  const troubleshootingSignals = PM_COMPLEX_TROUBLESHOOTING_PATTERNS.filter((pattern) => pattern.test(text)).length;
+  if (troubleshootingSignals >= 2) {
+    return {
+      shouldEscalate: true,
+      reason: "complex_troubleshooting",
+      requiresPublicReplyFirst: true,
+      explanation: "The thread looks like multi-step troubleshooting that may need logs or iterative debugging."
+    };
+  }
+
+  if (PM_PRIVACY_PATTERNS.some((pattern) => pattern.test(text))) {
+    return {
+      shouldEscalate: true,
+      reason: "privacy_sensitive",
+      requiresPublicReplyFirst: true,
+      explanation: "The user is asking about sensitive details that are safer to handle privately after a useful public answer."
+    };
+  }
+
+  return {
+    shouldEscalate: false,
+    requiresPublicReplyFirst: true,
+    explanation: "A public answer should come first because the thread does not show a clear private-message need."
+  };
+}
 
 export interface ReplyTarget {
   commentId: string;

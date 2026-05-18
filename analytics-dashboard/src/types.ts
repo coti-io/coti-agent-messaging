@@ -102,6 +102,9 @@ export interface AttributionGroup {
   promptProfileId: string;
   messageStyle: string;
   layout: string;
+  attributionMode: string;
+  publicValueDeliveredFirst: boolean;
+  privateMessageEscalationReason?: string;
   ctaStyle?: string;
   promotionLevel?: string;
   rewardEmphasis?: string;
@@ -121,6 +124,9 @@ export interface AttributionRefDetail {
   promptParameters: Record<string, unknown>;
   messageStyle: string;
   layout: string;
+  attributionMode?: string;
+  publicValueDeliveredFirst?: boolean;
+  privateMessageEscalationReason?: string;
   ctaStyle?: string;
   promotionLevel?: string;
   productSpecificity?: string;
@@ -146,5 +152,16 @@ export interface AttributionSummary {
   totals: AttributionTotals;
   conversionRates: AttributionConversionRates;
   groups: AttributionGroup[];
+  attributionModes?: Array<{
+    mode: string;
+    totals: AttributionTotals;
+    conversionRates: AttributionConversionRates;
+  }>;
+  privateMessageReasons?: Array<{
+    reason: string;
+    publicValueDeliveredFirst: boolean;
+    totals: AttributionTotals;
+    conversionRates: AttributionConversionRates;
+  }>;
   topRefs: AttributionRefDetail[];
 }

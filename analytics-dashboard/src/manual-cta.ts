@@ -15,6 +15,9 @@ export interface ManualRefBuilderInput {
   audience?: string;
   label?: string;
   utmMedium?: string;
+  attributionMode?: "tracked_link" | "manual_ref" | "inferred";
+  publicValueDeliveredFirst?: boolean;
+  privateMessageEscalationReason?: string;
 }
 
 export interface ManualOutreachRef {
@@ -34,6 +37,9 @@ export interface ManualOutreachRef {
   audience?: string;
   candidateId: string;
   generatedContentId: string;
+  attributionMode: "tracked_link" | "manual_ref" | "inferred";
+  publicValueDeliveredFirst: boolean;
+  privateMessageEscalationReason?: string;
   utm: Record<string, string>;
   createdAt: string;
 }
@@ -102,6 +108,9 @@ export function buildManualOutreachRef(
   const audience = normalizeOptional(input.audience);
   const label = normalizeOptional(input.label);
   const utmMedium = normalizeOptional(input.utmMedium) ?? "manual_outreach";
+  const attributionMode = input.attributionMode ?? "manual_ref";
+  const publicValueDeliveredFirst = input.publicValueDeliveredFirst ?? true;
+  const privateMessageEscalationReason = normalizeOptional(input.privateMessageEscalationReason);
   const createdAt = now.toISOString();
 
   const venueSlug = slugify(venue, "channel");
@@ -129,7 +138,10 @@ export function buildManualOutreachRef(
       promotionLevel,
       productSpecificity,
       rewardEmphasis,
-      audience
+      audience,
+      attributionMode,
+      publicValueDeliveredFirst,
+      privateMessageEscalationReason
     },
     messageStyle,
     layout,
@@ -138,6 +150,9 @@ export function buildManualOutreachRef(
     productSpecificity,
     rewardEmphasis,
     audience,
+    attributionMode,
+    publicValueDeliveredFirst,
+    privateMessageEscalationReason,
     candidateId: `manual-${contentType}-${token}`,
     generatedContentId: `${labelSlug}_${token}`,
     utm: {

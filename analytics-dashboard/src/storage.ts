@@ -329,6 +329,65 @@ function attributionTotalsFromRow(row: Partial<Record<keyof AttributionTotals, u
   };
 }
 
+function addTotals(target: AttributionTotals, input: AttributionTotals): void {
+  target.refs += input.refs;
+  target.clicks += input.clicks;
+  target.grantChallenges += input.grantChallenges;
+  target.grantClaimAttempts += input.grantClaimAttempts;
+  target.grantClaimsQueued += input.grantClaimsQueued;
+  target.grantClaimsSucceeded += input.grantClaimsSucceeded;
+  target.grantClaimsFailed += input.grantClaimsFailed;
+  target.privateMessagesReceived += input.privateMessagesReceived;
+  target.skillUsages += input.skillUsages;
+  target.unresolvedEvents += input.unresolvedEvents;
+}
+
+function summarizeModeBreakdown(
+  groups: Array<{ mode: string; totals: AttributionTotals }>
+): Array<{ mode: string; totals: AttributionTotals; conversionRates: AttributionConversionRates }> {
+  const totalsByMode = new Map<string, AttributionTotals>();
+  for (const group of groups) {
+    const current = totalsByMode.get(group.mode) ?? emptyAttributionTotals();
+    addTotals(current, group.totals);
+    totalsByMode.set(group.mode, current);
+  }
+  return [...totalsByMode.entries()].map(([mode, totals]) => ({
+    mode,
+    totals,
+    conversionRates: rates(totals)
+  }));
+}
+
+function summarizePrivateMessageReasons(
+  groups: Array<{
+    reason: string;
+    publicValueDeliveredFirst: boolean;
+    totals: AttributionTotals;
+  }>
+): Array<{
+  reason: string;
+  publicValueDeliveredFirst: boolean;
+  totals: AttributionTotals;
+  conversionRates: AttributionConversionRates;
+}> {
+  const totalsByReason = new Map<string, AttributionTotals>();
+  for (const group of groups) {
+    const key = `${group.reason}:${group.publicValueDeliveredFirst ? "public_first" : "private_first"}`;
+    const current = totalsByReason.get(key) ?? emptyAttributionTotals();
+    addTotals(current, group.totals);
+    totalsByReason.set(key, current);
+  }
+  return [...totalsByReason.entries()].map(([key, totals]) => {
+    const [reason, publicValue] = key.split(":");
+    return {
+      reason,
+      publicValueDeliveredFirst: publicValue === "public_first",
+      totals,
+      conversionRates: rates(totals)
+    };
+  });
+}
+
 export function emptyAttributionSummary(databasePath?: string, error?: string): AttributionSummary {
   const totals = emptyAttributionTotals();
   return {
@@ -339,6 +398,8 @@ export function emptyAttributionSummary(databasePath?: string, error?: string): 
     totals,
     conversionRates: rates(totals),
     groups: [],
+    attributionModes: [],
+    privateMessageReasons: [],
     topRefs: []
   };
 }
@@ -411,6 +472,9 @@ export async function readAttributionSummary(
       promptProfileId: string;
       messageStyle: string;
       layout: string;
+      attributionMode: string;
+      publicValueDeliveredFirst: number | null;
+      privateMessageEscalationReason: string | null;
       ctaStyle: string | null;
       promotionLevel: string | null;
       rewardEmphasis: string | null;
@@ -426,12 +490,18 @@ export async function readAttributionSummary(
       unresolvedEvents: number;
     }>(`
       SELECT
-        r.venue || ':' || r.campaign_id || ':' || r.prompt_profile_id || ':' || r.message_style || ':' || r.layout || ':' || COALESCE(r.cta_style, '') AS key,
+        r.venue || ':' || r.campaign_id || ':' || r.prompt_profile_id || ':' || r.message_style || ':' || r.layout || ':' ||
+        COALESCE(r.attribution_mode, 'tracked_link') || ':' ||
+        CASE COALESCE(r.public_value_delivered_first, 1) WHEN 1 THEN 'public_first' ELSE 'private_first' END || ':' ||
+        COALESCE(r.private_message_escalation_reason, 'none') || ':' || COALESCE(r.cta_style, '') AS key,
         r.venue AS venue,
         r.campaign_id AS campaignId,
         r.prompt_profile_id AS promptProfileId,
         r.message_style AS messageStyle,
         r.layout AS layout,
+        COALESCE(r.attribution_mode, 'tracked_link') AS attributionMode,
+        COALESCE(r.public_value_delivered_first, 1) AS publicValueDeliveredFirst,
+        r.private_message_escalation_reason AS privateMessageEscalationReason,
         r.cta_style AS ctaStyle,
         r.promotion_level AS promotionLevel,
         r.reward_emphasis AS rewardEmphasis,
@@ -449,6 +519,7 @@ export async function readAttributionSummary(
       LEFT JOIN attribution_events e ON e.ref_id = r.ref_id
       GROUP BY
         r.venue, r.campaign_id, r.prompt_profile_id, r.message_style, r.layout,
+        r.attribution_mode, r.public_value_delivered_first, r.private_message_escalation_reason,
         r.cta_style, r.promotion_level, r.reward_emphasis
       ORDER BY skillUsages DESC, privateMessagesReceived DESC, grantClaimsSucceeded DESC, clicks DESC, refs DESC
     `);
@@ -464,6 +535,9 @@ export async function readAttributionSummary(
       promptParametersJson: string;
       messageStyle: string;
       layout: string;
+      attributionMode: string | null;
+      publicValueDeliveredFirst: number | null;
+      privateMessageEscalationReason: string | null;
       ctaStyle: string | null;
       promotionLevel: string | null;
       productSpecificity: string | null;
@@ -497,6 +571,9 @@ export async function readAttributionSummary(
         r.prompt_parameters_json AS promptParametersJson,
         r.message_style AS messageStyle,
         r.layout AS layout,
+        r.attribution_mode AS attributionMode,
+        r.public_value_delivered_first AS publicValueDeliveredFirst,
+        r.private_message_escalation_reason AS privateMessageEscalationReason,
         r.cta_style AS ctaStyle,
         r.promotion_level AS promotionLevel,
         r.product_specificity AS productSpecificity,
@@ -525,29 +602,51 @@ export async function readAttributionSummary(
       LIMIT 25
     `);
 
+    const groups = groupRows.map((row) => {
+      const groupTotals = attributionTotalsFromRow(row);
+      return {
+        key: row.key,
+        venue: row.venue,
+        campaignId: row.campaignId,
+        promptProfileId: row.promptProfileId,
+        messageStyle: row.messageStyle,
+        layout: row.layout,
+        attributionMode: row.attributionMode,
+        publicValueDeliveredFirst: Number(row.publicValueDeliveredFirst ?? 1) !== 0,
+        privateMessageEscalationReason: row.privateMessageEscalationReason ?? undefined,
+        ctaStyle: row.ctaStyle ?? undefined,
+        promotionLevel: row.promotionLevel ?? undefined,
+        rewardEmphasis: row.rewardEmphasis ?? undefined,
+        refCount: groupTotals.refs,
+        totals: groupTotals,
+        conversionRates: rates(groupTotals)
+      };
+    });
+    const attributionModes = summarizeModeBreakdown(
+      groups.map((group) => ({
+        mode: group.attributionMode,
+        totals: group.totals
+      }))
+    );
+    const privateMessageReasons = summarizePrivateMessageReasons(
+      groups
+        .filter((group) => group.privateMessageEscalationReason)
+        .map((group) => ({
+          reason: group.privateMessageEscalationReason!,
+          publicValueDeliveredFirst: group.publicValueDeliveredFirst,
+          totals: group.totals
+        }))
+    );
+
     return {
       configured: true,
       databasePath,
       generatedAt: now.toISOString(),
       totals,
       conversionRates: rates(totals),
-      groups: groupRows.map((row) => {
-        const groupTotals = attributionTotalsFromRow(row);
-        return {
-          key: row.key,
-          venue: row.venue,
-          campaignId: row.campaignId,
-          promptProfileId: row.promptProfileId,
-          messageStyle: row.messageStyle,
-          layout: row.layout,
-          ctaStyle: row.ctaStyle ?? undefined,
-          promotionLevel: row.promotionLevel ?? undefined,
-          rewardEmphasis: row.rewardEmphasis ?? undefined,
-          refCount: groupTotals.refs,
-          totals: groupTotals,
-          conversionRates: rates(groupTotals)
-        };
-      }),
+      groups,
+      attributionModes,
+      privateMessageReasons,
       topRefs: refRows.map((row): AttributionRefDetail => {
         const refTotals = attributionTotalsFromRow({
           refs: 1,
@@ -572,6 +671,10 @@ export async function readAttributionSummary(
           promptParameters: sanitizeAttributionMetadata(parseJsonRecord(row.promptParametersJson)),
           messageStyle: row.messageStyle,
           layout: row.layout,
+          attributionMode: row.attributionMode ?? undefined,
+          publicValueDeliveredFirst:
+            row.publicValueDeliveredFirst === null ? undefined : Number(row.publicValueDeliveredFirst) !== 0,
+          privateMessageEscalationReason: row.privateMessageEscalationReason ?? undefined,
           ctaStyle: row.ctaStyle ?? undefined,
           promotionLevel: row.promotionLevel ?? undefined,
           productSpecificity: row.productSpecificity ?? undefined,

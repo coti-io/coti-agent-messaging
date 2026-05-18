@@ -53,6 +53,9 @@ function attributionSchemaSql(): string {
       generated_content_id TEXT NOT NULL,
       remote_content_id TEXT,
       remote_content_url TEXT,
+      attribution_mode TEXT,
+      public_value_delivered_first INTEGER,
+      private_message_escalation_reason TEXT,
       utm_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -95,11 +98,13 @@ function populatedAttributionSql(): string {
       ref_id, venue, venue_account_id, surface, content_type, campaign_id, prompt_profile_id,
       prompt_parameters_json, message_style, layout, cta_style, promotion_level,
       product_specificity, reward_emphasis, audience, candidate_id, generated_content_id,
-      remote_content_id, remote_content_url, utm_json, created_at, updated_at
+      remote_content_id, remote_content_url, attribution_mode, public_value_delivered_first,
+      private_message_escalation_reason, utm_json, created_at, updated_at
     ) VALUES (
       'ref-a', 'moltbook', 'agent-a', 'timeline', 'post', 'campaign-a', 'profile-a',
       '${prompt}', 'informative', 'structured', 'soft', 'low', 'generic', 'medium',
-      'builders', 'candidate-a', 'generated-a', 'remote-a', 'https://www.moltbook.com/post/remote-a', '${utm}',
+      'builders', 'candidate-a', 'generated-a', 'remote-a', 'https://www.moltbook.com/post/remote-a',
+      'tracked_link', 1, 'privacy_sensitive', '${utm}',
       '2026-05-04T10:00:00.000Z', '2026-05-04T10:00:00.000Z'
     );
 
@@ -107,11 +112,13 @@ function populatedAttributionSql(): string {
       ref_id, venue, venue_account_id, surface, content_type, campaign_id, prompt_profile_id,
       prompt_parameters_json, message_style, layout, cta_style, promotion_level,
       product_specificity, reward_emphasis, audience, candidate_id, generated_content_id,
-      remote_content_id, remote_content_url, utm_json, created_at, updated_at
+      remote_content_id, remote_content_url, attribution_mode, public_value_delivered_first,
+      private_message_escalation_reason, utm_json, created_at, updated_at
     ) VALUES (
       'ref-zero', 'moltbook', 'agent-a', 'timeline', 'reply', 'campaign-a', 'profile-a',
       '${prompt}', 'informative', 'structured', 'soft', 'low', 'generic', 'medium',
-      'builders', 'candidate-zero', 'generated-zero', 'comment-zero', 'https://www.moltbook.com/post/post-zero', '${utm}',
+      'builders', 'candidate-zero', 'generated-zero', 'comment-zero', 'https://www.moltbook.com/post/post-zero',
+      'manual_ref', 1, NULL, '${utm}',
       '2026-05-04T10:06:00.000Z', '2026-05-04T10:06:00.000Z'
     );
 
@@ -176,10 +183,18 @@ test("readAttributionSummary groups conversions and exposes per-ref prompt drill
     assert.equal(summary.groups[0]?.campaignId, "campaign-a");
     assert.equal(summary.groups[0]?.messageStyle, "informative");
     assert.equal(summary.groups[0]?.layout, "structured");
+    assert.equal(summary.groups[0]?.attributionMode, "tracked_link");
+    assert.equal(summary.groups[0]?.privateMessageEscalationReason, "privacy_sensitive");
     assert.equal(summary.groups[0]?.conversionRates.clickToSkillUsage, 1);
+    assert.equal(summary.attributionModes?.some((entry) => entry.mode === "manual_ref"), true);
+    assert.equal(
+      summary.privateMessageReasons?.some((entry) => entry.reason === "privacy_sensitive"),
+      true
+    );
     assert.equal(summary.topRefs[0]?.promptParameters.intent, "starter-grant");
     assert.equal(summary.topRefs[0]?.utm?.campaign, "campaign-a");
     assert.equal(summary.topRefs[0]?.remoteContentUrl, "https://www.moltbook.com/post/remote-a");
+    assert.equal(summary.topRefs[0]?.attributionMode, "tracked_link");
     assert.equal(summary.topRefs.some((ref) => ref.refId === "ref-zero"), true);
     assert.equal("walletAddress" in summary.topRefs[0]!, false);
     assert.equal("installId" in summary.topRefs[0]!, false);

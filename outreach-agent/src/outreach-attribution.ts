@@ -4,6 +4,13 @@ import type { CtaPlacement, LayoutVariant, MessageStyle, PromptParameterSet } fr
 import { validateCtaUrlDomain } from "./prompt-profile.js";
 
 export type AttributionVenue = "moltbook" | "reddit" | (string & {});
+export type AttributionMode = "tracked_link" | "manual_ref" | "inferred";
+export type AttributionPrivateMessageReason =
+  | "user_requested"
+  | "credentials_or_secrets"
+  | "privacy_sensitive"
+  | "account_specific"
+  | "complex_troubleshooting";
 export type AttributedContentType = "post" | "comment" | "reply" | "private_message" | "grant" | "skill_usage";
 export type AttributionEventType =
   | "click"
@@ -32,6 +39,9 @@ export interface OutreachRefInput {
   generatedContentId: string;
   remoteContentId?: string;
   remoteContentUrl?: string;
+  attributionMode?: AttributionMode;
+  publicValueDeliveredFirst?: boolean;
+  privateMessageEscalationReason?: AttributionPrivateMessageReason;
   timestamp?: Date;
 }
 
@@ -55,6 +65,9 @@ export interface OutreachRef {
   generatedContentId: string;
   remoteContentId?: string;
   remoteContentUrl?: string;
+  attributionMode: AttributionMode;
+  publicValueDeliveredFirst: boolean;
+  privateMessageEscalationReason?: AttributionPrivateMessageReason;
   timestampBucket: string;
   utm: {
     source: string;
@@ -91,6 +104,9 @@ export interface AttributionSummary {
     promptProfileId: string;
     messageStyle: MessageStyle;
     layout: LayoutVariant;
+    attributionMode: AttributionMode;
+    publicValueDeliveredFirst: boolean;
+    privateMessageEscalationReason?: AttributionPrivateMessageReason;
     clicks: number;
     privateMessages: number;
     privateMessagesReceived: number;
@@ -104,6 +120,7 @@ export interface AttributionSummary {
 export function buildOutreachRef(input: OutreachRefInput): OutreachRef {
   const timestamp = input.timestamp ?? new Date();
   const timestampBucket = timestamp.toISOString().slice(0, 13).replace(/[-T:]/g, "");
+  const attributionMode = input.attributionMode ?? "tracked_link";
   const contentSlug = [
     input.parameters.messageStyle,
     input.parameters.layout.replace(/_(?:paragraph|bullets)$/u, ""),
@@ -131,6 +148,9 @@ export function buildOutreachRef(input: OutreachRefInput): OutreachRef {
     generatedContentId: input.generatedContentId,
     remoteContentId: input.remoteContentId,
     remoteContentUrl: input.remoteContentUrl,
+    attributionMode,
+    publicValueDeliveredFirst: input.publicValueDeliveredFirst ?? attributionMode !== "inferred",
+    privateMessageEscalationReason: input.privateMessageEscalationReason,
     timestampBucket,
     utm: {
       source: input.venue,
@@ -212,6 +232,9 @@ export function summarizeAttribution(input: {
       promptProfileId: string;
       messageStyle: MessageStyle;
       layout: LayoutVariant;
+      attributionMode: AttributionMode;
+      publicValueDeliveredFirst: boolean;
+      privateMessageEscalationReason?: AttributionPrivateMessageReason;
       clicks: number;
       privateMessages: number;
       privateMessagesReceived: number;
@@ -226,13 +249,23 @@ export function summarizeAttribution(input: {
       continue;
     }
 
-    const key = `${ref.promptProfileId}:${ref.messageStyle}:${ref.layout}`;
+    const key = [
+      ref.promptProfileId,
+      ref.messageStyle,
+      ref.layout,
+      ref.attributionMode,
+      ref.publicValueDeliveredFirst ? "public_first" : "private_first",
+      ref.privateMessageEscalationReason ?? "none"
+    ].join(":");
     const group =
       groups.get(key) ??
       {
         promptProfileId: ref.promptProfileId,
         messageStyle: ref.messageStyle,
         layout: ref.layout,
+        attributionMode: ref.attributionMode,
+        publicValueDeliveredFirst: ref.publicValueDeliveredFirst,
+        privateMessageEscalationReason: ref.privateMessageEscalationReason,
         clicks: 0,
         privateMessages: 0,
         privateMessagesReceived: 0,

@@ -1,4 +1,5 @@
 import {
+  canUseProductSpecificFollowUp,
   resolvePromptProfile,
   validateDraftAgainstPromptProfile,
   validatePromptProfile,
@@ -6,6 +7,12 @@ import {
   type PromptParameterSet,
   type PromptProfile
 } from "./prompt-profile.js";
+import type { AttributionMode } from "./outreach-attribution.js";
+import {
+  assessPrivateMessageEscalation,
+  type PrivateMessageEscalationAssessment,
+  type PrivateMessageEscalationReason
+} from "./policy.js";
 
 export type RedditRiskLevel = "low" | "medium" | "high" | "blocked";
 
@@ -78,6 +85,9 @@ export interface RedditOutboundMemoryEntry {
   promptParameters?: PromptParameterSet;
   layout?: LayoutVariant;
   ctaRefId?: string;
+  attributionMode?: AttributionMode;
+  publicValueDeliveredFirst?: boolean;
+  privateMessageEscalationReason?: PrivateMessageEscalationReason;
   utm?: Record<string, string>;
   structuralFingerprint?: string;
   clickCount?: number;
@@ -107,6 +117,9 @@ export interface RedditReviewItem {
   promptProfileId?: string;
   promptParameters?: PromptParameterSet;
   layout?: LayoutVariant;
+  explicitProductInterest: boolean;
+  privateMessageAssessment: PrivateMessageEscalationAssessment;
+  publicValueDeliveredFirst: boolean;
   whyRelevant: string;
   gates: RedditReviewGate[];
   approvalRequired: true;
@@ -129,6 +142,8 @@ export interface RedditOutcomeSummary {
   spamAccusations: number;
   bans: number;
   firstReplyPromotionViolations: number;
+  lowValuePrivateMessagePrompts: number;
+  justifiedPrivateMessageEscalations: number;
   removalOrWarningRate: number;
   killReasons: string[];
   successSignals: string[];
@@ -166,6 +181,43 @@ const LOW_INTENT_PATTERNS = [
   /\breferral\b/i,
   /\bpromo(?:tion)?\b/i
 ] as const;
+const OPERATIONAL_PAIN_PATTERNS = [
+  /\bbroken\b/i,
+  /\bmanual\b/i,
+  /\bspreadsheet\b/i,
+  /\bcrm\b/i,
+  /\bfailing\b/i,
+  /\bincident\b/i,
+  /\bmessy\b/i,
+  /\bworkflow\b/i,
+  /\bhand[- ]?off\b/i,
+  /\bduplicate(?:d)?\b/i,
+  /\bdata quality\b/i,
+  /\bops?\b/i,
+  /\bon[- ]?call\b/i,
+  /\bdebug\b/i
+] as const;
+const ARGUMENT_OR_HOSTILITY_PATTERNS = [
+  /\bidiot\b/i,
+  /\bstupid\b/i,
+  /\btrash\b/i,
+  /\bscam\b/i,
+  /\bbot\b/i,
+  /\bshill\b/i,
+  /\bastroturf\b/i,
+  /\brant\b/i,
+  /\bflame(?:war)?\b/i,
+  /\bfight me\b/i,
+  /\bunpopular opinion\b/i,
+  /\bchange my mind\b/i
+] as const;
+const PRODUCT_INTEREST_PATTERNS = [
+  /\b(?:what|which|any)\s+(?:tool|tools|product|products|sdk|library|framework|service)\b/i,
+  /\brecommend(?:ation)?s?\b.{0,24}\b(?:tool|sdk|library|service)\b/i,
+  /\bwhat do you use\b/i,
+  /\banybody using\b/i,
+  /\bbuild vs buy\b/i
+] as const;
 
 const CTA_PATTERNS = [
   /\b(?:dm|pm) me\b/i,
@@ -176,6 +228,7 @@ const CTA_PATTERNS = [
   /\bbook (?:a )?(?:demo|call)\b/i,
   /\bjoin (?:our|my)\b/i
 ] as const;
+const PRIVATE_MESSAGE_PROMPT_PATTERNS = [/\b(?:dm|pm) me\b/i, /\bmessage me\b/i] as const;
 
 const URL_PATTERN = /https?:\/\/|www\./i;
 
@@ -392,12 +445,22 @@ function buildReviewItem(
     profileId: promptProfileId
   });
   validatePromptProfile(resolvedPromptProfile);
-  const relevanceScore = scoreRelevance(text);
-  const riskScore = scoreRisk(source, rule, text);
+  const hasPainSignal = hasOperationalPain(text);
+  const needsHelp = hasExplicitHelpIntent(text) || hasPainSignal;
+  const explicitProductInterest = hasExplicitProductInterest(text, targeting.productAliases);
+  const privateMessageAssessment = assessPrivateMessageEscalation({ text });
+  const publicValueDeliveredFirst = true;
+  const productSpecificFollowUp = canUseProductSpecificFollowUp({
+    venue: "reddit",
+    explicitInterest: explicitProductInterest,
+    publicValueDeliveredFirst
+  });
+  const relevanceScore = scoreRelevance(source, text, now);
+  const riskScore = scoreRisk(source, rule, text, now);
   const hasExplicitIntent = hasExplicitHelpIntent(text);
   const draft =
-    relevanceScore >= 5 && hasExplicitIntent
-      ? buildExplanatoryDraft(source)
+    relevanceScore >= 5 && needsHelp
+      ? buildExplanatoryDraft(source, resolvedPromptProfile.parameters.layout)
       : undefined;
   const gates = buildGates(
     source,
@@ -407,6 +470,10 @@ function buildReviewItem(
     history,
     now,
     hasExplicitIntent,
+    hasPainSignal,
+    explicitProductInterest,
+    privateMessageAssessment,
+    productSpecificFollowUp.reason,
     resolvedPromptProfile
   );
   const blocked = gates.some((gate) => gate.severity === "block" && !gate.passed);
@@ -422,12 +489,23 @@ function buildReviewItem(
     promptProfileId: resolvedPromptProfile.id,
     promptParameters: resolvedPromptProfile.parameters,
     layout: resolvedPromptProfile.parameters.layout,
-    whyRelevant: explainRelevance(text, relevanceScore, hasExplicitIntent),
+    explicitProductInterest,
+    privateMessageAssessment,
+    publicValueDeliveredFirst,
+    whyRelevant: explainRelevance(source, text, relevanceScore, hasExplicitIntent, hasPainSignal, now),
     gates,
     approvalRequired: true,
     approvalChecklist: [
       "Confirm the live subreddit rules still allow this kind of technical answer.",
       "Confirm the first reply contains no product name, owned link, CTA, demo offer, or DM prompt.",
+      explicitProductInterest
+        ? "Only mention product-specific details because the user explicitly asked after receiving a useful answer."
+        : "Keep any follow-up generic until the user explicitly asks for product/tool specifics.",
+      privateMessageAssessment.shouldEscalate
+        ? privateMessageAssessment.requiresPublicReplyFirst
+          ? `If private follow-up is needed, answer publicly first and move private only for ${privateMessageAssessment.reason?.replaceAll("_", " ")}.`
+          : `Do not keep sensitive details in-thread; ${privateMessageAssessment.reason?.replaceAll("_", " ")} can justify private follow-up.`
+        : "Do not suggest PMs here; the public thread should stay the main help surface.",
       "Confirm the answer still helps if every company/product reference is removed.",
       "Confirm the draft does not repeat recent outbound wording or answer structure.",
       "Approve manually; do not auto-post during MVP."
@@ -468,6 +546,10 @@ function buildGates(
   history: readonly RedditOutboundMemoryEntry[],
   now: Date,
   hasExplicitIntent: boolean,
+  hasPainSignal: boolean,
+  explicitProductInterest: boolean,
+  privateMessageAssessment: PrivateMessageEscalationAssessment,
+  productSpecificFollowUpReason: string,
   resolvedPromptProfile: ReturnType<typeof resolvePromptProfile>
 ): RedditReviewGate[] {
   const similar = draft ? findMostSimilarOutbound(draft, history) : undefined;
@@ -492,18 +574,25 @@ function buildGates(
           : `r/${source.subreddit} is not blocked.`
     },
     {
-      id: "explicit_help_intent",
-      passed: hasExplicitIntent,
+      id: "clear_user_need",
+      passed: hasExplicitIntent || hasPainSignal,
       severity: "block",
-      reason: hasExplicitIntent
-        ? "The source asks for help, explanation, advice, or implementation detail."
-        : "No explicit help intent; public replies would still be unsolicited."
+      reason:
+        hasExplicitIntent || hasPainSignal
+          ? "The source shows explicit help intent or clear operational pain."
+          : "No explicit help intent or operational pain; public replies would still be unsolicited."
     },
     {
       id: "low_spam_topic_risk",
       passed: !LOW_INTENT_PATTERNS.some((pattern) => pattern.test(sourceText(source))),
       severity: "block",
       reason: "Reject price, giveaway, airdrop, referral, and shill-adjacent threads."
+    },
+    {
+      id: "low_argument_risk",
+      passed: !hasArgumentativeConflict(sourceText(source)),
+      severity: "block",
+      reason: "Skip hostile, bait, rant, or accusation-heavy threads."
     },
     {
       id: "draft_exists",
@@ -551,6 +640,20 @@ function buildGates(
           resolvedPromptProfile.parameters.ctaStyle === "none",
         severity: "block",
         reason: "Reddit first replies force CTA links off regardless of prompt profile."
+      },
+      {
+        id: "product_follow_up_requires_explicit_interest",
+        passed: explicitProductInterest,
+        severity: "info",
+        reason: productSpecificFollowUpReason
+      },
+      {
+        id: "pm_only_when_needed",
+        passed: !privateMessageAssessment.shouldEscalate,
+        severity: privateMessageAssessment.shouldEscalate ? "warning" : "info",
+        reason: privateMessageAssessment.shouldEscalate
+          ? `${privateMessageAssessment.explanation} Keep the initial answer public unless sensitive details are already exposed.`
+          : privateMessageAssessment.explanation
       },
       {
         id: "not_near_duplicate",
@@ -602,6 +705,15 @@ export function evaluateRedditOutcomes(
   const firstReplyPromotionViolations = firstReplies.filter(
     (entry) => entry.productMentioned || entry.linkIncluded || containsAnyCta(entry.content)
   ).length;
+  const lowValuePrivateMessagePrompts = history.filter(
+    (entry) =>
+      containsPrivateMessagePrompt(entry.content) &&
+      !entry.privateMessageEscalationReason &&
+      !entry.publicValueDeliveredFirst
+  ).length;
+  const justifiedPrivateMessageEscalations = history.filter(
+    (entry) => Boolean(entry.privateMessageEscalationReason)
+  ).length;
   const removalOrWarningRate =
     postedFirstReplies === 0 ? 0 : (removals + modWarnings) / postedFirstReplies;
   const repeatedModRemovalSubreddits = subredditsWithAtLeast(
@@ -622,6 +734,9 @@ export function evaluateRedditOutcomes(
   if (firstReplyPromotionViolations > 0) {
     killReasons.push("A first reply included product mention, link, CTA, or DM-style prompt.");
   }
+  if (lowValuePrivateMessagePrompts > 0) {
+    killReasons.push("Low-value private-message prompts were recorded without a legitimate escalation reason.");
+  }
 
   const successSignals: string[] = [];
   if (postedFirstReplies > 0 && removalOrWarningRate < 0.02) {
@@ -629,6 +744,9 @@ export function evaluateRedditOutcomes(
   }
   if (firstReplyPromotionViolations === 0) {
     successSignals.push("No first-reply promotion violations recorded.");
+  }
+  if (lowValuePrivateMessagePrompts === 0) {
+    successSignals.push("No low-value private-message prompts were recorded.");
   }
 
   return {
@@ -640,6 +758,8 @@ export function evaluateRedditOutcomes(
     spamAccusations,
     bans,
     firstReplyPromotionViolations,
+    lowValuePrivateMessagePrompts,
+    justifiedPrivateMessageEscalations,
     removalOrWarningRate,
     killReasons,
     successSignals
@@ -777,7 +897,7 @@ function parseFlexibleSource(input: unknown, fallbackKind: RedditSourceItem["kin
   ];
 }
 
-function scoreRelevance(text: string): number {
+function scoreRelevance(source: RedditSourceItem, text: string, now: Date): number {
   const terms: Array<[RegExp, number]> = [
     [/\bai agents?\b/i, 4],
     [/\bagents?\b/i, 2],
@@ -799,68 +919,90 @@ function scoreRelevance(text: string): number {
   const negative = LOW_INTENT_PATTERNS.reduce((score, pattern) => {
     return pattern.test(text) ? score + 4 : score;
   }, 0);
+  const helpBoost = hasExplicitHelpIntent(text) ? 2 : 0;
+  const painBoost = OPERATIONAL_PAIN_PATTERNS.some((pattern) => pattern.test(text)) ? 2 : 0;
+  const freshness = freshnessBoost(source, now);
+  const activity = conversationActivityBoost(source);
+  const argumentPenalty = hasArgumentativeConflict(text) ? 4 : 0;
 
-  return Math.max(0, positive - negative);
+  return Math.max(0, positive + helpBoost + painBoost + freshness + activity - negative - argumentPenalty);
 }
 
 function scoreRisk(
   source: RedditSourceItem,
   rule: RedditSubredditRule | undefined,
-  text: string
+  text: string,
+  now: Date
 ): number {
   const ruleRisk = rule?.risk === "low" ? 1 : rule?.risk === "medium" ? 3 : rule?.risk === "high" ? 6 : 10;
   const promotionRisk = LOW_INTENT_PATTERNS.some((pattern) => pattern.test(text)) ? 6 : 0;
   const noQuestionRisk = hasExplicitHelpIntent(text) ? 0 : 3;
   const externalUrlRisk = source.url && !source.url.includes("reddit.com") ? 1 : 0;
-  return ruleRisk + promotionRisk + noQuestionRisk + externalUrlRisk;
+  const argumentRisk = ARGUMENT_OR_HOSTILITY_PATTERNS.some((pattern) => pattern.test(text)) ? 5 : 0;
+  const staleRisk = freshnessBoost(source, now) === 0 ? 2 : 0;
+  return ruleRisk + promotionRisk + noQuestionRisk + externalUrlRisk + argumentRisk + staleRisk;
 }
 
-function buildExplanatoryDraft(source: RedditSourceItem): string {
+function buildExplanatoryDraft(source: RedditSourceItem, layout: LayoutVariant): string {
   const text = sourceText(source).toLowerCase();
-
+  let sentences: string[];
   if (/\bmcp\b|\bsdk\b|\btool/.test(text)) {
-    return [
-      "I would separate the agent policy from the transport layer.",
+    sentences = [
+      "Separate the agent policy from the transport layer.",
       "The agent should decide when a message is worth sending; the tool surface should only handle identity, encryption, delivery, retries, and readable history.",
       "That keeps the integration testable instead of turning every agent decision into infrastructure glue."
-    ].join(" ");
-  }
-
-  if (/\bprivacy\b|\bprivate\b|\bencrypt/.test(text)) {
-    return [
-      "The practical split is usually public routing, private payload.",
+    ];
+  } else if (/\bprivacy\b|\bprivate\b|\bencrypt/.test(text)) {
+    sentences = [
+      "Use public routing and private payloads.",
       "You still need enough metadata to deliver, query, and debug messages, but the actual coordination details should not live in the public thread.",
       "That tradeoff is less pure than total opacity, but it is much easier to operate."
-    ].join(" ");
-  }
-
-  if (/\bwallet\b|\bonchain\b|\bcontract\b|\breward/.test(text)) {
-    return [
-      "I would keep incentives separate from the core communication path.",
+    ];
+  } else if (/\bwallet\b|\bonchain\b|\bcontract\b|\breward/.test(text)) {
+    sentences = [
+      "Keep incentives separate from the core communication path.",
       "First make the message flow useful without rewards; then let rewards measure meaningful usage, not raw activity count.",
       "Otherwise the system optimizes for noisy transactions instead of useful coordination."
-    ].join(" ");
+    ];
+  } else {
+    sentences = [
+      "The failure mode is trying to solve coordination with one generic channel.",
+      "Agents usually need a narrower contract: who can send, who can read, what metadata stays public, and how the receiving side audits history.",
+      "Once those boundaries are explicit, the implementation gets much less hand-wavy."
+    ];
   }
 
-  return [
-    "The failure mode is trying to solve coordination with one generic channel.",
-    "Agents usually need a narrower contract: who can send, who can read, what metadata stays public, and how the receiving side audits history.",
-    "Once those boundaries are explicit, the implementation gets much less hand-wavy."
-  ].join(" ");
+  if (layout === "question_answer") {
+    return [`Short answer: ${sentences[0]}`, sentences[1], sentences[2]].join(" ");
+  }
+  if (layout === "problem_solution") {
+    return [`Problem: ${sentences[0]}`, `Solution: ${sentences[1]}`, sentences[2]].join(" ");
+  }
+  return sentences.join(" ");
 }
 
-function explainRelevance(text: string, score: number, hasExplicitIntent: boolean): string {
+function explainRelevance(
+  source: RedditSourceItem,
+  text: string,
+  score: number,
+  hasExplicitIntent: boolean,
+  hasPainSignal: boolean,
+  now: Date
+): string {
   const matched: string[] = [];
   if (/\bagents?\b/i.test(text)) matched.push("agent workflow");
   if (/\bmcp\b|\bsdk\b/i.test(text)) matched.push("integration surface");
   if (/\bprivacy\b|\bprivate\b|\bencrypt/i.test(text)) matched.push("privacy tradeoff");
   if (/\bcoordination|message|messaging|inbox/i.test(text)) matched.push("coordination/messaging");
+  if (hasPainSignal) matched.push("operational pain");
+  const freshness = freshnessBoost(source, now);
+  if (freshness > 0) matched.push(freshness >= 2 ? "fresh thread" : "active thread");
 
   if (matched.length === 0) {
     return `Low relevance (${score}); no core target topic matched.`;
   }
 
-  return `${hasExplicitIntent ? "Explicit help intent" : "No explicit help intent"} with ${matched.join(", ")} relevance (${score}).`;
+  return `${hasExplicitIntent ? "Explicit help intent" : hasPainSignal ? "Clear operational pain" : "No explicit help intent"} with ${matched.join(", ")} relevance (${score}).`;
 }
 
 function sourceText(source: RedditSourceItem): string {
@@ -871,6 +1013,21 @@ function hasExplicitHelpIntent(text: string): boolean {
   return EXPLICIT_HELP_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+function hasOperationalPain(text: string): boolean {
+  return OPERATIONAL_PAIN_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function hasArgumentativeConflict(text: string): boolean {
+  return ARGUMENT_OR_HOSTILITY_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function hasExplicitProductInterest(text: string, aliases: readonly string[]): boolean {
+  return (
+    PRODUCT_INTEREST_PATTERNS.some((pattern) => pattern.test(text)) ||
+    aliases.some((alias) => new RegExp(`\\b${escapeRegex(alias)}\\b`, "i").test(text))
+  );
+}
+
 function containsProductMention(content: string, aliases: readonly string[]): boolean {
   const normalized = content.toLowerCase();
   return aliases.some((alias) => normalized.includes(alias.toLowerCase()));
@@ -878,6 +1035,10 @@ function containsProductMention(content: string, aliases: readonly string[]): bo
 
 function containsAnyCta(content: string): boolean {
   return CTA_PATTERNS.some((pattern) => pattern.test(content));
+}
+
+function containsPrivateMessagePrompt(content: string): boolean {
+  return PRIVATE_MESSAGE_PROMPT_PATTERNS.some((pattern) => pattern.test(content));
 }
 
 function findMostSimilarOutbound(
@@ -933,6 +1094,35 @@ function countRecentFirstReplies(
 
     return subreddit ? entry.subreddit.toLowerCase() === subreddit.toLowerCase() : true;
   }).length;
+}
+
+function freshnessBoost(source: RedditSourceItem, now: Date): number {
+  if (!source.createdUtc) {
+    return 0;
+  }
+  const ageHours = (now.getTime() - source.createdUtc * 1_000) / (60 * 60 * 1_000);
+  if (ageHours <= 12) {
+    return 2;
+  }
+  if (ageHours <= 36) {
+    return 1;
+  }
+  return 0;
+}
+
+function conversationActivityBoost(source: RedditSourceItem): number {
+  const commentCount = source.commentCount ?? 0;
+  if (commentCount >= 20) {
+    return 2;
+  }
+  if (commentCount >= 8) {
+    return 1;
+  }
+  return 0;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function findRule(

@@ -109,6 +109,17 @@ function optionalString(body: Record<string, unknown>, field: string): string | 
   return trimmed || undefined;
 }
 
+function optionalBoolean(body: Record<string, unknown>, field: string): boolean | undefined {
+  const value = body[field];
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    badRequest(`Expected boolean for "${field}".`);
+  }
+  return value;
+}
+
 function parseManualRefBuilderInput(body: Record<string, unknown>): ManualRefBuilderInput {
   return {
     venue: requireString(body, "venue"),
@@ -124,7 +135,10 @@ function parseManualRefBuilderInput(body: Record<string, unknown>): ManualRefBui
     rewardEmphasis: optionalString(body, "rewardEmphasis"),
     audience: optionalString(body, "audience"),
     label: optionalString(body, "label"),
-    utmMedium: optionalString(body, "utmMedium")
+    utmMedium: optionalString(body, "utmMedium"),
+    attributionMode: optionalString(body, "attributionMode") as ManualRefBuilderInput["attributionMode"],
+    publicValueDeliveredFirst: optionalBoolean(body, "publicValueDeliveredFirst"),
+    privateMessageEscalationReason: optionalString(body, "privateMessageEscalationReason")
   };
 }
 

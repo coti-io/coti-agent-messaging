@@ -111,6 +111,16 @@ function asOptionalString(value: unknown, field: string): string | undefined {
   return value;
 }
 
+function asOptionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new HttpError(400, `Expected boolean for "${field}".`);
+  }
+  return value;
+}
+
 function asRecord(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new HttpError(400, `Expected object for "${field}".`);
@@ -171,6 +181,15 @@ function parseOptionalOutreachRef(value: unknown): StarterGrantOutreachRef | und
     generatedContentId: asString(ref.generatedContentId, "outreachRef.generatedContentId"),
     remoteContentId: asOptionalString(ref.remoteContentId, "outreachRef.remoteContentId"),
     remoteContentUrl: asOptionalString(ref.remoteContentUrl, "outreachRef.remoteContentUrl"),
+    attributionMode: asOptionalString(ref.attributionMode, "outreachRef.attributionMode"),
+    publicValueDeliveredFirst: asOptionalBoolean(
+      ref.publicValueDeliveredFirst,
+      "outreachRef.publicValueDeliveredFirst"
+    ),
+    privateMessageEscalationReason: asOptionalString(
+      ref.privateMessageEscalationReason,
+      "outreachRef.privateMessageEscalationReason"
+    ),
     utm: optionalRecord(ref.utm, "outreachRef.utm"),
     createdAt: asOptionalString(ref.createdAt, "outreachRef.createdAt")
   };

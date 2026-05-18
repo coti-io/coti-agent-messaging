@@ -57,6 +57,68 @@ test("review queue generates only non-promotional explanatory first replies", ()
     queue.items[0]?.gates.some((gate) => gate.id === "human_review_required" && !gate.passed),
     true
   );
+  assert.equal(queue.items[0]?.promptParameters?.layout, "question_answer");
+  assert.equal(queue.items[0]?.explicitProductInterest, false);
+  assert.equal(queue.items[0]?.privateMessageAssessment.shouldEscalate, false);
+});
+
+test("review queue accepts operational pain even before a direct how-to question", () => {
+  const source: RedditSourceItem = {
+    id: "thread-pain",
+    kind: "post",
+    subreddit: "devops",
+    title: "Our CRM handoff is broken and the workflow is still manual",
+    body: "Sales keeps duplicating records and ops is cleaning spreadsheets every day.",
+    commentCount: 16,
+    createdUtc: Math.floor(new Date("2026-05-07T08:00:00.000Z").getTime() / 1000)
+  };
+
+  const queue = buildRedditReviewQueue({
+    items: [source],
+    now: new Date("2026-05-07T09:00:00.000Z")
+  });
+
+  assert.equal(queue.items.length, 1);
+  assert.equal(queue.items[0]?.action, "ask_clarifying_question");
+  assert.match(queue.items[0]?.whyRelevant ?? "", /operational pain/i);
+});
+
+test("review queue blocks hostile bait threads even when target topics match", () => {
+  const source: RedditSourceItem = {
+    id: "thread-hostile",
+    kind: "post",
+    subreddit: "AI_Agents",
+    title: "Change my mind: private agent messaging is trash",
+    body: "Anyone building this is an idiot bot shill."
+  };
+
+  const queue = buildRedditReviewQueue({
+    items: [source],
+    now: new Date("2026-05-07T09:00:00.000Z")
+  });
+
+  assert.equal(queue.items.length, 0);
+  assert.equal(queue.ignored[0]?.gates.some((gate) => gate.id === "low_argument_risk" && !gate.passed), true);
+});
+
+test("review queue marks PM escalation as justified only for sensitive troubleshooting", () => {
+  const source: RedditSourceItem = {
+    id: "thread-pm",
+    kind: "comment",
+    subreddit: "LangChain",
+    title: "LangChain agent messaging thread",
+    body:
+      "My agent messaging integration is failing after we rotated the API key and the session id mismatch keeps showing in the logs."
+  };
+
+  const queue = buildRedditReviewQueue({
+    items: [source],
+    now: new Date("2026-05-07T09:00:00.000Z")
+  });
+
+  assert.equal(queue.items.length, 1);
+  assert.equal(queue.items[0]?.privateMessageAssessment.shouldEscalate, true);
+  assert.equal(queue.items[0]?.privateMessageAssessment.reason, "credentials_or_secrets");
 });
 
 test("review queue blocks near-duplicate outbound comments", () => {
@@ -138,6 +200,15 @@ test("outcome evaluation surfaces kill criteria", () => {
         createdAt: "2026-05-07T12:00:00.000Z",
         firstReply: true,
         status: "spam_accusation"
+      },
+      {
+        id: "comment-5",
+        subreddit: "LangChain",
+        kind: "comment",
+        content: "DM me and I can help debug it.",
+        createdAt: "2026-05-07T12:30:00.000Z",
+        publicValueDeliveredFirst: false,
+        status: "posted"
       }
     ],
     new Date("2026-05-07T13:00:00.000Z")
@@ -145,8 +216,9 @@ test("outcome evaluation surfaces kill criteria", () => {
 
   assert.equal(summary.firstReplyPromotionViolations, 1);
   assert.equal(summary.spamAccusations, 1);
+  assert.equal(summary.lowValuePrivateMessagePrompts, 1);
   assert.equal(summary.killReasons.length >= 3, true);
-  assert.match(summary.killReasons.join(" "), /first reply|spam|Repeated mod/i);
+  assert.match(summary.killReasons.join(" "), /first reply|spam|Repeated mod|private-message/i);
 });
 
 test("Reddit read-only client maps OAuth listing responses", async () => {

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  canUseProductSpecificFollowUp,
   contentTokenSimilarity,
   resolvePromptProfile,
   structuralFingerprint,
@@ -41,6 +42,35 @@ test("Reddit first replies force non-promotional profile settings and forbid CTA
     () => validateDraftAgainstPromptProfile(resolved, "Helpful answer https://example.com"),
     /forbidden/i
   );
+});
+
+test("default Reddit prompt profile biases toward useful public answers", () => {
+  const resolved = resolvePromptProfile({
+    venue: "reddit",
+    actionType: "comment_on_post"
+  });
+
+  assert.equal(resolved.parameters.intent, "educate");
+  assert.equal(resolved.parameters.messageStyle, "informative");
+  assert.equal(resolved.parameters.layout, "question_answer");
+  assert.equal(resolved.parameters.productSpecificity, "generic_category");
+});
+
+test("Reddit product-specific follow-up requires explicit interest after public value", () => {
+  const blocked = canUseProductSpecificFollowUp({
+    venue: "reddit",
+    explicitInterest: false,
+    publicValueDeliveredFirst: true
+  });
+  const allowed = canUseProductSpecificFollowUp({
+    venue: "reddit",
+    explicitInterest: true,
+    publicValueDeliveredFirst: true
+  });
+
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.reason, /explicitly asks/i);
+  assert.equal(allowed.allowed, true);
 });
 
 test("Moltbook profiles can require CTA links but block shorteners", () => {

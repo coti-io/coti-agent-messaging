@@ -41,7 +41,7 @@ export interface RedditController {
   publishAction(action: VenueAction, context: RedditControllerContext): Promise<RedditPublishResult>;
 }
 
-interface RedditBrowserBridgeRequest {
+export interface RedditBrowserBridgeRequest {
   requestId: string;
   createdAt: string;
   controller: "browser";
@@ -63,7 +63,7 @@ interface RedditBrowserBridgeRequest {
   };
 }
 
-interface RedditBrowserBridgeResponseSuccess {
+export interface RedditBrowserBridgeResponseSuccess {
   requestId: string;
   ok: true;
   remoteContentId?: string;
@@ -71,7 +71,7 @@ interface RedditBrowserBridgeResponseSuccess {
   raw?: unknown;
 }
 
-interface RedditBrowserBridgeResponseFailure {
+export interface RedditBrowserBridgeResponseFailure {
   requestId: string;
   ok: false;
   code:
@@ -85,7 +85,9 @@ interface RedditBrowserBridgeResponseFailure {
   raw?: unknown;
 }
 
-type RedditBrowserBridgeResponse = RedditBrowserBridgeResponseSuccess | RedditBrowserBridgeResponseFailure;
+export type RedditBrowserBridgeResponse =
+  | RedditBrowserBridgeResponseSuccess
+  | RedditBrowserBridgeResponseFailure;
 
 export class RedditControllerError extends Error {
   constructor(

@@ -18,6 +18,11 @@
     "reddit:scan": "node dist/src/index.js reddit-scan",
     "reddit:evaluate": "node dist/src/index.js reddit-evaluate",
     "reddit:publish": "node dist/src/index.js reddit-publish",
+    "reddit:browser:install": "npx playwright install chromium",
+    "reddit:login": "node dist/src/index.js reddit-browser-login",
+    "reddit:login:local": "OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./.browser/reddit-storage-state.json node dist/src/index.js reddit-browser-login",
+    "reddit:browser-worker": "node dist/src/index.js reddit-browser-worker",
+    "reddit:browser-worker:local": "OUTREACH_AGENT_VENUE=reddit OUTREACH_AGENT_MODE=approved_autopost OUTREACH_REDDIT_CONTROLLER=browser OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./.browser/reddit-storage-state.json node dist/src/index.js reddit-browser-worker",
     "attribution:summary": "node dist/src/index.js attribution-summary",
     "message-funnel": "node dist/src/index.js message-funnel",
     "heartbeat": "node dist/src/index.js heartbeat",
@@ -34,6 +39,7 @@
     "@coti-io/coti-ethers": "^1.0.5",
     "@coti-io/coti-sdk-private-messaging": "github:coti-io/coti-sdk-private-messaging#main",
     "dotenv": "^16.6.1",
+    "playwright": "^1.60.0",
     "sqlite3": "^6.0.1"
   },
   "devDependencies": {

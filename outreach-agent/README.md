@@ -218,6 +218,8 @@ npm run reddit:targets -w @coti-agent-messaging/outreach-agent
 npm run reddit:scan -w @coti-agent-messaging/outreach-agent -- --input reddit-export.json --output outreach-agent/.data/reddit-review-queue.json
 npm run reddit:evaluate -w @coti-agent-messaging/outreach-agent -- --history outreach-agent/.data/reddit-outbound-history.json
 npm run reddit:publish -w @coti-agent-messaging/outreach-agent -- --input outreach-agent/.data/reddit-action.json
+npm run reddit:login -w @coti-agent-messaging/outreach-agent
+npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
 ```
 
 For live read-only monitoring through Reddit OAuth:
@@ -241,7 +243,25 @@ Controller behavior:
 
 - `manual`: keeps the autonomous scan/draft-only workflow and rejects publish attempts because the controller is configured not to publish
 - `api`: submits `create_post`, `comment_on_post`, and `reply_to_comment` through Reddit OAuth using `REDDIT_ACCESS_TOKEN` and `REDDIT_USER_AGENT`
-- `browser`: writes publish requests into `outreach-agent/.bridge/reddit-browser/requests` and waits for a matching response file in `responses`; an external browser worker can fulfill those requests and return remote ids/URLs
+- `browser`: writes publish requests into `outreach-agent/.bridge/reddit-browser/requests` and waits for a matching response file in `responses`; the bundled `reddit-browser-worker` command fulfills those requests through Playwright and returns remote ids/URLs
+
+Browser worker setup:
+
+```bash
+npm install -w @coti-agent-messaging/outreach-agent
+npx playwright install chromium
+OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./outreach-agent/.browser/reddit-storage-state.json
+npm run reddit:login -w @coti-agent-messaging/outreach-agent
+OUTREACH_AGENT_VENUE=reddit
+OUTREACH_AGENT_MODE=approved_autopost
+OUTREACH_REDDIT_CONTROLLER=browser
+OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./outreach-agent/.browser/reddit-storage-state.json
+npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
+```
+
+`reddit:login` opens a Playwright browser, lets you log in manually, checks `/api/me.json` to confirm the session is authenticated, and saves the Playwright storage state to the configured path. Copy that file to the server if you want the headless worker there to reuse the same session.
+
+The worker uses that stored Playwright browser session. If Reddit redirects to login, shows a challenge, or changes the editor UI enough that submission cannot be completed, the worker fails loudly and writes a typed error response instead of trying to sneak around it.
 
 Example `reddit-publish` input:
 

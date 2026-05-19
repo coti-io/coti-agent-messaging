@@ -271,7 +271,7 @@ test("Reddit manual controller disables publishing", async () => {
 
 async function readDirFiles(dir: string): Promise<string[]> {
   const { readdir } = await import("node:fs/promises");
-  return readdir(dir);
+  return (await readdir(dir)).filter((entry) => entry.endsWith(".json")).sort();
 }
 
 function delay(ms: number): Promise<void> {

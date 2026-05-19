@@ -68,6 +68,18 @@ export interface RedditControllerConfig {
   api: RedditApiRuntimeConfig;
 }
 
+export interface RedditOperatingAgentConfig {
+  targetSubreddits: string[];
+  searchQueries: string[];
+  maxActionsPerSession: number;
+  maxActionsPerDay: number;
+  minJitterMinutes: number;
+  maxJitterMinutes: number;
+  readController: "browser" | "api" | "auto";
+  dryRunDefault: boolean;
+  memoryPath: string;
+}
+
 export interface MoltbookRuntimeConfig extends RuntimePaths {
   agent?: OutreachAgentConfig;
   moltbookBaseUrl: string;
@@ -90,6 +102,7 @@ export interface MoltbookRuntimeConfig extends RuntimePaths {
   llmProvider?: JsonLlmProvider;
   verificationLlmProvider?: JsonLlmProvider;
   reddit?: RedditControllerConfig;
+  redditOperating?: RedditOperatingAgentConfig;
   coti?: {
     privateKey: string;
     aesKey: string;
@@ -119,6 +132,10 @@ function resolveHomePath(relativePath: string): string {
 
 function defaultRedditBrowserBridgeDir(packageRoot: string): string {
   return path.join(packageRoot, ".bridge", "reddit-browser");
+}
+
+function defaultRedditMemoryPath(packageRoot: string): string {
+  return path.join(packageRoot, ".data", "reddit-memory.json");
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
@@ -372,6 +389,7 @@ export async function loadRuntimeConfig(
   const verificationLlmApiKey = getOptionalEnv("MOLTBOOK_VERIFY_LLM_API_KEY") ?? llm?.apiKey;
   const verificationLlmBridgeUrl = getOptionalEnv("MOLTBOOK_VERIFY_LLM_BRIDGE_URL") ?? llmBridge?.url;
   const reddit = buildRedditControllerConfig(paths.packageRoot);
+  const redditOperating = buildRedditOperatingAgentConfig(paths.packageRoot);
 
   return {
     ...paths,
@@ -464,6 +482,7 @@ export async function loadRuntimeConfig(
         }
       : undefined,
     reddit,
+    redditOperating,
     coti: hasCotiCredentials
       ? {
           privateKey: getRequiredEnv("PRIVATE_KEY"),
@@ -496,6 +515,38 @@ export function buildRedditControllerConfig(packageRoot: string): RedditControll
 
 export function getRedditControllerConfig(config: Pick<MoltbookRuntimeConfig, "packageRoot" | "reddit">): RedditControllerConfig {
   return config.reddit ?? buildRedditControllerConfig(config.packageRoot);
+}
+
+export function buildRedditOperatingAgentConfig(packageRoot: string): RedditOperatingAgentConfig {
+  return {
+    targetSubreddits: parseCsv(process.env.OUTREACH_REDDIT_TARGET_SUBREDDITS),
+    searchQueries: parseCsv(process.env.OUTREACH_REDDIT_SEARCH_QUERIES),
+    maxActionsPerSession: parseNumber(process.env.OUTREACH_REDDIT_MAX_ACTIONS_PER_SESSION, 1),
+    maxActionsPerDay: parseNumber(process.env.OUTREACH_REDDIT_MAX_ACTIONS_PER_DAY, 4),
+    minJitterMinutes: parseNumber(process.env.OUTREACH_REDDIT_MIN_JITTER_MINUTES, 18),
+    maxJitterMinutes: parseNumber(process.env.OUTREACH_REDDIT_MAX_JITTER_MINUTES, 67),
+    readController: parseRedditReadController(process.env.OUTREACH_REDDIT_READ_CONTROLLER),
+    dryRunDefault: parseBoolean(process.env.OUTREACH_REDDIT_SESSION_DRY_RUN, true),
+    memoryPath: resolveHomePath(
+      process.env.OUTREACH_REDDIT_MEMORY_PATH ?? defaultRedditMemoryPath(packageRoot)
+    )
+  };
+}
+
+export function getRedditOperatingAgentConfig(
+  config: Pick<MoltbookRuntimeConfig, "packageRoot" | "redditOperating">
+): RedditOperatingAgentConfig {
+  return config.redditOperating ?? buildRedditOperatingAgentConfig(config.packageRoot);
+}
+
+function parseRedditReadController(value: string | undefined): RedditOperatingAgentConfig["readController"] {
+  if (value === undefined || value === "auto") {
+    return "auto";
+  }
+  if (value === "browser" || value === "api") {
+    return value;
+  }
+  throw new Error(`Invalid OUTREACH_REDDIT_READ_CONTROLLER: ${value}`);
 }
 
 export function getOutreachAgentConfig(config: MoltbookRuntimeConfig): OutreachAgentConfig {

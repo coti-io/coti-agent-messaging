@@ -23,6 +23,8 @@
     "reddit:login:local": "OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./.browser/reddit-storage-state.json node dist/src/index.js reddit-browser-login",
     "reddit:browser-worker": "node dist/src/index.js reddit-browser-worker",
     "reddit:browser-worker:local": "OUTREACH_AGENT_VENUE=reddit OUTREACH_AGENT_MODE=approved_autopost OUTREACH_REDDIT_CONTROLLER=browser OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./.browser/reddit-storage-state.json node dist/src/index.js reddit-browser-worker",
+    "reddit:session:dry-run": "OUTREACH_AGENT_VENUE=reddit OUTREACH_REDDIT_SESSION_DRY_RUN=true node dist/src/index.js reddit-session --dry-run --once",
+    "reddit:session:local": "OUTREACH_AGENT_VENUE=reddit OUTREACH_AGENT_MODE=approved_autopost OUTREACH_REDDIT_CONTROLLER=browser OUTREACH_REDDIT_READ_CONTROLLER=browser OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./.browser/reddit-storage-state.json node dist/src/index.js reddit-session --once --max-actions 1",
     "attribution:summary": "node dist/src/index.js attribution-summary",
     "message-funnel": "node dist/src/index.js message-funnel",
     "heartbeat": "node dist/src/index.js heartbeat",

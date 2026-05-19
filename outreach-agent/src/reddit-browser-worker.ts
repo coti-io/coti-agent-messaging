@@ -15,7 +15,12 @@ import {
   RedditLoginRequiredError,
   type RedditBrowserBridgeRequest,
   type RedditBrowserBridgeResponseFailure,
-  type RedditBrowserBridgeResponseSuccess
+  type RedditBrowserBridgeResponseSuccess,
+  type RedditBrowserReadResult,
+  type RedditCommentState,
+  type RedditPublishableActionType,
+  type RedditSearchResult,
+  type RedditThreadState
 } from "./reddit-controller.js";
 
 export interface RedditBrowserWorkerConfig {
@@ -44,6 +49,7 @@ export interface RedditBrowserAutomation {
   fulfill(request: RedditBrowserBridgeRequest): Promise<{
     remoteContentId?: string;
     remoteContentUrl?: string;
+    result?: RedditBrowserReadResult;
     raw?: unknown;
   }>;
   close(): Promise<void>;
@@ -190,6 +196,7 @@ export async function startRedditBrowserWorker(
           ok: true,
           remoteContentId: result.remoteContentId,
           remoteContentUrl: result.remoteContentUrl,
+          result: result.result,
           raw: result.raw
         } satisfies RedditBrowserBridgeResponseSuccess);
         await writeStatus(config.statusPath, {
@@ -335,10 +342,23 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
   async fulfill(request: RedditBrowserBridgeRequest): Promise<{
     remoteContentId?: string;
     remoteContentUrl?: string;
+    result?: RedditBrowserReadResult;
     raw?: unknown;
   }> {
     const page = await this.getPage();
     switch (request.action.type) {
+      case "search_subreddit":
+        return {
+          result: await this.searchSubreddit(page, request)
+        };
+      case "list_subreddit_posts":
+        return {
+          result: await this.listSubredditPosts(page, request)
+        };
+      case "read_thread":
+        return {
+          result: await this.readThread(page, request)
+        };
       case "create_post":
         return this.submitCreatePost(page, request);
       case "comment_on_post":
@@ -347,7 +367,7 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
         return this.submitComment(page, request, true);
       default:
         throw new RedditControllerConfigurationError(
-          `Reddit browser worker cannot fulfill action type ${request.action.type}.`
+          "Reddit browser worker cannot fulfill the requested action type."
         );
     }
   }
@@ -407,6 +427,9 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
   }
 
   private async submitCreatePost(page: Page, request: RedditBrowserBridgeRequest) {
+    if (request.action.type !== "create_post") {
+      throw new RedditControllerConfigurationError("Expected create_post action.");
+    }
     const surface = request.action.surface;
     if (!surface) {
       throw new RedditControllerConfigurationError(
@@ -439,6 +462,9 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
   }
 
   private async submitComment(page: Page, request: RedditBrowserBridgeRequest, isReply: boolean) {
+    if (request.action.type !== "comment_on_post" && request.action.type !== "reply_to_comment") {
+      throw new RedditControllerConfigurationError("Expected comment/reply action.");
+    }
     const targetUrl = resolveRequestUrl(this.config.baseUrl, request, isReply);
     await this.gotoAndGuard(page, targetUrl);
     if (isReply) {
@@ -573,7 +599,7 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
 
   private async buildSubmitResult(
     page: Page,
-    actionType: RedditBrowserBridgeRequest["action"]["type"],
+    actionType: RedditPublishableActionType,
     content: string | undefined
   ) {
     const currentUrl = page.url();
@@ -588,9 +614,74 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
       }
     };
   }
+
+  private async searchSubreddit(
+    page: Page,
+    request: RedditBrowserBridgeRequest
+  ): Promise<RedditBrowserReadResult> {
+    if (request.action.type !== "search_subreddit") {
+      throw new RedditControllerConfigurationError("Expected search_subreddit action.");
+    }
+    const url = new URL(`/r/${encodeURIComponent(request.action.subreddit)}/search/`, this.config.baseUrl);
+    url.searchParams.set("q", request.action.query);
+    url.searchParams.set("restrict_sr", "1");
+    url.searchParams.set("sort", request.action.sort ?? "new");
+    url.searchParams.set("t", request.action.time ?? "month");
+    await this.gotoAndGuard(page, url.toString());
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
+    return {
+      type: "search_subreddit",
+      items: (await extractSearchResults(page)).slice(0, request.action.limit ?? 10)
+    };
+  }
+
+  private async listSubredditPosts(
+    page: Page,
+    request: RedditBrowserBridgeRequest
+  ): Promise<RedditBrowserReadResult> {
+    if (request.action.type !== "list_subreddit_posts") {
+      throw new RedditControllerConfigurationError("Expected list_subreddit_posts action.");
+    }
+    const sort = request.action.sort ?? "new";
+    const url = new URL(`/r/${encodeURIComponent(request.action.subreddit)}/${sort}/`, this.config.baseUrl);
+    await this.gotoAndGuard(page, url.toString());
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
+    return {
+      type: "list_subreddit_posts",
+      items: (await extractSearchResults(page)).slice(0, request.action.limit ?? 10)
+    };
+  }
+
+  private async readThread(
+    page: Page,
+    request: RedditBrowserBridgeRequest
+  ): Promise<RedditBrowserReadResult> {
+    if (request.action.type !== "read_thread") {
+      throw new RedditControllerConfigurationError("Expected read_thread action.");
+    }
+    const targetUrl = request.action.url
+      ? normalizeUrl(request.action.url, this.config.baseUrl)
+      : request.action.subreddit && request.action.postId
+        ? new URL(`/r/${request.action.subreddit}/comments/${request.action.postId}/`, this.config.baseUrl).toString()
+        : request.action.postId
+          ? new URL(`/comments/${request.action.postId}/`, this.config.baseUrl).toString()
+          : undefined;
+    if (!targetUrl) {
+      throw new RedditControllerConfigurationError("read_thread requires url or postId.");
+    }
+    await this.gotoAndGuard(page, targetUrl);
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
+    return {
+      type: "read_thread",
+      thread: await extractThreadState(page, this.config.baseUrl, request.action.limit ?? 35)
+    };
+  }
 }
 
 function resolveRequestUrl(baseUrl: string, request: RedditBrowserBridgeRequest, isReply: boolean): string {
+  if (request.action.type !== "comment_on_post" && request.action.type !== "reply_to_comment") {
+    throw new RedditControllerConfigurationError("Expected comment/reply action.");
+  }
   const raw = isRecord(request.action.raw) ? request.action.raw : undefined;
   const permalink = stringValue(raw?.permalink);
   const url = stringValue(raw?.url);
@@ -636,7 +727,7 @@ async function findPermalinkForContent(page: Page, content: string): Promise<str
 
 function extractRemoteContentId(
   remoteUrl: string | undefined,
-  actionType: RedditBrowserBridgeRequest["action"]["type"]
+  actionType: RedditPublishableActionType
 ): string | undefined {
   if (!remoteUrl) {
     return undefined;
@@ -649,6 +740,119 @@ function extractRemoteContentId(
     return match[1];
   }
   return match[2] ?? undefined;
+}
+
+async function extractSearchResults(page: Page): Promise<RedditSearchResult[]> {
+  return page.evaluate(() => {
+    const anchors = Array.from(document.querySelectorAll('a[href*="/comments/"]')) as HTMLAnchorElement[];
+    const seen = new Set<string>();
+    const results: RedditSearchResult[] = [];
+    for (const anchor of anchors) {
+      const href = anchor.href;
+      const match = href.match(/\/r\/([^/]+)\/comments\/([^/]+)/i) ?? href.match(/\/comments\/([^/]+)/i);
+      if (!match) {
+        continue;
+      }
+      const subreddit = match.length > 2 ? decodeURIComponent(match[1]!) : "";
+      const id = match.length > 2 ? match[2]! : match[1]!;
+      const title = (anchor.textContent ?? "").trim();
+      if (!id || !title || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      const container =
+        anchor.closest("article") ??
+        anchor.closest('[data-testid="post-container"]') ??
+        anchor.closest("shreddit-post") ??
+        anchor.parentElement;
+      const text = container?.textContent?.replace(/\s+/g, " ").trim();
+      results.push({
+        id,
+        subreddit,
+        title,
+        body: text && text !== title ? text.slice(0, 1200) : undefined,
+        permalink: new URL(href).pathname,
+        url: href
+      });
+    }
+    return results;
+  });
+}
+
+async function extractThreadState(page: Page, baseUrl: string, limit: number): Promise<RedditThreadState> {
+  const url = page.url();
+  const fallback = parseThreadUrl(url);
+  const extracted = await page.evaluate((commentLimit) => {
+    const postContainer =
+      document.querySelector("shreddit-post") ??
+      document.querySelector("article") ??
+      document.body;
+    const title =
+      document.querySelector("h1")?.textContent?.trim() ??
+      postContainer?.querySelector('[slot="title"]')?.textContent?.trim() ??
+      document.title.replace(/\s*:\s*reddit\s*$/i, "").trim();
+    const body =
+      postContainer?.querySelector('[slot="text-body"]')?.textContent?.trim() ??
+      postContainer?.textContent?.trim();
+    const comments = Array.from(
+      document.querySelectorAll("shreddit-comment, [data-testid='comment'], article")
+    )
+      .slice(0, commentLimit)
+      .map((node, index) => {
+        const element = node as HTMLElement;
+        const link = element.querySelector('a[href*="/comments/"]') as HTMLAnchorElement | null;
+        const text = element.textContent?.replace(/\s+/g, " ").trim() ?? "";
+        const author =
+          element.getAttribute("author") ??
+          element.querySelector('[data-testid="comment_author_link"], a[href^="/user/"], a[href*="/user/"]')?.textContent?.trim() ??
+          undefined;
+        return {
+          id: element.id || element.getAttribute("thingid") || link?.href?.split("/").filter(Boolean).at(-1) || `comment-${index}`,
+          body: text.slice(0, 2000),
+          author,
+          permalink: link ? new URL(link.href).pathname : undefined,
+          depth: Number(element.getAttribute("depth") ?? "0") || 0
+        };
+      })
+      .filter((comment) => comment.body.length > 0);
+    const alreadyParticipated = /you|your comment|profile-card/i.test(postContainer?.textContent ?? "");
+    return {
+      title,
+      body,
+      comments,
+      alreadyParticipated
+    };
+  }, limit);
+
+  return {
+    id: fallback.id,
+    subreddit: fallback.subreddit,
+    title: extracted.title || "Reddit thread",
+    body: extracted.body,
+    permalink: new URL(url).pathname,
+    url: normalizeUrl(url, baseUrl),
+    commentCount: extracted.comments.length,
+    alreadyParticipated: extracted.alreadyParticipated,
+    comments: extracted.comments.map((comment): RedditCommentState => ({
+      id: comment.id,
+      body: comment.body,
+      author: comment.author,
+      permalink: comment.permalink,
+      depth: comment.depth,
+      replies: []
+    }))
+  };
+}
+
+function parseThreadUrl(url: string): { subreddit: string; id: string } {
+  const parsed = new URL(url);
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  const subredditIndex = parts.findIndex((part) => part.toLowerCase() === "r");
+  const commentsIndex = parts.findIndex((part) => part.toLowerCase() === "comments");
+  return {
+    subreddit: subredditIndex >= 0 ? parts[subredditIndex + 1] ?? "" : "",
+    id: commentsIndex >= 0 ? parts[commentsIndex + 1] ?? parsed.pathname : parsed.pathname
+  };
 }
 
 function normalizeUrl(value: string, baseUrl: string): string {

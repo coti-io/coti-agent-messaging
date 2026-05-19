@@ -36,6 +36,8 @@
     "outreach:reddit:login:local": "npm run reddit:login:local -w @coti-agent-messaging/outreach-agent",
     "outreach:reddit:browser-worker": "npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent",
     "outreach:reddit:browser-worker:local": "npm run reddit:browser-worker:local -w @coti-agent-messaging/outreach-agent",
+    "outreach:reddit:session:dry-run": "npm run reddit:session:dry-run -w @coti-agent-messaging/outreach-agent",
+    "outreach:reddit:session:local": "npm run reddit:session:local -w @coti-agent-messaging/outreach-agent",
     "outreach:attribution:summary": "npm run attribution:summary -w @coti-agent-messaging/outreach-agent",
     "analytics:build": "npm run build -w @coti-agent-messaging/analytics-dashboard",
     "analytics:start": "npm run start -w @coti-agent-messaging/analytics-dashboard",

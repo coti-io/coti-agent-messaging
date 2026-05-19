@@ -179,6 +179,84 @@ test("Reddit browser controller writes bridge requests and reads responses", asy
   assert.equal(result.remoteContentId, "t1_reply42");
 });
 
+test("Reddit browser controller writes read requests and returns normalized results", async () => {
+  const bridgeDir = path.join(os.tmpdir(), `reddit-browser-read-bridge-${Date.now()}`);
+  const controller = new RedditBrowserController(
+    createConfig({
+      reddit: {
+        controller: "browser",
+        browserBridge: {
+          bridgeDir,
+          responseTimeoutMs: 2000,
+          pollIntervalMs: 10
+        },
+        api: {
+          accessToken: "token",
+          userAgent: "test-agent",
+          baseUrl: "https://oauth.reddit.test"
+        }
+      }
+    })
+  );
+
+  const run = controller.readAction(
+    {
+      id: "search-sales",
+      type: "search_subreddit",
+      subreddit: "sales",
+      query: "CRM messy data",
+      limit: 5
+    },
+    {
+      mode: "approved_autopost",
+      allowedSurfaces: ["sales"],
+      venueAccountId: "reddit-user"
+    }
+  );
+
+  const requestsDir = path.join(bridgeDir, "requests");
+  const responsesDir = path.join(bridgeDir, "responses");
+  await mkdir(responsesDir, { recursive: true });
+  let requestFile: string | undefined;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const entries = await readDirFiles(requestsDir).catch(() => []);
+    requestFile = entries[0];
+    if (requestFile) break;
+    await delay(10);
+  }
+  assert.ok(requestFile);
+  const request = JSON.parse(await readFile(path.join(requestsDir, requestFile), "utf8")) as {
+    requestId: string;
+    action: { type: string; subreddit?: string; query?: string };
+  };
+  assert.equal(request.action.type, "search_subreddit");
+  assert.equal(request.action.subreddit, "sales");
+
+  await writeFile(
+    path.join(responsesDir, `${request.requestId}.json`),
+    JSON.stringify({
+      requestId: request.requestId,
+      ok: true,
+      result: {
+        type: "search_subreddit",
+        items: [
+          {
+            id: "post-1",
+            subreddit: "sales",
+            title: "CRM data is a mess",
+            permalink: "/r/sales/comments/post-1/crm_data/"
+          }
+        ]
+      }
+    }),
+    "utf8"
+  );
+
+  const result = await run;
+  assert.equal(result.type, "search_subreddit");
+  assert.equal(result.items[0]?.subreddit, "sales");
+});
+
 test("Reddit browser controller maps typed bridge failures", async () => {
   const bridgeDir = path.join(os.tmpdir(), `reddit-browser-bridge-error-${Date.now()}`);
   const controller = new RedditBrowserController(

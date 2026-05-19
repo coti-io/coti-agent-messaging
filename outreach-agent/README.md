@@ -220,6 +220,8 @@ npm run reddit:evaluate -w @coti-agent-messaging/outreach-agent -- --history out
 npm run reddit:publish -w @coti-agent-messaging/outreach-agent -- --input outreach-agent/.data/reddit-action.json
 npm run reddit:login -w @coti-agent-messaging/outreach-agent
 npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
+npm run reddit:session:dry-run -w @coti-agent-messaging/outreach-agent
+npm run reddit:session:local -w @coti-agent-messaging/outreach-agent
 ```
 
 For live read-only monitoring through Reddit OAuth:
@@ -237,6 +239,8 @@ OUTREACH_AGENT_VENUE=reddit
 OUTREACH_AGENT_MODE=approved_autopost
 OUTREACH_AGENT_ALLOWED_SURFACES=AI_Agents,LocalLLaMA
 OUTREACH_REDDIT_CONTROLLER=manual # or browser or api
+OUTREACH_REDDIT_READ_CONTROLLER=auto # or browser or api
+OUTREACH_REDDIT_TARGET_SUBREDDITS=sales,SaaS,CustomerSuccess,DigitalMarketing
 ```
 
 Controller behavior:
@@ -244,6 +248,22 @@ Controller behavior:
 - `manual`: keeps the autonomous scan/draft-only workflow and rejects publish attempts because the controller is configured not to publish
 - `api`: submits `create_post`, `comment_on_post`, and `reply_to_comment` through Reddit OAuth using `REDDIT_ACCESS_TOKEN` and `REDDIT_USER_AGENT`
 - `browser`: writes publish requests into `outreach-agent/.bridge/reddit-browser/requests` and waits for a matching response file in `responses`; the bundled `reddit-browser-worker` command fulfills those requests through Playwright and returns remote ids/URLs
+
+`reddit-session` is the autonomous operating loop. In dry-run mode it reads Reddit state, ranks candidate comments/posts, drafts a validated zero-marketing reply, writes memory, and prints a decision report without publishing. In local live mode it publishes at most one reply/comment through the selected controller, then records the outcome in `OUTREACH_REDDIT_MEMORY_PATH`.
+
+Operating-agent config:
+
+```bash
+OUTREACH_REDDIT_READ_CONTROLLER=auto
+OUTREACH_REDDIT_TARGET_SUBREDDITS=sales,SaaS,CustomerSuccess,DigitalMarketing
+OUTREACH_REDDIT_SEARCH_QUERIES=CRM messy data,sales handoff broken,manual workflow,customer success workflow,automation failed,duplicate CRM records,SaaS ops process,marketing ops data quality
+OUTREACH_REDDIT_MAX_ACTIONS_PER_SESSION=1
+OUTREACH_REDDIT_MAX_ACTIONS_PER_DAY=4
+OUTREACH_REDDIT_MIN_JITTER_MINUTES=18
+OUTREACH_REDDIT_MAX_JITTER_MINUTES=67
+OUTREACH_REDDIT_SESSION_DRY_RUN=true
+OUTREACH_REDDIT_MEMORY_PATH=./outreach-agent/.data/reddit-memory.json
+```
 
 Browser worker setup:
 

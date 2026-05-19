@@ -11,6 +11,8 @@ export type RedditPublishableActionType = Extract<
   VenueAction["type"],
   "create_post" | "comment_on_post" | "reply_to_comment"
 >;
+export type RedditReadableActionType = "search_subreddit" | "list_subreddit_posts" | "read_thread";
+export type RedditBrowserActionType = RedditPublishableActionType | RedditReadableActionType;
 
 type RedditCreatePostAction = VenueAction & { type: "create_post"; title: string; content: string };
 type RedditCommentOnPostAction = VenueAction & { type: "comment_on_post"; parentId: string; content: string };
@@ -36,12 +38,97 @@ export interface RedditPublishResult {
   raw?: unknown;
 }
 
+export interface RedditCommentState {
+  id: string;
+  body: string;
+  author?: string;
+  permalink?: string;
+  score?: number;
+  createdUtc?: number;
+  parentId?: string;
+  depth: number;
+  replies?: RedditCommentState[];
+}
+
+export interface RedditThreadState {
+  id: string;
+  subreddit: string;
+  title: string;
+  body?: string;
+  author?: string;
+  permalink?: string;
+  url?: string;
+  score?: number;
+  commentCount?: number;
+  createdUtc?: number;
+  locked?: boolean;
+  archived?: boolean;
+  removed?: boolean;
+  alreadyParticipated?: boolean;
+  comments: RedditCommentState[];
+}
+
+export interface RedditSearchResult {
+  id: string;
+  subreddit: string;
+  title: string;
+  body?: string;
+  author?: string;
+  permalink?: string;
+  url?: string;
+  score?: number;
+  commentCount?: number;
+  createdUtc?: number;
+}
+
+export interface RedditConversationSnapshot {
+  thread: RedditThreadState;
+  source: "browser" | "api" | "input";
+  capturedAt: string;
+}
+
+export type RedditBrowserReadAction =
+  | {
+      id: string;
+      type: "search_subreddit";
+      subreddit: string;
+      query: string;
+      sort?: "relevance" | "hot" | "new" | "top" | "comments";
+      time?: "hour" | "day" | "week" | "month" | "year" | "all";
+      limit?: number;
+    }
+  | {
+      id: string;
+      type: "list_subreddit_posts";
+      subreddit: string;
+      sort?: "hot" | "new" | "rising" | "top";
+      limit?: number;
+    }
+  | {
+      id: string;
+      type: "read_thread";
+      url?: string;
+      postId?: string;
+      subreddit?: string;
+      limit?: number;
+    };
+
+export type RedditBrowserReadResult =
+  | {
+      type: "search_subreddit" | "list_subreddit_posts";
+      items: RedditSearchResult[];
+    }
+  | {
+      type: "read_thread";
+      thread: RedditThreadState;
+    };
+
 export interface RedditController {
   readonly id: RedditControllerKind;
   publishAction(action: VenueAction, context: RedditControllerContext): Promise<RedditPublishResult>;
 }
 
-export interface RedditBrowserBridgeRequest {
+export interface RedditBrowserBridgePublishRequest {
   requestId: string;
   createdAt: string;
   controller: "browser";
@@ -63,11 +150,29 @@ export interface RedditBrowserBridgeRequest {
   };
 }
 
+export interface RedditBrowserBridgeReadRequest {
+  requestId: string;
+  createdAt: string;
+  controller: "browser";
+  venue: "reddit";
+  action: RedditBrowserReadAction;
+  context: {
+    mode: OutreachAgentMode;
+    allowedSurfaces: readonly string[];
+    venueAccountId?: string;
+  };
+}
+
+export type RedditBrowserBridgeRequest =
+  | RedditBrowserBridgePublishRequest
+  | RedditBrowserBridgeReadRequest;
+
 export interface RedditBrowserBridgeResponseSuccess {
   requestId: string;
   ok: true;
   remoteContentId?: string;
   remoteContentUrl?: string;
+  result?: RedditBrowserReadResult;
   raw?: unknown;
 }
 
@@ -292,19 +397,46 @@ export class RedditBrowserController implements RedditController {
 
   async publishAction(action: VenueAction, context: RedditControllerContext): Promise<RedditPublishResult> {
     const publishableAction = assertRedditPublishableAction(action);
+    const response = await this.sendBridgeRequest(buildBridgePublishRequest(
+      `reddit-browser-${Date.now()}-${process.pid}-${this.requestCount++}`,
+      publishableAction,
+      context
+    ));
+
+    return {
+      remoteContentId: response.remoteContentId,
+      remoteContentUrl: response.remoteContentUrl,
+      raw: response.raw
+    };
+  }
+
+  async readAction(
+    action: RedditBrowserReadAction,
+    context: RedditControllerContext
+  ): Promise<RedditBrowserReadResult> {
+    const response = await this.sendBridgeRequest(buildBridgeReadRequest(
+      `reddit-browser-read-${Date.now()}-${process.pid}-${this.requestCount++}`,
+      action,
+      context
+    ));
+    if (!response.result) {
+      throw new RedditControllerError("Reddit browser read response did not include a result.", "bridge_error", response.raw);
+    }
+    return response.result;
+  }
+
+  private async sendBridgeRequest(
+    request: RedditBrowserBridgeRequest
+  ): Promise<RedditBrowserBridgeResponseSuccess> {
     const bridgeConfig = getRedditControllerConfig(this.config).browserBridge;
     const requestsDir = path.join(bridgeConfig.bridgeDir, "requests");
     const responsesDir = path.join(bridgeConfig.bridgeDir, "responses");
-    const requestId = `reddit-browser-${Date.now()}-${process.pid}-${this.requestCount++}`;
-    const requestPath = path.join(requestsDir, `${requestId}.json`);
-    const responsePath = path.join(responsesDir, `${requestId}.json`);
+    const requestPath = path.join(requestsDir, `${request.requestId}.json`);
+    const responsePath = path.join(responsesDir, `${request.requestId}.json`);
 
     await mkdir(requestsDir, { recursive: true });
     await mkdir(responsesDir, { recursive: true });
-    await writeJsonAtomic(
-      requestPath,
-      buildBridgeRequest(requestId, publishableAction, context)
-    );
+    await writeJsonAtomic(requestPath, request);
 
     try {
       const response = await waitForBridgeResponse(
@@ -316,11 +448,7 @@ export class RedditBrowserController implements RedditController {
         throw mapBrowserBridgeError(response);
       }
 
-      return {
-        remoteContentId: response.remoteContentId,
-        remoteContentUrl: response.remoteContentUrl,
-        raw: response.raw
-      };
+      return response;
     } finally {
       await rm(requestPath, { force: true }).catch(() => undefined);
       await rm(responsePath, { force: true }).catch(() => undefined);
@@ -328,11 +456,11 @@ export class RedditBrowserController implements RedditController {
   }
 }
 
-function buildBridgeRequest(
+function buildBridgePublishRequest(
   requestId: string,
   action: RedditPublishableAction,
   context: RedditControllerContext
-): RedditBrowserBridgeRequest {
+): RedditBrowserBridgePublishRequest {
   return {
     requestId,
     createdAt: new Date().toISOString(),
@@ -348,6 +476,25 @@ function buildBridgeRequest(
       candidateId: action.candidateId,
       raw: action.raw
     },
+    context: {
+      mode: context.mode,
+      allowedSurfaces: [...context.allowedSurfaces],
+      venueAccountId: context.venueAccountId
+    }
+  };
+}
+
+function buildBridgeReadRequest(
+  requestId: string,
+  action: RedditBrowserReadAction,
+  context: RedditControllerContext
+): RedditBrowserBridgeReadRequest {
+  return {
+    requestId,
+    createdAt: new Date().toISOString(),
+    controller: "browser",
+    venue: "reddit",
+    action,
     context: {
       mode: context.mode,
       allowedSurfaces: [...context.allowedSurfaces],

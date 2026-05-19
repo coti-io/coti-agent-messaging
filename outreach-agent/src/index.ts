@@ -7,6 +7,7 @@ import { runBridgeServerCli } from "./bridge-server.js";
 import { stopBridgeServer } from "./bridge-stop.js";
 import { runRedditBrowserLoginCli } from "./reddit-browser-login.js";
 import { runRedditBrowserWorkerCli } from "./reddit-browser-worker.js";
+import { runRedditSessionCli } from "./reddit-session.js";
 import { readAttributionSummaryFromStore, readMessageFunnelSummaryFromStore } from "./attribution-store.js";
 import { getOutreachAgentConfig, getRedditControllerConfig, loadRuntimeConfig, saveStoredCredentials } from "./config.js";
 import { mergeFeedPosts, rankDesignPartnerCandidates } from "./design-partners.js";
@@ -67,6 +68,7 @@ function printUsage(): void {
   coti-outreach-agent reddit-publish --input FILE
   coti-outreach-agent reddit-browser-login [--storage-state FILE] [--startup-url URL] [--headless]
   coti-outreach-agent reddit-browser-worker
+  coti-outreach-agent reddit-session [--dry-run | --live] [--once] [--max-actions 1] [--subreddits sales,SaaS]
   coti-outreach-agent attribution-summary [--db FILE | --refs FILE --events FILE]
   coti-outreach-agent message-funnel [--db FILE]
   coti-outreach-agent bridge-server
@@ -362,6 +364,10 @@ async function run(): Promise<void> {
     }
     case "reddit-browser-worker": {
       await runRedditBrowserWorkerCli();
+      return;
+    }
+    case "reddit-session": {
+      await runRedditSessionCli();
       return;
     }
     case "attribution-summary": {

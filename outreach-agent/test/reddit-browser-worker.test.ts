@@ -148,6 +148,65 @@ test("reddit browser worker maps automation failures into typed bridge responses
   }
 });
 
+test("reddit browser worker fulfills read requests with normalized state", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-browser-worker-read-"));
+  const automation: RedditBrowserAutomation = {
+    async fulfill(request) {
+      assert.equal(request.action.type, "read_thread");
+      return {
+        result: {
+          type: "read_thread",
+          thread: {
+            id: "post-1",
+            subreddit: "sales",
+            title: "CRM handoff is broken",
+            body: "How do people fix this?",
+            permalink: "/r/sales/comments/post-1/crm/",
+            comments: [
+              {
+                id: "comment-1",
+                body: "We keep duplicating records.",
+                depth: 0
+              }
+            ]
+          }
+        }
+      };
+    },
+    async close() {}
+  };
+  const config = createConfig(tempDir);
+  const handle = await startRedditBrowserWorker(config, automation);
+
+  try {
+    const request: RedditBrowserBridgeRequest = {
+      requestId: "reddit-browser-read-1",
+      createdAt: new Date().toISOString(),
+      controller: "browser",
+      venue: "reddit",
+      action: {
+        id: "thread-post-1",
+        type: "read_thread",
+        url: "/r/sales/comments/post-1/crm/"
+      },
+      context: {
+        mode: "approved_autopost",
+        allowedSurfaces: ["sales"]
+      }
+    };
+
+    await writeFile(path.join(config.requestsDir, `${request.requestId}.json`), JSON.stringify(request), "utf8");
+    const responseFile = await waitForSingleFile(config.responsesDir);
+    const response = JSON.parse(await readFile(path.join(config.responsesDir, responseFile), "utf8"));
+    assert.equal(response.ok, true);
+    assert.equal(response.result.type, "read_thread");
+    assert.equal(response.result.thread.comments[0].id, "comment-1");
+    assert.equal(response.remoteContentId, undefined);
+  } finally {
+    await handle.close();
+  }
+});
+
 test("reddit browser worker restores abandoned processing files on startup", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-browser-worker-restore-"));
   const config = createConfig(tempDir);

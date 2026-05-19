@@ -220,8 +220,13 @@ npm run reddit:evaluate -w @coti-agent-messaging/outreach-agent -- --history out
 npm run reddit:publish -w @coti-agent-messaging/outreach-agent -- --input outreach-agent/.data/reddit-action.json
 npm run reddit:login -w @coti-agent-messaging/outreach-agent
 npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
+npm run reddit:browser:install:deps -w @coti-agent-messaging/outreach-agent
 npm run reddit:session:dry-run -w @coti-agent-messaging/outreach-agent
 npm run reddit:session:local -w @coti-agent-messaging/outreach-agent
+npm run reddit:docker:build -w @coti-agent-messaging/outreach-agent
+npm run reddit:docker:worker -w @coti-agent-messaging/outreach-agent
+npm run reddit:docker:session:dry-run -w @coti-agent-messaging/outreach-agent
+npm run reddit:docker:session:local -w @coti-agent-messaging/outreach-agent
 ```
 
 For live read-only monitoring through Reddit OAuth:
@@ -282,6 +287,34 @@ npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
 `reddit:login` opens a Playwright browser, lets you log in manually, checks `/api/me.json` to confirm the session is authenticated, and saves the Playwright storage state to the configured path. Copy that file to the server if you want the headless worker there to reuse the same session.
 
 The worker uses that stored Playwright browser session. If Reddit redirects to login, shows a challenge, or changes the editor UI enough that submission cannot be completed, the worker fails loudly and writes a typed error response instead of trying to sneak around it.
+
+Recommended split for real use:
+
+1. Do the one-time login bootstrap on a host with a working browser:
+
+```bash
+npm run reddit:browser:install:deps -w @coti-agent-messaging/outreach-agent
+OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./outreach-agent/.browser/reddit-storage-state.json \
+npm run reddit:login -w @coti-agent-messaging/outreach-agent
+```
+
+2. Run the worker and sessions in Docker using that saved session file:
+
+```bash
+npm run reddit:docker:build -w @coti-agent-messaging/outreach-agent
+npm run reddit:docker:worker -w @coti-agent-messaging/outreach-agent
+npm run reddit:docker:session:dry-run -w @coti-agent-messaging/outreach-agent
+```
+
+`reddit:docker:build` intentionally builds only the shared `coti-agent-messaging/outreach-agent:local` image once through the `reddit-browser-worker` service. The session services reuse that same image instead of asking Docker to export the same image three times in parallel.
+
+3. Only after dry-run output looks sane, try one live action:
+
+```bash
+npm run reddit:docker:session:local -w @coti-agent-messaging/outreach-agent
+```
+
+The Docker setup mounts `outreach-agent/.browser`, `outreach-agent/.bridge`, and `outreach-agent/.data` into the container. That means the host-generated Playwright `storageState.json` is reused by the containerized worker without ever putting Reddit credentials into environment variables.
 
 Example `reddit-publish` input:
 

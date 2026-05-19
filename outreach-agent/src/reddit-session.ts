@@ -66,8 +66,13 @@ export async function runRedditSession(input: {
 
   const ingestion = input.ingestion ?? await ingestRedditState({
     config,
-    subreddits: input.subreddits?.length ? input.subreddits : operating.targetSubreddits,
-    queries: operating.searchQueries,
+    subreddits:
+      input.subreddits?.length
+        ? input.subreddits
+        : operating.targetSubreddits.length > 0
+          ? operating.targetSubreddits
+          : undefined,
+    queries: operating.searchQueries.length > 0 ? operating.searchQueries : undefined,
     history: memory.history,
     source: operating.readController
   });

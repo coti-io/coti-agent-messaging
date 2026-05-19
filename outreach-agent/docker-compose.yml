@@ -1,0 +1,78 @@
+services:
+  reddit-browser-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: coti-agent-messaging/outreach-agent:local
+    restart: unless-stopped
+    working_dir: /app
+    entrypoint:
+      - node
+      - ./dist/src/index.js
+    command:
+      - reddit-browser-worker
+    env_file:
+      - ../.env
+    environment:
+      OUTREACH_AGENT_VENUE: reddit
+      OUTREACH_AGENT_MODE: approved_autopost
+      OUTREACH_REDDIT_CONTROLLER: browser
+      OUTREACH_REDDIT_READ_CONTROLLER: browser
+      OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH: /app/.browser/reddit-storage-state.json
+      OUTREACH_REDDIT_BROWSER_BRIDGE_DIR: /app/.bridge/reddit-browser
+      OUTREACH_REDDIT_MEMORY_PATH: /app/.data/reddit-memory.json
+    volumes:
+      - ./.browser:/app/.browser
+      - ./.bridge:/app/.bridge
+      - ./.data:/app/.data
+
+  reddit-session-dry-run:
+    image: coti-agent-messaging/outreach-agent:local
+    working_dir: /app
+    entrypoint:
+      - node
+      - ./dist/src/index.js
+    command:
+      - reddit-session
+      - --dry-run
+      - --once
+    env_file:
+      - ../.env
+    environment:
+      OUTREACH_AGENT_VENUE: reddit
+      OUTREACH_REDDIT_SESSION_DRY_RUN: "true"
+      OUTREACH_REDDIT_CONTROLLER: browser
+      OUTREACH_REDDIT_READ_CONTROLLER: browser
+      OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH: /app/.browser/reddit-storage-state.json
+      OUTREACH_REDDIT_BROWSER_BRIDGE_DIR: /app/.bridge/reddit-browser
+      OUTREACH_REDDIT_MEMORY_PATH: /app/.data/reddit-memory.json
+    volumes:
+      - ./.browser:/app/.browser
+      - ./.bridge:/app/.bridge
+      - ./.data:/app/.data
+
+  reddit-session-live:
+    image: coti-agent-messaging/outreach-agent:local
+    working_dir: /app
+    entrypoint:
+      - node
+      - ./dist/src/index.js
+    command:
+      - reddit-session
+      - --once
+      - --max-actions
+      - "1"
+    env_file:
+      - ../.env
+    environment:
+      OUTREACH_AGENT_VENUE: reddit
+      OUTREACH_AGENT_MODE: approved_autopost
+      OUTREACH_REDDIT_CONTROLLER: browser
+      OUTREACH_REDDIT_READ_CONTROLLER: browser
+      OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH: /app/.browser/reddit-storage-state.json
+      OUTREACH_REDDIT_BROWSER_BRIDGE_DIR: /app/.bridge/reddit-browser
+      OUTREACH_REDDIT_MEMORY_PATH: /app/.data/reddit-memory.json
+    volumes:
+      - ./.browser:/app/.browser
+      - ./.bridge:/app/.bridge
+      - ./.data:/app/.data

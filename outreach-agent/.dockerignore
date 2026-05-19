@@ -1,0 +1,7 @@
+dist
+node_modules
+.bridge
+.browser
+.data
+coverage
+*.log

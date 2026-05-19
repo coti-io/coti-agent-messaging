@@ -13,3 +13,4 @@ starter-grant-service/.env
 outreach-agent/.data/
 outreach-agent/.bridge/
 starter-grant-service/.data/
+reddit-storage-state.json

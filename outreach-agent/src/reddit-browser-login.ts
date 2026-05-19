@@ -117,14 +117,39 @@ async function detectAuthenticatedUsername(page: import("playwright").Page, base
 
   const result = await page
     .evaluate(async () => {
+      const extractUsername = (value: unknown): string | undefined => {
+        if (!value || typeof value !== "object") {
+          return undefined;
+        }
+        const record = value as Record<string, unknown>;
+        const directName = typeof record.name === "string" && record.name.length > 0 ? record.name : undefined;
+        if (directName) {
+          return directName;
+        }
+        const data = record.data;
+        if (data && typeof data === "object") {
+          const nestedName = (data as Record<string, unknown>).name;
+          if (typeof nestedName === "string" && nestedName.length > 0) {
+            return nestedName;
+          }
+        }
+        return undefined;
+      };
+
       const response = await fetch("/api/me.json", {
         credentials: "include"
       });
       if (!response.ok) {
-        return undefined;
+        const profileAnchor = document.querySelector('a[href^="/user/"], a[href^="/u/"]');
+        const href = profileAnchor?.getAttribute("href");
+        if (!href) {
+          return undefined;
+        }
+        const match = href.match(/^\/(?:u|user)\/([^/?#]+)/i);
+        return match?.[1];
       }
-      const payload = (await response.json()) as { name?: unknown };
-      return typeof payload.name === "string" && payload.name.length > 0 ? payload.name : undefined;
+      const payload = (await response.json()) as unknown;
+      return extractUsername(payload);
     })
     .catch(() => undefined);
 

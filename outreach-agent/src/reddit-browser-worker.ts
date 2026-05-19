@@ -22,6 +22,7 @@ import {
   type RedditSearchResult,
   type RedditThreadState
 } from "./reddit-controller.js";
+import { parseRedditListing, type RedditSourceItem } from "./reddit-outreach.js";
 
 export interface RedditBrowserWorkerConfig {
   bridgeDir: string;
@@ -629,6 +630,21 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
     url.searchParams.set("t", request.action.time ?? "month");
     await this.gotoAndGuard(page, url.toString());
     await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
+    const jsonUrl = new URL(`/r/${encodeURIComponent(request.action.subreddit)}/search.json`, this.config.baseUrl);
+    jsonUrl.searchParams.set("q", request.action.query);
+    jsonUrl.searchParams.set("restrict_sr", "1");
+    jsonUrl.searchParams.set("sort", request.action.sort ?? "new");
+    jsonUrl.searchParams.set("t", request.action.time ?? "month");
+    jsonUrl.searchParams.set("limit", String(request.action.limit ?? 10));
+    const jsonItems = normalizeSearchResultsFromSourceItems(
+      parseRedditListing(await fetchJsonInPage(page, jsonUrl.toString()))
+    );
+    if (jsonItems.length > 0) {
+      return {
+        type: "search_subreddit",
+        items: jsonItems.slice(0, request.action.limit ?? 10)
+      };
+    }
     return {
       type: "search_subreddit",
       items: (await extractSearchResults(page)).slice(0, request.action.limit ?? 10)
@@ -646,6 +662,17 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
     const url = new URL(`/r/${encodeURIComponent(request.action.subreddit)}/${sort}/`, this.config.baseUrl);
     await this.gotoAndGuard(page, url.toString());
     await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
+    const jsonUrl = new URL(`/r/${encodeURIComponent(request.action.subreddit)}/${sort}.json`, this.config.baseUrl);
+    jsonUrl.searchParams.set("limit", String(request.action.limit ?? 10));
+    const jsonItems = normalizeSearchResultsFromSourceItems(
+      parseRedditListing(await fetchJsonInPage(page, jsonUrl.toString()))
+    );
+    if (jsonItems.length > 0) {
+      return {
+        type: "list_subreddit_posts",
+        items: jsonItems.slice(0, request.action.limit ?? 10)
+      };
+    }
     return {
       type: "list_subreddit_posts",
       items: (await extractSearchResults(page)).slice(0, request.action.limit ?? 10)
@@ -671,6 +698,16 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
     }
     await this.gotoAndGuard(page, targetUrl);
     await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
+    const jsonThread = normalizeThreadStateFromJson(
+      await fetchJsonInPage(page, ensureJsonThreadUrl(targetUrl, request.action.limit ?? 35)),
+      this.config.baseUrl
+    );
+    if (jsonThread) {
+      return {
+        type: "read_thread",
+        thread: jsonThread
+      };
+    }
     return {
       type: "read_thread",
       thread: await extractThreadState(page, this.config.baseUrl, request.action.limit ?? 35)
@@ -859,12 +896,114 @@ function normalizeUrl(value: string, baseUrl: string): string {
   return new URL(value, baseUrl).toString();
 }
 
+function ensureJsonThreadUrl(value: string, limit: number): string {
+  const url = new URL(value);
+  const pathname = url.pathname.endsWith(".json") ? url.pathname : `${url.pathname.replace(/\/$/, "")}.json`;
+  url.pathname = pathname;
+  url.searchParams.set("limit", String(limit));
+  url.searchParams.set("raw_json", "1");
+  return url.toString();
+}
+
+async function fetchJsonInPage(page: Page, url: string): Promise<unknown> {
+  const result = await page.evaluate(async (targetUrl) => {
+    const response = await fetch(targetUrl, {
+      credentials: "include",
+      headers: {
+        Accept: "application/json"
+      }
+    });
+    if (!response.ok) {
+      throw new Error(`Fetch failed with ${response.status} for ${targetUrl}`);
+    }
+    return response.json();
+  }, url);
+  return result;
+}
+
+function normalizeSearchResultsFromSourceItems(items: readonly RedditSourceItem[]): RedditSearchResult[] {
+  return items
+    .filter((item) => item.kind === "post")
+    .map((item) => ({
+      id: item.id,
+      subreddit: item.subreddit,
+      title: item.title,
+      body: item.body,
+      author: item.author,
+      permalink: item.permalink,
+      url: item.url,
+      score: item.score,
+      commentCount: item.commentCount,
+      createdUtc: item.createdUtc
+    }));
+}
+
+function normalizeThreadStateFromJson(input: unknown, baseUrl: string): RedditThreadState | undefined {
+  if (!Array.isArray(input) || input.length === 0) {
+    return undefined;
+  }
+  const postItems = parseRedditListing(input[0]);
+  const post = postItems.find((item) => item.kind === "post");
+  if (!post) {
+    return undefined;
+  }
+  const comments = Array.isArray(input[1]) ? normalizeCommentListing(input[1]) : [];
+  return {
+    id: post.id,
+    subreddit: post.subreddit,
+    title: post.title,
+    body: post.body,
+    author: post.author,
+    permalink: post.permalink,
+    url: post.url ? normalizeUrl(post.url, baseUrl) : post.permalink ? normalizeUrl(post.permalink, baseUrl) : undefined,
+    score: post.score,
+    commentCount: post.commentCount,
+    createdUtc: post.createdUtc,
+    comments
+  };
+}
+
+function normalizeCommentListing(input: unknown): RedditCommentState[] {
+  if (!isRecord(input) || !isRecord(input.data) || !Array.isArray(input.data.children)) {
+    return [];
+  }
+  return input.data.children.flatMap((child) => normalizeCommentNode(child, 0));
+}
+
+function normalizeCommentNode(input: unknown, depth: number): RedditCommentState[] {
+  if (!isRecord(input) || input.kind !== "t1" || !isRecord(input.data)) {
+    return [];
+  }
+  const data = input.data;
+  const replies =
+    isRecord(data.replies) && isRecord(data.replies.data) && Array.isArray(data.replies.data.children)
+      ? data.replies.data.children.flatMap((child) => normalizeCommentNode(child, depth + 1))
+      : [];
+  return [
+    {
+      id: stringValue(data.id) ?? stringValue(data.name) ?? `comment-depth-${depth}`,
+      body: stringValue(data.body) ?? "",
+      author: stringValue(data.author),
+      permalink: stringValue(data.permalink),
+      score: numberValue(data.score),
+      createdUtc: numberValue(data.created_utc),
+      parentId: stringValue(data.parent_id),
+      depth,
+      replies
+    }
+  ].filter((comment) => comment.body.length > 0);
+}
+
 function isRecord(input: unknown): input is Record<string, unknown> {
   return typeof input === "object" && input !== null;
 }
 
 function stringValue(input: unknown): string | undefined {
   return typeof input === "string" && input.length > 0 ? input : undefined;
+}
+
+function numberValue(input: unknown): number | undefined {
+  return typeof input === "number" && Number.isFinite(input) ? input : undefined;
 }
 
 export async function runRedditBrowserWorkerCli(): Promise<void> {

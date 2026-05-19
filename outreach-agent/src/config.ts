@@ -91,6 +91,7 @@ export interface MoltbookRuntimeConfig extends RuntimePaths {
   forceWriteMode?: "create_post" | "comment_on_post" | "reply_to_activity";
   promptProfileId?: string;
   promptProfile?: PromptProfile;
+  promptRotationStatePath?: string;
   attributionCampaignId?: string;
   attributionDbPath?: string;
   ctaBaseUrl?: string;
@@ -136,6 +137,10 @@ function defaultRedditBrowserBridgeDir(packageRoot: string): string {
 
 function defaultRedditMemoryPath(packageRoot: string): string {
   return path.join(packageRoot, ".data", "reddit-memory.json");
+}
+
+function defaultPromptRotationStatePath(packageRoot: string): string {
+  return path.join(packageRoot, ".data", "prompt-rotation.json");
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
@@ -439,6 +444,9 @@ export async function loadRuntimeConfig(
     forceWriteMode: parseForceWriteMode(process.env.MOLTBOOK_FORCE_WRITE_MODE),
     promptProfileId,
     promptProfile,
+    promptRotationStatePath:
+      getOptionalEnv("OUTREACH_PROMPT_ROTATION_STATE_PATH") ??
+      defaultPromptRotationStatePath(paths.packageRoot),
     attributionCampaignId,
     attributionDbPath: getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH"),
     ctaBaseUrl:

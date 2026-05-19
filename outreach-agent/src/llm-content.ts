@@ -7,6 +7,7 @@ import type { ProductFactSheet } from "./product-facts.js";
 import { contentFingerprint, type OutreachAgentState, type ReplyTarget } from "./policy.js";
 import {
   contentTokenSimilarity,
+  filterPromptParameterOverrides,
   promptProfileToPromptText,
   resolvePromptProfile,
   structuralFingerprint,
@@ -16,6 +17,7 @@ import {
   type PromptParameterSet,
   type ResolvedPromptProfile
 } from "./prompt-profile.js";
+import { selectPromptVariant } from "./prompt-rotation.js";
 import { buildRepoContext } from "./repo-context.js";
 
 export type WriteCandidate =
@@ -46,6 +48,8 @@ export interface GeneratedWriteDecision {
   rationale: string;
   fingerprint: string;
   promptProfileId?: string;
+  promptVariantId?: string;
+  promptVariantRationale?: string;
   promptParameters?: PromptParameterSet;
   layout?: LayoutVariant;
   ctaUrl?: string;
@@ -234,11 +238,23 @@ export async function chooseAndDraftWriteAction(
     );
   }
   const selectedCandidate = selectedLabeledCandidate.candidate;
+  const selectedVariant = await selectPromptVariant({
+    config,
+    venue: "moltbook",
+    actionType: selectedCandidate.type,
+    fetchImpl
+  });
   const resolvedProfile = resolvePromptProfile({
     venue: "moltbook",
     actionType: selectedCandidate.type,
     profile: config.promptProfile,
     profileId: config.promptProfileId,
+    parameterOverrides: filterPromptParameterOverrides(
+      config.promptProfile,
+      "moltbook",
+      selectedCandidate.type,
+      selectedVariant.parameterOverrides
+    ),
     ctaBaseUrl: config.ctaBaseUrl,
     approvedDomains: config.ctaApprovedDomains
   });
@@ -285,6 +301,8 @@ export async function chooseAndDraftWriteAction(
     rationale: [selection.rationale, response.rationale].filter(Boolean).join(" ").trim() || "No rationale provided.",
     fingerprint: contentFingerprint(`${title ?? ""}\n${content}`),
     promptProfileId: resolvedProfile.id,
+    promptVariantId: selectedVariant.variantId,
+    promptVariantRationale: selectedVariant.rationale,
     promptParameters: resolvedProfile.parameters,
     layout: resolvedProfile.parameters.layout,
     ctaUrl: ctaLink?.url,
@@ -882,6 +900,7 @@ function buildRecentHistorySummary(state: OutreachAgentState): string {
         title: artifact.title,
         opening: extractOpening(artifact.content),
         promptProfileId: artifact.promptProfileId,
+        promptVariantId: artifact.promptVariantId,
         messageStyle: artifact.promptParameters?.messageStyle,
         layout: artifact.layout,
         structuralFingerprint: artifact.structuralFingerprint,

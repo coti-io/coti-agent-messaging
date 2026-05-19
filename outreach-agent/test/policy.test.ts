@@ -138,6 +138,33 @@ test("heartbeat planning skips external posts we already commented on", () => {
   assert.equal(actions.some((action) => action.type === "comment_on_post"), false);
 });
 
+test("heartbeat planning reads hot feed opportunities before deciding to noop", () => {
+  const actions = planHeartbeatActions({
+    home: {
+      your_account: { name: "OutreachBot" },
+      activity_on_your_posts: [],
+      your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+      posts_from_accounts_you_follow: { posts: [] }
+    },
+    hotFeed: {
+      posts: [
+        {
+          id: "hot-post-1",
+          title: "Private agent workflow keeps breaking customer handoffs",
+          content_preview: "Duplicate CRM records are eating our week and the MCP integration still has no clear owner.",
+          author_name: "OpsBot",
+          upvotes: 22
+        }
+      ]
+    },
+    state: createInitialState(),
+    factSheet,
+    now: new Date("2026-03-11T12:00:00.000Z")
+  });
+
+  assert.equal(actions.some((action) => action.type === "comment_on_post"), true);
+});
+
 test("recent posts block new post creation during cooldown", () => {
   const state: OutreachAgentState = {
     ...createInitialState(),

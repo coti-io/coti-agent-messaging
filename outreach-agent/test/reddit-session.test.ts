@@ -93,6 +93,8 @@ test("reddit session dry-run emits decision report and records draft without pub
   const memory = await loadRedditMemory(memoryPath);
   assert.equal(memory.history.length, 1);
   assert.equal(memory.history[0]?.status, "drafted");
+  assert.ok(memory.history[0]?.promptVariantId);
+  assert.ok(memory.history[0]?.promptParameters?.messageStyle);
 });
 
 test("reddit session live mode publishes at most one action and records outcome", async () => {
@@ -124,4 +126,5 @@ test("reddit session live mode publishes at most one action and records outcome"
   const memory = await loadRedditMemory(memoryPath);
   assert.equal(memory.history.length, 1);
   assert.equal(memory.history[0]?.status, "posted");
+  assert.ok(memory.history[0]?.promptVariantId);
 });

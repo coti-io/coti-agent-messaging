@@ -480,7 +480,7 @@ async function getWindowCounts(db: SqliteDatabase, fromIso: string): Promise<Eng
 
 async function buildAnalytics(db: SqliteDatabase, now = new Date()): Promise<StorageAnalytics> {
   const snapshotState = (await getSnapshotState(db, now)) ?? createInitialState();
-  const pendingWrites = await loadPendingWrites(db);
+  const pendingWrites = mergePendingWrites(snapshotState.pendingWrites, await loadPendingWrites(db));
   const state = normalizeState({
     ...snapshotState,
     pendingWrites
@@ -737,6 +737,17 @@ export async function loadStateFromStorage(
   } finally {
     await db.close();
   }
+}
+
+function mergePendingWrites(
+  snapshotPendingWrites: readonly PendingWrite[] | undefined,
+  storedPendingWrites: readonly PendingWrite[]
+): PendingWrite[] {
+  const snapshotById = new Map((snapshotPendingWrites ?? []).map((entry) => [entry.id, entry]));
+  return storedPendingWrites.map((entry) => ({
+    ...snapshotById.get(entry.id),
+    ...entry
+  }));
 }
 
 export async function saveStateToStorage(

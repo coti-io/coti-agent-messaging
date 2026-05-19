@@ -792,6 +792,12 @@ export class RedditReadOnlyClient {
     return parseRedditListing(await this.fetchJson(url));
   }
 
+  async getHotPosts(subreddit: string, limit = 10): Promise<RedditSourceItem[]> {
+    const url = new URL(`/r/${encodeURIComponent(subreddit)}/hot.json`, this.baseUrl);
+    url.searchParams.set("limit", String(limit));
+    return parseRedditListing(await this.fetchJson(url));
+  }
+
   async searchSubreddit(
     subreddit: string,
     query: string,

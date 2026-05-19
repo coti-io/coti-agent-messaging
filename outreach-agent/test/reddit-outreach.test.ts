@@ -263,3 +263,40 @@ test("Reddit read-only client maps OAuth listing responses", async () => {
   assert.equal(posts[0]?.id, "abc");
   assert.equal(posts[0]?.subreddit, "AI_Agents");
 });
+
+test("Reddit read-only client can read hot listings", async () => {
+  const client = new RedditReadOnlyClient({
+    accessToken: "token",
+    userAgent: "test-agent",
+    baseUrl: "https://oauth.reddit.test",
+    fetchImpl: async (input) => {
+      const url = new URL(input instanceof URL ? input.toString() : String(input));
+      assert.equal(url.pathname, "/r/sales/hot.json");
+      return new Response(
+        JSON.stringify({
+          data: {
+            children: [
+              {
+                kind: "t3",
+                data: {
+                  id: "hot-1",
+                  subreddit: "sales",
+                  title: "Why does CRM hygiene always regress?",
+                  selftext: "Looking for operator advice."
+                }
+              }
+            ]
+          }
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+    }
+  });
+
+  const posts = await client.getHotPosts("sales", 5);
+  assert.equal(posts[0]?.id, "hot-1");
+  assert.equal(posts[0]?.title, "Why does CRM hygiene always regress?");
+});

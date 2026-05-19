@@ -87,3 +87,14 @@ test("reddit draft validator blocks links, CTAs, and product names", () => {
   assert.throws(() => validateRedditDraft("Check this out https://example.com", []), /forbidden|links/i);
   assert.throws(() => validateRedditDraft("COTI would solve this.", ["COTI"]), /product/i);
 });
+
+test("reddit draft validator allows hook-then-substance but blocks standalone fluff", () => {
+  assert.doesNotThrow(() =>
+    validateRedditDraft(
+      "The part that usually breaks is ownership. If two teams can edit the same CRM fields without a clear owner, automation just spreads bad data faster. Lock ownership first, then add audits around every automated write.",
+      [],
+      "short_hook_then_detail"
+    )
+  );
+  assert.throws(() => validateRedditDraft("Good point.", [], "short_hook_then_detail"), /fluff|substance/i);
+});

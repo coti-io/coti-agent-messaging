@@ -94,6 +94,21 @@ async function ingestViaBrowser(
 
   for (const subreddit of subreddits) {
     try {
+      const hotListed = await controller.readAction({
+        id: `list:${subreddit}:hot`,
+        type: "list_subreddit_posts",
+        subreddit,
+        sort: "hot",
+        limit
+      }, context);
+      if (hotListed.type === "list_subreddit_posts") {
+        results.push(...hotListed.items);
+      }
+    } catch (error) {
+      skipped.push(`browser list r/${subreddit} hot: ${formatError(error)}`);
+    }
+
+    try {
       const listed = await controller.readAction({
         id: `list:${subreddit}:new`,
         type: "list_subreddit_posts",
@@ -172,6 +187,11 @@ async function ingestViaApi(
   });
   const items: RedditSourceItem[] = [];
   for (const subreddit of subreddits) {
+    try {
+      items.push(...await client.getHotPosts(subreddit, limit));
+    } catch (error) {
+      skipped.push(`api hot r/${subreddit}: ${formatError(error)}`);
+    }
     try {
       items.push(...await client.getNewPosts(subreddit, limit));
     } catch (error) {

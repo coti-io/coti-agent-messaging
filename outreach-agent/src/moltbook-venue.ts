@@ -23,6 +23,8 @@ import {
 export interface MoltbookHeartbeatSources {
   home: MoltbookHomeResponse;
   me: MoltbookAgentProfileResponse;
+  followingFeed: MoltbookFeedResponse;
+  hotFeed: MoltbookFeedResponse;
   exploreFeed: MoltbookFeedResponse;
   factSheet: ProductFactSheet;
 }
@@ -59,7 +61,11 @@ export class MoltbookVenueProvider implements VenueProvider {
 
   async listCandidates(): Promise<VenueCandidate[]> {
     const home = await this.api.getHome();
-    const exploreFeed = await this.api.getFeed({ sort: "new", limit: 10 });
+    const [hotFeed, exploreFeed] = await Promise.all([
+      this.api.getFeed({ sort: "hot", limit: 10 }),
+      this.api.getFeed({ sort: "new", limit: 10 })
+    ]);
+    const feedPosts = dedupePostsById([...(hotFeed.posts ?? []), ...(exploreFeed.posts ?? [])]);
     return [
       ...home.activity_on_your_posts.map((activity) => ({
         id: `activity:${activity.post_id}`,
@@ -71,7 +77,7 @@ export class MoltbookVenueProvider implements VenueProvider {
         score: activity.new_notification_count,
         raw: activity
       })),
-      ...(exploreFeed.posts ?? []).map((post) => ({
+      ...feedPosts.map((post) => ({
         id: `post:${post.post_id ?? post.id}`,
         venue: this.id,
         surface: post.submolt_name,
@@ -86,17 +92,23 @@ export class MoltbookVenueProvider implements VenueProvider {
   }
 
   async loadHeartbeatSources(): Promise<MoltbookHeartbeatSources> {
-    const [home, me, factSheet] = await Promise.all([
+    const [home, me, factSheet, hotFeed, exploreFeed] = await Promise.all([
       this.api.getHome(),
       this.api.getMe(),
-      loadProductFacts(this.config)
+      loadProductFacts(this.config),
+      this.api.getFeed({ sort: "hot", limit: 10 }),
+      this.api.getFeed({ sort: "new", limit: 10 })
     ]);
-    const exploreFeed = await this.api.getFeed({ sort: "new", limit: 10 });
 
     return {
       home,
       me,
       factSheet,
+      followingFeed: {
+        success: true,
+        posts: home.posts_from_accounts_you_follow?.posts ?? []
+      },
+      hotFeed,
       exploreFeed
     };
   }
@@ -182,6 +194,18 @@ export class MoltbookVenueProvider implements VenueProvider {
         throw new Error(`Moltbook cannot publish action type ${action.type}.`);
     }
   }
+}
+
+function dedupePostsById(posts: readonly MoltbookPost[]): MoltbookPost[] {
+  const seen = new Set<string>();
+  return posts.filter((post) => {
+    const id = post.post_id ?? post.id;
+    if (!id || seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
 }
 
 function buildOutcome(

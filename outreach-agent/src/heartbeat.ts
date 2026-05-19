@@ -42,6 +42,7 @@ import {
 } from "./storage.js";
 import { saveOutreachRefToAttributionStore } from "./attribution-store.js";
 import type { OutreachRef } from "./outreach-attribution.js";
+import { recordPromptRotationAction } from "./prompt-rotation.js";
 import type { VenueOutcome } from "./venue.js";
 import { assertMoltbookVenueProvider, createVenueProvider } from "./venue-factory.js";
 export interface HeartbeatResult {
@@ -289,7 +290,7 @@ export async function runHeartbeat(
       venue.loadHeartbeatSources(),
       loadState(config.statePath, config.heartbeatReportPath)
     ]);
-    const { home, me, factSheet, exploreFeed } = sources;
+    const { home, me, factSheet, followingFeed, hotFeed, exploreFeed } = sources;
     state = normalizeState(storedState);
     const persistState = async (nextState: OutreachAgentState): Promise<void> => {
       state = normalizeState({
@@ -310,6 +311,8 @@ export async function runHeartbeat(
     const skipped: string[] = [];
     const planned = planHeartbeatActions({
       home,
+      followingFeed,
+      hotFeed,
       exploreFeed,
       state,
       policy: config.policy,
@@ -598,6 +601,7 @@ export async function runHeartbeat(
                 });
                 const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
                 await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
+                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, "replied");
                 await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
               } catch (error) {
                 recordPublishFailure(`reply on "${candidate.postTitle}"`, error);
@@ -632,6 +636,7 @@ export async function runHeartbeat(
                 });
                 const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
                 await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
+                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, "commented");
                 await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
               } catch (error) {
                 recordPublishFailure(`comment on "${candidate.post.title}"`, error);
@@ -659,6 +664,7 @@ export async function runHeartbeat(
                 });
                 const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
                 await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
+                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, "posted");
                 await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
               } catch (error) {
                 recordPublishFailure(`post "${decision.title ?? "Untitled post"}"`, error);
@@ -783,6 +789,8 @@ function buildPendingWrite(candidate: WriteCandidate, decision: GeneratedWriteDe
         title: decision.title,
         content: decision.content,
         promptProfileId: decision.promptProfileId,
+        promptVariantId: decision.promptVariantId,
+        promptVariantRationale: decision.promptVariantRationale,
         promptParameters: decision.promptParameters,
         layout: decision.layout,
         ctaUrl: decision.ctaUrl,
@@ -800,6 +808,8 @@ function buildPendingWrite(candidate: WriteCandidate, decision: GeneratedWriteDe
         postId,
         targetSummary: `${candidate.post.title} ${candidate.post.content_preview ?? ""}`.trim(),
         promptProfileId: decision.promptProfileId,
+        promptVariantId: decision.promptVariantId,
+        promptVariantRationale: decision.promptVariantRationale,
         promptParameters: decision.promptParameters,
         layout: decision.layout,
         ctaUrl: decision.ctaUrl,
@@ -819,6 +829,8 @@ function buildPendingWrite(candidate: WriteCandidate, decision: GeneratedWriteDe
         targetSummary: candidate.target.content,
         replyToAuthor: candidate.target.authorName,
         promptProfileId: decision.promptProfileId,
+        promptVariantId: decision.promptVariantId,
+        promptVariantRationale: decision.promptVariantRationale,
         promptParameters: decision.promptParameters,
         layout: decision.layout,
         ctaUrl: decision.ctaUrl,
@@ -869,6 +881,35 @@ async function persistPublishedOutreachRef(
   await saveOutreachRefToAttributionStore(config.attributionDbPath, outreachRef).catch(() => undefined);
 }
 
+async function recordMoltbookPromptRotation(
+  config: MoltbookRuntimeConfig,
+  actionType: WriteCandidate["type"],
+  pendingWrite: PendingWrite,
+  status: "posted" | "commented" | "replied"
+): Promise<void> {
+  if (!pendingWrite.promptVariantId) {
+    return;
+  }
+  await recordPromptRotationAction({
+    config,
+    entry: {
+      id: `moltbook:${pendingWrite.id}:${status}`,
+      venue: "moltbook",
+      actionType,
+      createdAt: pendingWrite.createdAt,
+      status,
+      promptProfileId: pendingWrite.promptProfileId,
+      promptVariantId: pendingWrite.promptVariantId,
+      promptParameters: pendingWrite.promptParameters,
+      layout: pendingWrite.layout,
+      messageStyle: pendingWrite.promptParameters?.messageStyle,
+      technicalDepth: pendingWrite.promptParameters?.technicalDepth,
+      tone: pendingWrite.promptParameters?.tone,
+      creativity: pendingWrite.promptParameters?.creativity
+    }
+  });
+}
+
 function addPendingWrite(state: OutreachAgentState, pendingWrite: PendingWrite): OutreachAgentState {
   return normalizeState({
     ...state,
@@ -911,6 +952,8 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
         title: pendingWrite.title ?? "Untitled post",
         content: pendingWrite.content,
         promptProfileId: pendingWrite.promptProfileId,
+        promptVariantId: pendingWrite.promptVariantId,
+        promptVariantRationale: pendingWrite.promptVariantRationale,
         promptParameters: pendingWrite.promptParameters,
         layout: pendingWrite.layout,
         ctaUrl: pendingWrite.ctaUrl,
@@ -925,6 +968,8 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
         content: pendingWrite.content,
         targetSummary: pendingWrite.targetSummary,
         promptProfileId: pendingWrite.promptProfileId,
+        promptVariantId: pendingWrite.promptVariantId,
+        promptVariantRationale: pendingWrite.promptVariantRationale,
         promptParameters: pendingWrite.promptParameters,
         layout: pendingWrite.layout,
         ctaUrl: pendingWrite.ctaUrl,
@@ -940,6 +985,8 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
         targetSummary: pendingWrite.targetSummary,
         replyToAuthor: pendingWrite.replyToAuthor,
         promptProfileId: pendingWrite.promptProfileId,
+        promptVariantId: pendingWrite.promptVariantId,
+        promptVariantRationale: pendingWrite.promptVariantRationale,
         promptParameters: pendingWrite.promptParameters,
         layout: pendingWrite.layout,
         ctaUrl: pendingWrite.ctaUrl,

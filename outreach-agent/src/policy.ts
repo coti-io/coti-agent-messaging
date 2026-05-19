@@ -18,6 +18,8 @@ export interface RecentGeneratedArtifact {
   targetId?: string;
   targetSummary?: string;
   promptProfileId?: string;
+  promptVariantId?: string;
+  promptVariantRationale?: string;
   promptParameters?: PromptParameterSet;
   layout?: LayoutVariant;
   ctaUrl?: string;
@@ -40,6 +42,8 @@ export interface PendingWrite {
   targetSummary?: string;
   replyToAuthor?: string;
   promptProfileId?: string;
+  promptVariantId?: string;
+  promptVariantRationale?: string;
   promptParameters?: PromptParameterSet;
   layout?: LayoutVariant;
   ctaUrl?: string;
@@ -942,6 +946,7 @@ function normalizeFingerprint(value: string): string {
 export function planHeartbeatActions(input: {
   home: MoltbookHomeResponse;
   followingFeed?: MoltbookFeedResponse;
+  hotFeed?: MoltbookFeedResponse;
   exploreFeed?: MoltbookFeedResponse;
   state: OutreachAgentState;
   policy?: Partial<MoltbookOutreachPolicyConfig>;
@@ -976,11 +981,12 @@ export function planHeartbeatActions(input: {
     });
   }
 
-  const candidatePosts = [
+  const candidatePosts = dedupePostsById([
     ...(input.home.posts_from_accounts_you_follow?.posts ?? []),
     ...(input.followingFeed?.posts ?? []),
+    ...(input.hotFeed?.posts ?? []),
     ...(input.exploreFeed?.posts ?? [])
-  ];
+  ]);
 
   let upvoteCount = 0;
   for (const post of candidatePosts) {
@@ -1215,6 +1221,8 @@ export function applyActionResult(
         title: string;
         content: string;
         promptProfileId?: string;
+        promptVariantId?: string;
+        promptVariantRationale?: string;
         promptParameters?: PromptParameterSet;
         layout?: LayoutVariant;
         ctaUrl?: string;
@@ -1229,6 +1237,8 @@ export function applyActionResult(
         targetSummary?: string;
         replyToAuthor?: string;
         promptProfileId?: string;
+        promptVariantId?: string;
+        promptVariantRationale?: string;
         promptParameters?: PromptParameterSet;
         layout?: LayoutVariant;
         ctaUrl?: string;
@@ -1281,6 +1291,8 @@ export function applyActionResult(
         title: action.title,
         content: action.content,
         promptProfileId: action.promptProfileId,
+        promptVariantId: action.promptVariantId,
+        promptVariantRationale: action.promptVariantRationale,
         promptParameters: action.promptParameters,
         layout: action.layout,
         ctaUrl: action.ctaUrl,
@@ -1324,6 +1336,8 @@ export function applyActionResult(
         targetId: action.commentId,
         targetSummary: action.targetSummary,
         promptProfileId: action.promptProfileId,
+        promptVariantId: action.promptVariantId,
+        promptVariantRationale: action.promptVariantRationale,
         promptParameters: action.promptParameters,
         layout: action.layout,
         ctaUrl: action.ctaUrl,
@@ -1381,5 +1395,17 @@ export function applyActionResult(
 
 export function contentFingerprint(value: string): string {
   return normalizeFingerprint(value).slice(0, 160);
+}
+
+function dedupePostsById(posts: readonly MoltbookPost[]): MoltbookPost[] {
+  const seen = new Set<string>();
+  return posts.filter((post) => {
+    const id = post.post_id ?? post.id;
+    if (!id || seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
 }
 

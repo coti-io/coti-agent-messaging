@@ -83,6 +83,7 @@ export interface ResolvePromptProfileInput {
   actionType: OutreachActionType;
   profile?: PromptProfile;
   profileId?: string;
+  parameterOverrides?: Partial<PromptParameterSet>;
   ctaBaseUrl?: string;
   approvedDomains?: readonly string[];
 }
@@ -91,6 +92,12 @@ export interface DraftSimilarity {
   artifactId: string;
   score: number;
   reason: string;
+}
+
+export interface PromptVariantCandidate {
+  id: string;
+  label: string;
+  parameters: Partial<PromptParameterSet>;
 }
 
 export const DEFAULT_PROMPT_PARAMETERS: PromptParameterSet = {
@@ -173,7 +180,8 @@ export function resolvePromptProfile(input: ResolvePromptProfileInput): Resolved
     ...DEFAULT_PROMPT_PARAMETERS,
     ...profile.parameters,
     ...venueOverride,
-    ...actionOverride
+    ...actionOverride,
+    ...input.parameterOverrides
   };
   const mergedCta: CtaPolicy = {
     requirement: "optional",
@@ -318,6 +326,109 @@ export function promptProfileToPromptText(profile: ResolvedPromptProfile): strin
     layoutInstruction(profile.parameters.layout),
     ctaInstruction(profile)
   ].join("\n");
+}
+
+export function buildSafePromptVariantCandidates(input: {
+  venue: OutreachVenue;
+  actionType: OutreachActionType;
+}): PromptVariantCandidate[] {
+  const baseCandidates: PromptVariantCandidate[] = [
+    {
+      id: "operator-qa-practical",
+      label: "direct operator answer",
+      parameters: {
+        messageStyle: "informative",
+        layout: "question_answer",
+        tone: "operator",
+        technicalDepth: "practical",
+        creativity: "conservative"
+      }
+    },
+    {
+      id: "operator-problem-solution",
+      label: "problem then fix",
+      parameters: {
+        messageStyle: "technical",
+        layout: "problem_solution",
+        tone: "operator",
+        technicalDepth: "deep",
+        creativity: "balanced"
+      }
+    },
+    {
+      id: "contrarian-practical",
+      label: "measured pushback",
+      parameters: {
+        messageStyle: "contrarian",
+        layout: "regular_paragraph",
+        tone: "contrarian",
+        technicalDepth: "practical",
+        creativity: "balanced"
+      }
+    },
+    {
+      id: "curious-sharp",
+      label: "curious but concrete",
+      parameters: {
+        messageStyle: "curious",
+        layout: "regular_paragraph",
+        tone: "technical_realist",
+        technicalDepth: "practical",
+        creativity: "balanced"
+      }
+    },
+    {
+      id: "hook-then-substance",
+      label: "short hook then substance",
+      parameters: {
+        messageStyle: "informative",
+        layout: "short_hook_then_detail",
+        tone: "operator",
+        technicalDepth: "practical",
+        creativity: "balanced"
+      }
+    }
+  ];
+  const disallowedLayouts =
+    input.venue === "reddit" && input.actionType === "create_post"
+      ? new Set<LayoutVariant>(["structured_bullets", "short_hook_then_detail"])
+      : new Set<LayoutVariant>(
+          input.venue === "reddit" ? ["structured_bullets"] : []
+        );
+
+  return baseCandidates.filter((candidate) => {
+    const messageStyle = candidate.parameters.messageStyle;
+    if (messageStyle === "aggressive" || messageStyle === "promotional") {
+      return false;
+    }
+    if (candidate.parameters.layout && disallowedLayouts.has(candidate.parameters.layout)) {
+      return false;
+    }
+    if (input.venue !== "reddit" && candidate.id === "hook-then-substance") {
+      return false;
+    }
+    return true;
+  });
+}
+
+export function filterPromptParameterOverrides(
+  profile: PromptProfile | undefined,
+  venue: OutreachVenue,
+  actionType: OutreachActionType,
+  overrides: Partial<PromptParameterSet> | undefined
+): Partial<PromptParameterSet> | undefined {
+  if (!profile || !overrides) {
+    return overrides;
+  }
+  const lockedKeys = new Set<keyof PromptParameterSet>([
+    ...Object.keys(profile.parameters),
+    ...Object.keys(profile.venueOverrides?.[venue] ?? {}).filter((key) => key !== "cta"),
+    ...Object.keys(profile.actionOverrides?.[actionType] ?? {}).filter((key) => key !== "cta")
+  ] as Array<keyof PromptParameterSet>);
+  const filteredEntries = Object.entries(overrides).filter(([key]) => !lockedKeys.has(key as keyof PromptParameterSet));
+  return filteredEntries.length > 0
+    ? Object.fromEntries(filteredEntries) as Partial<PromptParameterSet>
+    : undefined;
 }
 
 export function canUseProductSpecificFollowUp(

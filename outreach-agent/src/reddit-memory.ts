@@ -11,6 +11,8 @@ export interface RedditDecisionMemoryEntry extends RedditOutboundMemoryEntry {
   relevanceScore?: number;
   riskScore?: number;
   remoteContentUrl?: string;
+  promptVariantId?: string;
+  promptVariantRationale?: string;
 }
 
 export interface RedditMemoryStore {

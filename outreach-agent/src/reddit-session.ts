@@ -1,5 +1,6 @@
 import { getOutreachAgentConfig, getRedditControllerConfig, getRedditOperatingAgentConfig, loadRuntimeConfig } from "./config.js";
 import { draftRedditResponse } from "./reddit-drafting.js";
+import { recordPromptRotationAction, selectPromptVariant } from "./prompt-rotation.js";
 import { ingestRedditState } from "./reddit-ingestion.js";
 import { appendRedditMemory, loadRedditMemory } from "./reddit-memory.js";
 import {
@@ -103,11 +104,20 @@ export async function runRedditSession(input: {
     };
   }
 
+  const selectedVariant = await selectPromptVariant({
+    config,
+    venue: "reddit",
+    actionType: decision.action.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
+    fetchImpl: input.fetchImpl
+  });
   const draft = await draftRedditResponse({
     config,
     item: decision.action.item,
     targeting: DEFAULT_REDDIT_OPERATING_TARGETING,
+    actionType: decision.action.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
     recentContent: memory.history.slice(-20).map((entry) => entry.content),
+    promptVariantId: selectedVariant.variantId,
+    promptParameterOverrides: selectedVariant.parameterOverrides,
     fetchImpl: input.fetchImpl
   });
   const action = toVenueAction(decision.action, draft.content);
@@ -136,6 +146,11 @@ export async function runRedditSession(input: {
     firstReply: true,
     productMentioned: false,
     linkIncluded: false,
+    promptProfileId: draft.promptProfileId,
+    promptVariantId: selectedVariant.variantId,
+    promptVariantRationale: selectedVariant.rationale,
+    promptParameters: draft.promptParameters,
+    layout: draft.layout,
     structuralFingerprint: structuralFingerprint(draft.content),
     controller: getRedditControllerConfig(config).controller,
     decisionReason: decision.action.reason,
@@ -144,6 +159,28 @@ export async function runRedditSession(input: {
     remoteContentUrl: outcome?.remoteContentUrl
   };
   await appendRedditMemory(operating.memoryPath, recorded);
+  if (!dryRun) {
+    await recordPromptRotationAction({
+      config,
+      entry: {
+        id: `reddit:${recorded.id}`,
+        venue: "reddit",
+        actionType: decision.action.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
+        createdAt: recorded.createdAt,
+        status: recorded.action,
+        promptProfileId: recorded.promptProfileId,
+        promptVariantId: recorded.promptVariantId,
+        promptParameters: recorded.promptParameters,
+        layout: recorded.layout,
+        messageStyle: recorded.promptParameters?.messageStyle,
+        technicalDepth: recorded.promptParameters?.technicalDepth,
+        tone: recorded.promptParameters?.tone,
+        creativity: recorded.promptParameters?.creativity,
+        clickCount: recorded.clickCount,
+        privateMessageCount: recorded.privateMessageCount
+      }
+    });
+  }
 
   return {
     generatedAt: new Date().toISOString(),

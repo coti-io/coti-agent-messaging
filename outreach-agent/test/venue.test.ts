@@ -6,7 +6,9 @@ import path from "node:path";
 import { getOutreachAgentConfig, loadRuntimeConfig, type MoltbookRuntimeConfig } from "../src/config.js";
 import { MoltbookVenueProvider } from "../src/moltbook-venue.js";
 import type { MoltbookApiClient } from "../src/moltbook-api.js";
+import type { RedditController } from "../src/reddit-controller.js";
 import { RedditVenueProvider } from "../src/reddit-venue.js";
+import { createVenueProvider } from "../src/venue-factory.js";
 
 function createConfig(overrides: Partial<MoltbookRuntimeConfig> = {}): MoltbookRuntimeConfig {
   const packageRoot = path.resolve(import.meta.dirname, "..", "..");
@@ -20,6 +22,17 @@ function createConfig(overrides: Partial<MoltbookRuntimeConfig> = {}): MoltbookR
     defaultSubmolt: "general",
     dryRun: false,
     autoVerify: false,
+    reddit: {
+      controller: "manual",
+      browserBridge: {
+        bridgeDir: path.join(os.tmpdir(), "outreach-agent-test-reddit-browser"),
+        responseTimeoutMs: 1000,
+        pollIntervalMs: 10
+      },
+      api: {
+        baseUrl: "https://oauth.reddit.test"
+      }
+    },
     agent: {
       venue: "moltbook",
       venueAccountId: "OutreachBot",
@@ -170,6 +183,103 @@ test("Reddit venue provider returns review candidates and refuses publishing", a
         type: "comment_on_post",
         content: "Nope."
       }),
-    /cannot publish/
+    /not configured for autopublish/
   );
+});
+
+test("Reddit venue provider delegates publish to the selected controller", async () => {
+  const calls: string[] = [];
+  const controller: RedditController = {
+    id: "browser",
+    async publishAction(action, context) {
+      calls.push(`${action.type}:${context.venueAccountId}:${context.allowedSurfaces.join(",")}`);
+      return {
+        remoteContentId: "t1_reply42",
+        remoteContentUrl: "https://www.reddit.com/r/AI_Agents/comments/thread/reply42/"
+      };
+    }
+  };
+  const provider = new RedditVenueProvider(
+    {
+      venue: "reddit",
+      venueAccountId: "reddit-user",
+      allowedSurfaces: ["AI_Agents"],
+      mode: "approved_autopost",
+      policyProfileId: "reddit-browser"
+    },
+    controller
+  );
+
+  const outcome = await provider.publishAction({
+    id: "reply-1",
+    venue: "reddit",
+    type: "reply_to_comment",
+    candidateId: "comment-1",
+    content: "Useful reply."
+  });
+
+  assert.deepEqual(calls, ["reply_to_comment:reddit-user:AI_Agents"]);
+  assert.equal(outcome.type, "replied");
+  assert.equal(outcome.remoteContentId, "t1_reply42");
+});
+
+test("Reddit venue provider blocks product mentions and links before controller publish", async () => {
+  let called = false;
+  const controller: RedditController = {
+    id: "browser",
+    async publishAction() {
+      called = true;
+      return {};
+    }
+  };
+  const provider = new RedditVenueProvider(
+    {
+      venue: "reddit",
+      venueAccountId: "reddit-user",
+      allowedSurfaces: ["AI_Agents"],
+      mode: "approved_autopost",
+      policyProfileId: "reddit-browser"
+    },
+    controller
+  );
+
+  await assert.rejects(
+    () =>
+      provider.publishAction({
+        id: "comment-1",
+        venue: "reddit",
+        type: "comment_on_post",
+        parentId: "post-1",
+        content: "COTI can help, sign up here: https://example.com"
+      }),
+    /forbidden|must not/i
+  );
+  assert.equal(called, false);
+});
+
+test("createVenueProvider returns a reddit provider for reddit config", () => {
+  const venue = createVenueProvider(
+    createConfig({
+      agent: {
+        venue: "reddit",
+        venueAccountId: "reddit-user",
+        allowedSurfaces: ["AI_Agents"],
+        mode: "approved_autopost",
+        policyProfileId: "reddit-browser"
+      },
+      reddit: {
+        controller: "manual",
+        browserBridge: {
+          bridgeDir: path.join(os.tmpdir(), "outreach-agent-test-reddit-browser"),
+          responseTimeoutMs: 1000,
+          pollIntervalMs: 10
+        },
+        api: {
+          baseUrl: "https://oauth.reddit.test"
+        }
+      }
+    })
+  );
+
+  assert.equal(venue.id, "reddit");
 });

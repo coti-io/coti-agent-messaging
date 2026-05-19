@@ -13,7 +13,7 @@ The runtime is now named `outreach-agent/`, and future work should keep moving t
 
 ## Non-Goals
 
-- Do not build browser automation to bypass platform anti-bot systems.
+- Do not build stealth browser automation meant to evade platform anti-bot systems. Any browser-backed controller must fail loudly on login friction, consent prompts, or anti-bot challenges instead of trying to sneak around them.
 - Do not automate Reddit DMs.
 - Do not hide affiliation when the conversation moves into product/tool discussion.
 - Do not optimize for raw posting volume. That is a bad metric and will produce trash behavior.

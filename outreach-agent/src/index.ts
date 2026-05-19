@@ -6,7 +6,7 @@ import path from "node:path";
 import { runBridgeServerCli } from "./bridge-server.js";
 import { stopBridgeServer } from "./bridge-stop.js";
 import { readAttributionSummaryFromStore, readMessageFunnelSummaryFromStore } from "./attribution-store.js";
-import { loadRuntimeConfig, saveStoredCredentials } from "./config.js";
+import { getOutreachAgentConfig, getRedditControllerConfig, loadRuntimeConfig, saveStoredCredentials } from "./config.js";
 import { mergeFeedPosts, rankDesignPartnerCandidates } from "./design-partners.js";
 import { runHeartbeat } from "./heartbeat.js";
 import { MoltbookApiClient, type MoltbookAgentProfile } from "./moltbook-api.js";
@@ -34,6 +34,8 @@ import {
   type AttributionEvent,
   type OutreachRef
 } from "./outreach-attribution.js";
+import { createVenueProvider } from "./venue-factory.js";
+import type { VenueAction } from "./venue.js";
 
 function getArg(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
@@ -60,6 +62,7 @@ function printUsage(): void {
   coti-outreach-agent reddit-targets
   coti-outreach-agent reddit-scan [--input FILE] [--history FILE] [--rules FILE] [--output FILE]
   coti-outreach-agent reddit-evaluate --history FILE
+  coti-outreach-agent reddit-publish --input FILE
   coti-outreach-agent attribution-summary [--db FILE | --refs FILE --events FILE]
   coti-outreach-agent message-funnel [--db FILE]
   coti-outreach-agent bridge-server
@@ -231,7 +234,16 @@ async function run(): Promise<void> {
     }
     case "venue-config": {
       const config = await loadRuntimeConfig({ requireVenue: true });
-      console.log(JSON.stringify(config.agent, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            agent: config.agent,
+            reddit: getOutreachAgentConfig(config).venue === "reddit" ? getRedditControllerConfig(config) : undefined
+          },
+          null,
+          2
+        )
+      );
       return;
     }
     case "design-partners": {
@@ -322,6 +334,24 @@ async function run(): Promise<void> {
       await emitJson(evaluateRedditOutcomes(await loadRedditHistory(historyPath)));
       return;
     }
+    case "reddit-publish": {
+      const inputPath = getArg("--input");
+      if (!inputPath) {
+        throw new Error("reddit-publish requires --input FILE.");
+      }
+      const config = await loadRuntimeConfig({ requireVenue: true });
+      const agent = getOutreachAgentConfig(config);
+      if (agent.venue !== "reddit") {
+        throw new Error("reddit-publish requires OUTREACH_AGENT_VENUE=reddit.");
+      }
+      const action = await readJsonFile<VenueAction>(inputPath);
+      if (action.venue !== "reddit") {
+        throw new Error("reddit-publish input must contain a Reddit VenueAction.");
+      }
+      const venue = createVenueProvider(config);
+      await emitJson(await venue.publishAction(action));
+      return;
+    }
     case "attribution-summary": {
       const dbPath = getArg("--db");
       const refsPath = getArg("--refs");
@@ -379,7 +409,7 @@ async function run(): Promise<void> {
       return;
     }
     case "heartbeat": {
-      const config = await loadRuntimeConfig({ requireApiKey: true });
+      const config = await loadRuntimeConfig({ requireVenue: true });
       const result = await runHeartbeat(config);
       console.log(result.summary);
       return;

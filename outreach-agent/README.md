@@ -148,7 +148,7 @@ OUTREACH_TRACKING_APPROVED_DOMAINS=example.com
 
 When `OUTREACH_TRACKING_BASE_URL` is set, authored posts/comments/replies can use a tracked URL with `utm_source`, `utm_medium=outreach_agent`, `utm_campaign`, `utm_content`, and `ref`. The durable `ref` maps back to the venue, venue account, surface, prompt profile, full prompt parameters, message style, layout variant, candidate id, and generated content id. If `OUTREACH_ATTRIBUTION_DB_PATH` is set, the outreach agent also writes that ref into a shared SQLite database that the grant backend can read and append events to. Link shorteners and unapproved tracking domains are blocked.
 
-`OUTREACH_AGENT_VENUE` is the venue provider id. Current values are `moltbook` for the heartbeat writer and `reddit` for read-only review workflows. Reddit remains human-review only and cannot publish from the provider.
+`OUTREACH_AGENT_VENUE` is the venue provider id. Current values are `moltbook` for the heartbeat writer and `reddit` for the Reddit outreach runtime. Reddit can run in scan/draft-only, API-backed publish, or browser-bridge publish mode depending on controller config.
 
 The `register` command can save credentials to `MOLTBOOK_CREDENTIALS_PATH`, so `MOLTBOOK_API_KEY` does not have to live in the environment after first setup.
 
@@ -206,9 +206,9 @@ The state file tracks outbound Moltbook engagement by action type: posts, top-le
 
 The state file also tracks `pendingWrites` for posts/comments/replies that may have landed remotely before a local failure finished. Later heartbeats reconcile those against profile recents, exact post comment trees, and Moltbook search results before planning new authored actions. If a pending write stays unreconciled long enough, it expires instead of blocking that target forever.
 
-### Reddit Read-Only Outreach Assistant
+### Reddit Outreach Assistant
 
-The Reddit workflow is intentionally not an autonomous poster. It monitors approved subreddits, scores relevant threads, generates non-promotional explanatory first-reply drafts, and emits a human-review queue.
+The Reddit workflow is still an autonomous agent. It monitors approved subreddits, scores relevant threads, keeps the existing non-promotional review queue artifact, and can execute normalized Reddit actions through either an API-backed or browser-bridge controller.
 
 Useful commands:
 
@@ -217,6 +217,7 @@ npm run build -w @coti-agent-messaging/outreach-agent
 npm run reddit:targets -w @coti-agent-messaging/outreach-agent
 npm run reddit:scan -w @coti-agent-messaging/outreach-agent -- --input reddit-export.json --output outreach-agent/.data/reddit-review-queue.json
 npm run reddit:evaluate -w @coti-agent-messaging/outreach-agent -- --history outreach-agent/.data/reddit-outbound-history.json
+npm run reddit:publish -w @coti-agent-messaging/outreach-agent -- --input outreach-agent/.data/reddit-action.json
 ```
 
 For live read-only monitoring through Reddit OAuth:
@@ -227,12 +228,39 @@ REDDIT_USER_AGENT=coti-agent-messaging/0.1.0 by YOUR_REDDIT_USERNAME
 REDDIT_BASE_URL=https://oauth.reddit.com
 ```
 
+Reddit execution is now controller-selected from config:
+
+```bash
+OUTREACH_AGENT_VENUE=reddit
+OUTREACH_AGENT_MODE=approved_autopost
+OUTREACH_AGENT_ALLOWED_SURFACES=AI_Agents,LocalLLaMA
+OUTREACH_REDDIT_CONTROLLER=manual # or browser or api
+```
+
+Controller behavior:
+
+- `manual`: keeps the autonomous scan/draft-only workflow and rejects publish attempts because the controller is configured not to publish
+- `api`: submits `create_post`, `comment_on_post`, and `reply_to_comment` through Reddit OAuth using `REDDIT_ACCESS_TOKEN` and `REDDIT_USER_AGENT`
+- `browser`: writes publish requests into `outreach-agent/.bridge/reddit-browser/requests` and waits for a matching response file in `responses`; an external browser worker can fulfill those requests and return remote ids/URLs
+
+Example `reddit-publish` input:
+
+```json
+{
+  "id": "reply:thread-1:comment-9",
+  "venue": "reddit",
+  "type": "reply_to_comment",
+  "candidateId": "comment-9",
+  "content": "Use a small transport interface and keep policy logic above it."
+}
+```
+
 Guardrails:
 
 - first replies/comments must not mention COTI, product names, owned links, CTAs, demos, or DM prompts
 - product/tool discussion is allowed only after explicit user interest
 - every target subreddit must have a registry entry before draft generation
-- the review queue always requires human approval
+- the review queue remains available as an artifact in `manual` mode, but it is not the definition of the runtime
 - daily activity is capped by subreddit and globally
 - outcome evaluation triggers kill reasons for bans, repeated mod removals, spam accusations, or first-reply promotion violations
 

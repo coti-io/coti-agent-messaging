@@ -17,6 +17,7 @@
     "reddit:targets": "node dist/src/index.js reddit-targets",
     "reddit:scan": "node dist/src/index.js reddit-scan",
     "reddit:evaluate": "node dist/src/index.js reddit-evaluate",
+    "reddit:publish": "node dist/src/index.js reddit-publish",
     "attribution:summary": "node dist/src/index.js attribution-summary",
     "message-funnel": "node dist/src/index.js message-funnel",
     "heartbeat": "node dist/src/index.js heartbeat",

@@ -43,6 +43,7 @@ import {
 import { saveOutreachRefToAttributionStore } from "./attribution-store.js";
 import type { OutreachRef } from "./outreach-attribution.js";
 import type { VenueOutcome } from "./venue.js";
+import { assertMoltbookVenueProvider, createVenueProvider } from "./venue-factory.js";
 export interface HeartbeatResult {
   summary: string;
   performed: string[];
@@ -256,8 +257,13 @@ function describePostBlockReason(
 export async function runHeartbeat(
   configInput?: MoltbookRuntimeConfig
 ): Promise<HeartbeatResult> {
-  const config = configInput ?? (await loadRuntimeConfig({ requireApiKey: true }));
-  const venue = new MoltbookVenueProvider(config);
+  const config = configInput ?? (await loadRuntimeConfig({ requireVenue: true }));
+  const venue = assertMoltbookVenueProvider(createVenueProvider(config));
+  if (!config.apiKey) {
+    throw new Error(
+      "Missing Moltbook API key. Set MOLTBOOK_API_KEY or save credentials via the register command."
+    );
+  }
   const startedAt = new Date().toISOString();
   const runId = `${startedAt}:${process.pid}`;
   const previousReport = await readPreviousHeartbeatReport(config.heartbeatReportPath);

@@ -48,6 +48,26 @@ export interface MoltbookOutreachPolicyConfig {
   followCommentMinScore?: number;
 }
 
+export type RedditControllerKind = "manual" | "browser" | "api";
+
+export interface RedditBrowserBridgeConfig {
+  bridgeDir: string;
+  responseTimeoutMs: number;
+  pollIntervalMs: number;
+}
+
+export interface RedditApiRuntimeConfig {
+  accessToken?: string;
+  userAgent?: string;
+  baseUrl: string;
+}
+
+export interface RedditControllerConfig {
+  controller: RedditControllerKind;
+  browserBridge: RedditBrowserBridgeConfig;
+  api: RedditApiRuntimeConfig;
+}
+
 export interface MoltbookRuntimeConfig extends RuntimePaths {
   agent?: OutreachAgentConfig;
   moltbookBaseUrl: string;
@@ -69,6 +89,7 @@ export interface MoltbookRuntimeConfig extends RuntimePaths {
   verificationLlmBridge?: BridgeLlmClientConfig;
   llmProvider?: JsonLlmProvider;
   verificationLlmProvider?: JsonLlmProvider;
+  reddit?: RedditControllerConfig;
   coti?: {
     privateKey: string;
     aesKey: string;
@@ -94,6 +115,10 @@ function resolveHomePath(relativePath: string): string {
   }
 
   return relativePath;
+}
+
+function defaultRedditBrowserBridgeDir(packageRoot: string): string {
+  return path.join(packageRoot, ".bridge", "reddit-browser");
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
@@ -134,6 +159,17 @@ function parseForceWriteMode(
   }
 
   return undefined;
+}
+
+function parseRedditController(value: string | undefined): RedditControllerKind {
+  if (value === undefined || value === "manual") {
+    return "manual";
+  }
+  if (value === "browser" || value === "api") {
+    return value;
+  }
+
+  throw new Error(`Invalid OUTREACH_REDDIT_CONTROLLER: ${value}`);
 }
 
 function parseOutreachMode(value: string | undefined, fallback: OutreachAgentMode): OutreachAgentMode {
@@ -335,6 +371,7 @@ export async function loadRuntimeConfig(
     : undefined;
   const verificationLlmApiKey = getOptionalEnv("MOLTBOOK_VERIFY_LLM_API_KEY") ?? llm?.apiKey;
   const verificationLlmBridgeUrl = getOptionalEnv("MOLTBOOK_VERIFY_LLM_BRIDGE_URL") ?? llmBridge?.url;
+  const reddit = buildRedditControllerConfig(paths.packageRoot);
 
   return {
     ...paths,
@@ -426,6 +463,7 @@ export async function loadRuntimeConfig(
             getOptionalEnv("MOLTBOOK_VERIFY_LLM_BRIDGE_AUTH_TOKEN") ?? llmBridge?.authToken
         }
       : undefined,
+    reddit,
     coti: hasCotiCredentials
       ? {
           privateKey: getRequiredEnv("PRIVATE_KEY"),
@@ -436,6 +474,28 @@ export async function loadRuntimeConfig(
         }
       : undefined
   };
+}
+
+export function buildRedditControllerConfig(packageRoot: string): RedditControllerConfig {
+  return {
+    controller: parseRedditController(getOptionalEnv("OUTREACH_REDDIT_CONTROLLER")),
+    browserBridge: {
+      bridgeDir: resolveHomePath(
+        process.env.OUTREACH_REDDIT_BROWSER_BRIDGE_DIR ?? defaultRedditBrowserBridgeDir(packageRoot)
+      ),
+      responseTimeoutMs: parseNumber(process.env.OUTREACH_REDDIT_BROWSER_RESPONSE_TIMEOUT_MS, 300_000),
+      pollIntervalMs: parseNumber(process.env.OUTREACH_REDDIT_BROWSER_POLL_INTERVAL_MS, 500)
+    },
+    api: {
+      accessToken: getOptionalEnv("REDDIT_ACCESS_TOKEN"),
+      userAgent: getOptionalEnv("REDDIT_USER_AGENT"),
+      baseUrl: process.env.REDDIT_BASE_URL ?? "https://oauth.reddit.com"
+    }
+  };
+}
+
+export function getRedditControllerConfig(config: Pick<MoltbookRuntimeConfig, "packageRoot" | "reddit">): RedditControllerConfig {
+  return config.reddit ?? buildRedditControllerConfig(config.packageRoot);
 }
 
 export function getOutreachAgentConfig(config: MoltbookRuntimeConfig): OutreachAgentConfig {

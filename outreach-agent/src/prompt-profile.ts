@@ -57,6 +57,7 @@ export interface CtaPolicy {
 export interface PromptProfile {
   id: string;
   description?: string;
+  allowVariantOverrides?: boolean;
   parameters: Partial<PromptParameterSet>;
   cta?: Partial<CtaPolicy>;
   venueOverrides?: Partial<Record<OutreachVenue, Partial<PromptParameterSet> & { cta?: Partial<CtaPolicy> }>>;
@@ -421,7 +422,7 @@ export function filterPromptParameterOverrides(
     return overrides;
   }
   const lockedKeys = new Set<keyof PromptParameterSet>([
-    ...Object.keys(profile.parameters),
+    ...(profile.allowVariantOverrides ? [] : Object.keys(profile.parameters)),
     ...Object.keys(profile.venueOverrides?.[venue] ?? {}).filter((key) => key !== "cta"),
     ...Object.keys(profile.actionOverrides?.[actionType] ?? {}).filter((key) => key !== "cta")
   ] as Array<keyof PromptParameterSet>);

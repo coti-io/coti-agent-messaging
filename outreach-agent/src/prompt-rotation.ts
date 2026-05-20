@@ -152,11 +152,6 @@ export async function selectPromptVariant(input: {
     lastRotationAt: new Date().toISOString(),
     lastSelectionRationale: selected.rationale
   };
-  await savePromptRotationStore(statePath, {
-    generatedAt: new Date().toISOString(),
-    state: nextState,
-    history: store.history
-  });
   return {
     variantId: selected.id,
     label: selected.label,
@@ -171,6 +166,8 @@ export async function selectPromptVariant(input: {
 export async function recordPromptRotationAction(input: {
   config: MoltbookRuntimeConfig;
   entry: PromptRotationHistoryEntry;
+  selection?: Pick<SelectedPromptVariant, "variantId" | "rationale" | "rotateAfterActions" | "reusedExisting">;
+  rng?: () => number;
 }): Promise<void> {
   const statePath = input.config.promptRotationStatePath ?? defaultPromptRotationStatePath(input.config.packageRoot);
   const store = await loadPromptRotationStore(statePath);
@@ -178,11 +175,24 @@ export async function recordPromptRotationAction(input: {
     ...store.history.filter((entry) => entry.id !== input.entry.id),
     input.entry
   ].slice(-MAX_PROMPT_ROTATION_HISTORY);
-  const nextState = normalizeRotationState({
-    ...store.state,
-    currentPromptVariant: input.entry.promptVariantId ?? store.state.currentPromptVariant,
-    actionsSinceRotation: store.state.actionsSinceRotation + 1
-  });
+  const selection = input.selection;
+  const isRotation = Boolean(selection && !selection.reusedExisting);
+  const nextState = normalizeRotationState(
+    isRotation
+      ? {
+          currentPromptVariant: input.entry.promptVariantId ?? selection?.variantId ?? store.state.currentPromptVariant,
+          actionsSinceRotation: 1,
+          rotateAfterActions: selection?.rotateAfterActions ?? chooseRotationWindow(input.rng ?? Math.random),
+          lastRotationAt: new Date().toISOString(),
+          lastSelectionRationale: selection?.rationale ?? store.state.lastSelectionRationale
+        }
+      : {
+          ...store.state,
+          currentPromptVariant: input.entry.promptVariantId ?? store.state.currentPromptVariant,
+          actionsSinceRotation: store.state.actionsSinceRotation + 1,
+          lastSelectionRationale: selection?.rationale ?? store.state.lastSelectionRationale
+        }
+  );
   await savePromptRotationStore(statePath, {
     generatedAt: new Date().toISOString(),
     state: nextState,

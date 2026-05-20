@@ -46,6 +46,12 @@ test("prompt rotation reuses the active variant until the window is reached", as
   });
   await recordPromptRotationAction({
     config,
+    selection: {
+      variantId: first.variantId,
+      rationale: first.rationale,
+      rotateAfterActions: first.rotateAfterActions,
+      reusedExisting: first.reusedExisting
+    },
     entry: {
       id: "reddit:1",
       venue: "reddit",
@@ -65,6 +71,43 @@ test("prompt rotation reuses the active variant until the window is reached", as
 
   assert.equal(second.variantId, first.variantId);
   assert.equal(second.reusedExisting, true);
+});
+
+test("prompt rotation does not advance state until a successful action is recorded", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "prompt-rotation-pending-"));
+  const promptRotationStatePath = path.join(tempDir, "prompt-rotation.json");
+  const config = createConfig(promptRotationStatePath);
+
+  const selected = await selectPromptVariant({
+    config,
+    venue: "reddit",
+    actionType: "reply_to_activity",
+    rng: () => 0
+  });
+  const storeBeforeRecord = await loadPromptRotationStore(promptRotationStatePath);
+  assert.equal(storeBeforeRecord.state.currentPromptVariant, undefined);
+
+  await recordPromptRotationAction({
+    config,
+    selection: {
+      variantId: selected.variantId,
+      rationale: selected.rationale,
+      rotateAfterActions: selected.rotateAfterActions,
+      reusedExisting: selected.reusedExisting
+    },
+    entry: {
+      id: "reddit:success",
+      venue: "reddit",
+      actionType: "reply_to_activity",
+      createdAt: "2026-05-19T09:00:00.000Z",
+      status: "replied",
+      promptVariantId: selected.variantId
+    }
+  });
+
+  const storeAfterRecord = await loadPromptRotationStore(promptRotationStatePath);
+  assert.equal(storeAfterRecord.state.currentPromptVariant, selected.variantId);
+  assert.equal(storeAfterRecord.state.actionsSinceRotation, 1);
 });
 
 test("prompt rotation records cross-venue prompt metadata", async () => {

@@ -70,6 +70,7 @@ export interface RedditOutboundMemoryEntry {
   createdAt: string;
   targetId?: string;
   targetSummary?: string;
+  nextEligibleAt?: string;
   status?:
     | "drafted"
     | "approved"
@@ -449,7 +450,7 @@ function buildReviewItem(
   const needsHelp = hasExplicitHelpIntent(text) || hasPainSignal;
   const explicitProductInterest = hasExplicitProductInterest(text, targeting.productAliases);
   const privateMessageAssessment = assessPrivateMessageEscalation({ text });
-  const publicValueDeliveredFirst = true;
+  const publicValueDeliveredFirst = false;
   const productSpecificFollowUp = canUseProductSpecificFollowUp({
     venue: "reddit",
     explicitInterest: explicitProductInterest,
@@ -552,7 +553,12 @@ function buildGates(
   productSpecificFollowUpReason: string,
   resolvedPromptProfile: ReturnType<typeof resolvePromptProfile>
 ): RedditReviewGate[] {
-  const similar = draft ? findMostSimilarOutbound(draft, history) : undefined;
+  const similar = draft
+    ? findMostSimilarOutbound(
+        draft,
+        history.filter((entry) => redditMemoryEntryConsumesTarget(entry))
+      )
+    : undefined;
   const dailySubredditCount = countRecentFirstReplies(history, now, source.subreddit);
   const dailyGlobalCount = countRecentFirstReplies(history, now);
   const gates: RedditReviewGate[] = [
@@ -1094,12 +1100,25 @@ function countRecentFirstReplies(
   const cutoff = now.getTime() - 24 * 60 * 60 * 1_000;
   return history.filter((entry) => {
     const createdAt = Date.parse(entry.createdAt);
-    if (Number.isNaN(createdAt) || createdAt < cutoff || !entry.firstReply) {
+    if (
+      Number.isNaN(createdAt) ||
+      createdAt < cutoff ||
+      !entry.firstReply ||
+      !redditMemoryEntryCountsTowardPublishedLimits(entry)
+    ) {
       return false;
     }
 
     return subreddit ? entry.subreddit.toLowerCase() === subreddit.toLowerCase() : true;
   }).length;
+}
+
+export function redditMemoryEntryConsumesTarget(entry: RedditOutboundMemoryEntry): boolean {
+  return entry.status !== "drafted" && entry.status !== "approved";
+}
+
+export function redditMemoryEntryCountsTowardPublishedLimits(entry: RedditOutboundMemoryEntry): boolean {
+  return entry.status !== "drafted" && entry.status !== "approved";
 }
 
 function freshnessBoost(source: RedditSourceItem, now: Date): number {

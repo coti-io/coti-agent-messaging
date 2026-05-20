@@ -1,5 +1,6 @@
 import {
   buildRedditReviewQueue,
+  redditMemoryEntryConsumesTarget,
   type RedditOutboundMemoryEntry,
   type RedditOutreachTargeting,
   type RedditReviewItem,
@@ -108,8 +109,14 @@ export function planRedditAction(input: {
     registry: input.registry ?? DEFAULT_REDDIT_OPERATING_RULES,
     now
   });
-  const skipped = queue.ignored.map((item) => `${item.id}: blocked by ${blockedGateIds(item).join(",")}`);
+  const skipped = [
+    ...queue.ignored.map((item) => `${item.id}: blocked by ${blockedGateIds(item).join(",")}`),
+    ...queue.items
+      .filter((item) => item.action !== "answer_publicly")
+      .map((item) => `${item.id}: requires ${item.action.replaceAll("_", " ")}`)
+  ];
   const ranked = queue.items
+    .filter((item) => item.action === "answer_publicly")
     .filter((item) => item.draft)
     .filter((item) => !alreadyTouched(item, input.history ?? []))
     .map((item) => {
@@ -159,11 +166,16 @@ function scoreCandidate(item: RedditReviewItem, config: RedditPlannerConfig): nu
 }
 
 function alreadyTouched(item: RedditReviewItem, history: readonly RedditOutboundMemoryEntry[]): boolean {
-  return history.some((entry) =>
-    entry.targetId === item.source.id ||
-    entry.id === item.source.id ||
-    (entry.targetSummary && item.source.body && entry.targetSummary.includes(item.source.body.slice(0, 80)))
-  );
+  return history.some((entry) => {
+    if (!redditMemoryEntryConsumesTarget(entry)) {
+      return false;
+    }
+    return (
+      entry.targetId === item.source.id ||
+      entry.id === item.source.id ||
+      (entry.targetSummary && item.source.body && entry.targetSummary.includes(item.source.body.slice(0, 80)))
+    );
+  });
 }
 
 function blockedGateIds(item: RedditReviewItem): string[] {

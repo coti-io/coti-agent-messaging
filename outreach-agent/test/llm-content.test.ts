@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import type { MoltbookRuntimeConfig } from "../src/config.js";
 import {
@@ -23,6 +23,7 @@ test("comment drafts strip inline backticks instead of crashing validation", asy
     credentialsPath: path.join(tempDir, "credentials.json"),
     statePath: path.join(tempDir, "state.json"),
     heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: false,
@@ -76,6 +77,21 @@ test("comment drafts strip inline backticks instead of crashing validation", asy
   let llmCallCount = 0;
 
   try {
+    await writeFile(
+      config.promptRotationStatePath!,
+      JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        state: {
+          currentPromptVariant: "operator-problem-solution",
+          actionsSinceRotation: 1,
+          rotateAfterActions: 10,
+          lastRotationAt: new Date().toISOString(),
+          lastSelectionRationale: "Seeded for deterministic llm-content tests."
+        },
+        history: []
+      }),
+      "utf8"
+    );
     const decision = await chooseAndDraftWriteAction(
       config,
       candidates,

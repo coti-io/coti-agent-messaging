@@ -248,7 +248,10 @@ async function loadPromptProfile(profilePath: string | undefined): Promise<Promp
   }
 
   const raw = await readFile(resolveHomePath(profilePath), "utf8");
-  return JSON.parse(raw) as PromptProfile;
+  return {
+    ...(JSON.parse(raw) as PromptProfile),
+    allowVariantOverrides: true
+  };
 }
 
 export function resolveNetwork(raw = process.env.COTI_NETWORK): CotiNetwork {

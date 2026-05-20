@@ -91,6 +91,36 @@ test("tracked links include stable UTM fields and full prompt/ref metadata", () 
   assert.equal(cta.ref.layout, "structured_bullets");
 });
 
+test("outreach refs stay unique across repeated publishes in the same hour", () => {
+  const first = buildOutreachRef({
+    venue: "moltbook",
+    venueAccountId: "OutreachBot",
+    surface: "general",
+    contentType: "post",
+    promptProfileId: "technical-regular",
+    parameters: DEFAULT_PROMPT_PARAMETERS,
+    campaignId: "private_messaging",
+    candidateId: "create-post",
+    generatedContentId: "attempt-1",
+    timestamp: new Date("2026-05-10T08:00:00.000Z")
+  });
+  const second = buildOutreachRef({
+    venue: "moltbook",
+    venueAccountId: "OutreachBot",
+    surface: "general",
+    contentType: "post",
+    promptProfileId: "technical-regular",
+    parameters: DEFAULT_PROMPT_PARAMETERS,
+    campaignId: "private_messaging",
+    candidateId: "create-post",
+    generatedContentId: "attempt-2",
+    timestamp: new Date("2026-05-10T08:05:00.000Z")
+  });
+
+  assert.notEqual(first.id, second.id);
+  assert.notEqual(first.utm.content, second.utm.content);
+});
+
 test("shared sqlite attribution store persists refs and downstream events", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "outreach-attribution-store-"));
   const dbPath = path.join(tempDir, "attribution.sqlite");

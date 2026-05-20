@@ -7,6 +7,7 @@ import {
 } from "./reddit-controller.js";
 import {
   RedditReadOnlyClient,
+  redditMemoryEntryConsumesTarget,
   type RedditOutboundMemoryEntry,
   type RedditSourceItem
 } from "./reddit-outreach.js";
@@ -216,7 +217,12 @@ export function snapshotsToSourceItems(
   snapshots: readonly RedditConversationSnapshot[],
   history: readonly RedditOutboundMemoryEntry[] = []
 ): RedditSourceItem[] {
-  const alreadyTouched = new Set(history.map((entry) => entry.targetId).filter(Boolean));
+  const alreadyTouched = new Set(
+    history
+      .filter((entry) => redditMemoryEntryConsumesTarget(entry))
+      .map((entry) => entry.targetId)
+      .filter(Boolean)
+  );
   const items: RedditSourceItem[] = [];
   for (const snapshot of snapshots) {
     const thread = snapshot.thread;

@@ -12,5 +12,5 @@ starter-grant-service/.env
 .DS_Store
 outreach-agent/.data/
 outreach-agent/.bridge/
+outreach-agent/.browser/
 starter-grant-service/.data/
-reddit-storage-state.json

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { buildMainLlmProvider, type MoltbookRuntimeConfig } from "./config.js";
 import { saveOutreachRefToAttributionStore } from "./attribution-store.js";
 import type { JsonLlmProvider } from "./llm-client.js";
@@ -55,6 +57,8 @@ export interface GeneratedWriteDecision {
   ctaUrl?: string;
   outreachRef?: OutreachRef;
   structuralFingerprint?: string;
+  promptRotationReusedExisting?: boolean;
+  promptRotateAfterActions?: number;
 }
 
 const MAX_POST_TITLE_CHARS = 110;
@@ -307,7 +311,9 @@ export async function chooseAndDraftWriteAction(
     layout: resolvedProfile.parameters.layout,
     ctaUrl: ctaLink?.url,
     outreachRef: ctaLink?.ref,
-    structuralFingerprint: structuralFingerprint(`${title ?? ""}\n${content}`)
+    structuralFingerprint: structuralFingerprint(`${title ?? ""}\n${content}`),
+    promptRotationReusedExisting: selectedVariant.reusedExisting,
+    promptRotateAfterActions: selectedVariant.rotateAfterActions
   };
 }
 
@@ -722,7 +728,7 @@ function buildCandidateCtaLink(
     return undefined;
   }
 
-  const generatedContentId = contentFingerprint(`${candidate.id}:${candidateToQueryText(candidate)}`);
+  const generatedContentId = contentFingerprint(`${candidate.id}:${candidateToQueryText(candidate)}:${randomUUID()}`);
   const ref = buildOutreachRef({
     venue: "moltbook",
     venueAccountId: config.agentId,

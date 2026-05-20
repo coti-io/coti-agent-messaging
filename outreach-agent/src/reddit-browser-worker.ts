@@ -457,6 +457,9 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
     await page.waitForURL(/\/comments\//i, {
       timeout: this.config.requestTimeoutMs
     }).catch(() => undefined);
+    if (!/\/comments\//i.test(page.url())) {
+      throw new RedditBrowserSubmitError("Reddit browser worker did not reach the new post page after submit.");
+    }
     await this.guardPage(page);
     await this.persistStorageState();
     return this.buildSubmitResult(page, request.action.type, request.action.content);
@@ -637,7 +640,7 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
     jsonUrl.searchParams.set("t", request.action.time ?? "month");
     jsonUrl.searchParams.set("limit", String(request.action.limit ?? 10));
     const jsonItems = normalizeSearchResultsFromSourceItems(
-      parseRedditListing(await fetchJsonInPage(page, jsonUrl.toString()))
+      parseRedditListing(await tryFetchJsonInPage(page, jsonUrl.toString()))
     );
     if (jsonItems.length > 0) {
       return {
@@ -665,7 +668,7 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
     const jsonUrl = new URL(`/r/${encodeURIComponent(request.action.subreddit)}/${sort}.json`, this.config.baseUrl);
     jsonUrl.searchParams.set("limit", String(request.action.limit ?? 10));
     const jsonItems = normalizeSearchResultsFromSourceItems(
-      parseRedditListing(await fetchJsonInPage(page, jsonUrl.toString()))
+      parseRedditListing(await tryFetchJsonInPage(page, jsonUrl.toString()))
     );
     if (jsonItems.length > 0) {
       return {
@@ -699,7 +702,7 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
     await this.gotoAndGuard(page, targetUrl);
     await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
     const jsonThread = normalizeThreadStateFromJson(
-      await fetchJsonInPage(page, ensureJsonThreadUrl(targetUrl, request.action.limit ?? 35)),
+      await tryFetchJsonInPage(page, ensureJsonThreadUrl(targetUrl, request.action.limit ?? 35)),
       this.config.baseUrl
     );
     if (jsonThread) {
@@ -919,6 +922,14 @@ async function fetchJsonInPage(page: Page, url: string): Promise<unknown> {
     return response.json();
   }, url);
   return result;
+}
+
+async function tryFetchJsonInPage(page: Page, url: string): Promise<unknown | undefined> {
+  try {
+    return await fetchJsonInPage(page, url);
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizeSearchResultsFromSourceItems(items: readonly RedditSourceItem[]): RedditSearchResult[] {

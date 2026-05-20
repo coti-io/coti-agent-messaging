@@ -601,7 +601,7 @@ export async function runHeartbeat(
                 });
                 const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
                 await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
-                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, "replied");
+                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, decision, "replied");
                 await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
               } catch (error) {
                 recordPublishFailure(`reply on "${candidate.postTitle}"`, error);
@@ -636,7 +636,7 @@ export async function runHeartbeat(
                 });
                 const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
                 await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
-                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, "commented");
+                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, decision, "commented");
                 await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
               } catch (error) {
                 recordPublishFailure(`comment on "${candidate.post.title}"`, error);
@@ -664,7 +664,7 @@ export async function runHeartbeat(
                 });
                 const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
                 await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
-                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, "posted");
+                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, decision, "posted");
                 await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
               } catch (error) {
                 recordPublishFailure(`post "${decision.title ?? "Untitled post"}"`, error);
@@ -885,6 +885,7 @@ async function recordMoltbookPromptRotation(
   config: MoltbookRuntimeConfig,
   actionType: WriteCandidate["type"],
   pendingWrite: PendingWrite,
+  decision: GeneratedWriteDecision,
   status: "posted" | "commented" | "replied"
 ): Promise<void> {
   if (!pendingWrite.promptVariantId) {
@@ -892,6 +893,12 @@ async function recordMoltbookPromptRotation(
   }
   await recordPromptRotationAction({
     config,
+    selection: {
+      variantId: pendingWrite.promptVariantId,
+      rationale: pendingWrite.promptVariantRationale ?? decision.promptVariantRationale ?? "",
+      rotateAfterActions: decision.promptRotateAfterActions ?? 10,
+      reusedExisting: decision.promptRotationReusedExisting ?? true
+    },
     entry: {
       id: `moltbook:${pendingWrite.id}:${status}`,
       venue: "moltbook",

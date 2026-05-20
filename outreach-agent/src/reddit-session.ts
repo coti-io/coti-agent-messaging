@@ -8,6 +8,7 @@ import {
   DEFAULT_REDDIT_OPERATING_TARGETING,
   planRedditAction
 } from "./reddit-policy.js";
+import { redditMemoryEntryCountsTowardPublishedLimits } from "./reddit-outreach.js";
 import type { RedditDecisionMemoryEntry } from "./reddit-memory.js";
 import { createVenueProvider } from "./venue-factory.js";
 import type { VenueAction, VenueOutcome } from "./venue.js";
@@ -52,11 +53,12 @@ export async function runRedditSession(input: {
   const dryRun = input.dryRun ?? operating.dryRunDefault;
   const maxActions = input.maxActions ?? operating.maxActionsPerSession;
   const memory = await loadRedditMemory(operating.memoryPath);
+  const now = new Date();
   const recentKillReason = findKillSwitch(memory.history);
   if (recentKillReason) {
     const decision = { skipped: [recentKillReason], candidates: [] };
     return {
-      generatedAt: new Date().toISOString(),
+      generatedAt: now.toISOString(),
       dryRun,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
@@ -89,9 +91,49 @@ export async function runRedditSession(input: {
     }
   });
 
+  const dailyLimitReason = findDailyActionLimitReason(memory.history, operating.maxActionsPerDay, now);
+  if (dailyLimitReason) {
+    return {
+      generatedAt: now.toISOString(),
+      dryRun,
+      readSource: operating.readController,
+      memoryPath: operating.memoryPath,
+      ingestion: {
+        snapshotCount: ingestion.snapshots.length,
+        sourceItemCount: ingestion.sourceItems.length,
+        skipped: ingestion.skipped
+      },
+      decision: {
+        ...decision,
+        action: undefined,
+        skipped: [dailyLimitReason, ...decision.skipped]
+      }
+    };
+  }
+
+  const cooldownReason = findSessionCooldownReason(memory.history, now);
+  if (cooldownReason) {
+    return {
+      generatedAt: now.toISOString(),
+      dryRun,
+      readSource: operating.readController,
+      memoryPath: operating.memoryPath,
+      ingestion: {
+        snapshotCount: ingestion.snapshots.length,
+        sourceItemCount: ingestion.sourceItems.length,
+        skipped: ingestion.skipped
+      },
+      decision: {
+        ...decision,
+        action: undefined,
+        skipped: [cooldownReason, ...decision.skipped]
+      }
+    };
+  }
+
   if (!decision.action || maxActions < 1) {
     return {
-      generatedAt: new Date().toISOString(),
+      generatedAt: now.toISOString(),
       dryRun,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
@@ -139,9 +181,10 @@ export async function runRedditSession(input: {
         ? "replied"
         : "commented",
     content: draft.content,
-    createdAt: new Date().toISOString(),
-    targetId: decision.action.item.source.id,
+    createdAt: now.toISOString(),
+    targetId: dryRun ? undefined : decision.action.item.source.id,
     targetSummary: decision.action.item.source.body ?? decision.action.item.source.title,
+    nextEligibleAt: dryRun ? undefined : decision.action.nextEligibleAt,
     status: dryRun ? "drafted" : "posted",
     firstReply: true,
     productMentioned: false,
@@ -162,6 +205,12 @@ export async function runRedditSession(input: {
   if (!dryRun) {
     await recordPromptRotationAction({
       config,
+      selection: {
+        variantId: selectedVariant.variantId,
+        rationale: selectedVariant.rationale,
+        rotateAfterActions: selectedVariant.rotateAfterActions,
+        reusedExisting: selectedVariant.reusedExisting
+      },
       entry: {
         id: `reddit:${recorded.id}`,
         venue: "reddit",
@@ -183,7 +232,7 @@ export async function runRedditSession(input: {
   }
 
   return {
-    generatedAt: new Date().toISOString(),
+    generatedAt: now.toISOString(),
     dryRun,
     readSource: operating.readController,
     memoryPath: operating.memoryPath,
@@ -232,6 +281,44 @@ function findKillSwitch(history: readonly RedditDecisionMemoryEntry[]): string |
     return "Kill switch: repeated removals or mod warnings recorded in Reddit memory.";
   }
   return undefined;
+}
+
+function findDailyActionLimitReason(
+  history: readonly RedditDecisionMemoryEntry[],
+  maxActionsPerDay: number,
+  now: Date
+): string | undefined {
+  if (maxActionsPerDay < 1) {
+    return "Reddit session daily action cap is set to zero.";
+  }
+  const today = now.toISOString().slice(0, 10);
+  const postedToday = history.filter((entry) => {
+    if (!redditMemoryEntryCountsTowardPublishedLimits(entry)) {
+      return false;
+    }
+    return entry.createdAt.slice(0, 10) === today;
+  }).length;
+  return postedToday >= maxActionsPerDay
+    ? `Daily Reddit action cap reached (${postedToday}/${maxActionsPerDay}).`
+    : undefined;
+}
+
+function findSessionCooldownReason(
+  history: readonly RedditDecisionMemoryEntry[],
+  now: Date
+): string | undefined {
+  const recent = [...history]
+    .filter((entry) => redditMemoryEntryCountsTowardPublishedLimits(entry))
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
+  if (!recent?.nextEligibleAt) {
+    return undefined;
+  }
+  const nextEligibleAt = Date.parse(recent.nextEligibleAt);
+  if (Number.isNaN(nextEligibleAt) || nextEligibleAt <= now.getTime()) {
+    return undefined;
+  }
+  const waitMinutes = Math.max(1, Math.ceil((nextEligibleAt - now.getTime()) / 60_000));
+  return `Reddit session cooldown active for about ${waitMinutes} more minute${waitMinutes === 1 ? "" : "s"}.`;
 }
 
 function structuralFingerprint(content: string): string {

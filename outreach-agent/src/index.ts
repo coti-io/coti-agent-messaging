@@ -76,6 +76,26 @@ function printUsage(): void {
   coti-outreach-agent heartbeat`);
 }
 
+async function flushStream(stream: NodeJS.WriteStream): Promise<void> {
+  if (stream.destroyed) {
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    stream.write("", (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function exitCliProcess(code: number): Promise<never> {
+  await Promise.allSettled([flushStream(process.stdout), flushStream(process.stderr)]);
+  process.exit(code);
+}
+
 async function loadLocalState(statePath: string): Promise<OutreachAgentState> {
   try {
     return await loadStateFromStorage(statePath);
@@ -430,15 +450,15 @@ async function run(): Promise<void> {
       const config = await loadRuntimeConfig({ requireVenue: true });
       const result = await runHeartbeat(config);
       console.log(result.summary);
-      return;
+      await exitCliProcess(0);
     }
     default:
       throw new Error(`Unknown command: ${command}`);
   }
 }
 
-run().catch((error) => {
+void run().catch(async (error) => {
   console.error(error);
-  process.exitCode = 1;
+  await exitCliProcess(1);
 });
 

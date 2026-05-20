@@ -48,7 +48,8 @@ test("reddit planner skips hostile and already-touched targets", () => {
       content: "Previous answer",
       createdAt: now.toISOString(),
       targetId: "comment-1",
-      firstReply: true
+      firstReply: true,
+      status: "posted"
     }
   ];
   const items: RedditSourceItem[] = [
@@ -73,6 +74,24 @@ test("reddit planner skips hostile and already-touched targets", () => {
   const plan = planRedditAction({ items, history, now, rng: () => 0 });
   assert.equal(plan.action, undefined);
   assert.ok(plan.skipped.some((entry) => entry.includes("low_argument_risk")));
+});
+
+test("reddit planner does not autopublish threads that need clarification first", () => {
+  const items: RedditSourceItem[] = [
+    {
+      id: "post-clarify",
+      kind: "post",
+      subreddit: "sales",
+      title: "CRM handoff keeps breaking",
+      body: "Sales duplicates records and ops cleans spreadsheets every week.",
+      createdUtc: now.getTime() / 1000,
+      commentCount: 10
+    }
+  ];
+
+  const plan = planRedditAction({ items, now, rng: () => 0 });
+  assert.equal(plan.action, undefined);
+  assert.ok(plan.skipped.some((entry) => entry.includes("ask clarifying question")));
 });
 
 test("reddit planner applies deterministic jitter window", () => {

@@ -60,6 +60,7 @@ test("review queue generates only non-promotional explanatory first replies", ()
   assert.equal(queue.items[0]?.promptParameters?.layout, "question_answer");
   assert.equal(queue.items[0]?.explicitProductInterest, false);
   assert.equal(queue.items[0]?.privateMessageAssessment.shouldEscalate, false);
+  assert.equal(queue.items[0]?.publicValueDeliveredFirst, false);
 });
 
 test("review queue accepts operational pain even before a direct how-to question", () => {

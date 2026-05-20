@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   canUseProductSpecificFollowUp,
   contentTokenSimilarity,
+  filterPromptParameterOverrides,
   resolvePromptProfile,
   structuralFingerprint,
   validateDraftAgainstPromptProfile,
@@ -71,6 +72,37 @@ test("Reddit product-specific follow-up requires explicit interest after public 
   assert.equal(blocked.allowed, false);
   assert.match(blocked.reason, /explicitly asks/i);
   assert.equal(allowed.allowed, true);
+});
+
+test("profile defaults do not strip safe prompt-rotation overrides", () => {
+  const profile: PromptProfile = {
+    id: "custom-profile",
+    allowVariantOverrides: true,
+    parameters: {
+      intent: "educate",
+      promotionLevel: "soft",
+      aggression: "medium",
+      creativity: "balanced",
+      technicalDepth: "practical",
+      tone: "technical_realist",
+      ctaStyle: "soft_next_step",
+      productSpecificity: "coti_anchored",
+      rewardEmphasis: "secondary",
+      audience: "agent_builder",
+      messageStyle: "technical",
+      layout: "regular_paragraph"
+    }
+  };
+
+  const overrides = filterPromptParameterOverrides(profile, "reddit", "reply_to_activity", {
+    layout: "problem_solution",
+    tone: "operator"
+  });
+
+  assert.deepEqual(overrides, {
+    layout: "problem_solution",
+    tone: "operator"
+  });
 });
 
 test("Moltbook profiles can require CTA links but block shorteners", () => {

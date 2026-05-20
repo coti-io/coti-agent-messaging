@@ -18,6 +18,7 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
     credentialsPath: path.join(tempDir, "credentials.json"),
     statePath: path.join(tempDir, "state.json"),
     heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     apiKey: "test-api-key",
@@ -232,6 +233,21 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
   };
 
   try {
+    await writeFile(
+      config.promptRotationStatePath!,
+      JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        state: {
+          currentPromptVariant: "operator-problem-solution",
+          actionsSinceRotation: 1,
+          rotateAfterActions: 10,
+          lastRotationAt: new Date().toISOString(),
+          lastSelectionRationale: "Seeded for deterministic heartbeat tests."
+        },
+        history: []
+      }),
+      "utf8"
+    );
     const firstHeartbeat = await runHeartbeat(config);
     assert.equal(createdPost?.id, "created-post-1");
     assert.match(createdPost?.title ?? "", /plaintext|private|inbox|agent/i);

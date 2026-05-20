@@ -142,6 +142,47 @@ h2 {
   margin-bottom: 14px;
 }
 
+.collapsible-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.collapsible-summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible-summary .section-heading {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.collapsible[open] > .collapsible-summary {
+  margin-bottom: 14px;
+}
+
+.collapsible-indicator {
+  flex: none;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.collapsible[open] .collapsible-indicator {
+  transform: rotate(180deg);
+}
+
+.collapsible-body > .grid.cards:first-child,
+.collapsible-body > .grid.cards.compact:first-child {
+  margin-top: 0;
+}
+
 .table-wrap {
   overflow-x: auto;
 }
@@ -174,6 +215,12 @@ th {
   margin-top: 4px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.content-meta {
+  margin-top: 6px;
+  color: var(--muted);
   font-size: 12px;
 }
 
@@ -356,8 +403,14 @@ summary {
 @media (max-width: 900px) {
   .hero,
   .section-heading,
+  .collapsible-summary,
   .builder-summary {
     display: block;
+  }
+
+  .collapsible-indicator {
+    display: inline-block;
+    margin-top: 10px;
   }
 
   .cards,

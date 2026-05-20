@@ -191,6 +191,144 @@ function promptSummaryMarkup(ref) {
   return chips || '<span class="subtle">No prompt params</span>';
 }
 
+function collectRecentPublished(agents) {
+  const rows = [];
+  for (const agent of agents || []) {
+    for (const item of agent.recentPublished || []) {
+      rows.push({
+        ...item,
+        agentId: agent.agentId,
+        displayName: agent.displayName,
+        profileUrl: agent.profileUrl
+      });
+    }
+  }
+  return rows.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+}
+
+function enrichRecentPublishedUrls(rows, attribution) {
+  if (!attribution?.configured) {
+    return rows;
+  }
+  const refsById = new Map();
+  for (const ref of [...(attribution.recentRefs || []), ...(attribution.topRefs || [])]) {
+    if (ref?.refId) {
+      refsById.set(ref.refId, ref);
+    }
+  }
+  return rows.map((row) => {
+    if (!row.refId || row.contentUrl) {
+      return row;
+    }
+    const ref = refsById.get(row.refId);
+    if (!ref?.remoteContentUrl) {
+      return row;
+    }
+    return { ...row, contentUrl: ref.remoteContentUrl };
+  });
+}
+
+function contentSnippetMarkup(item) {
+  const preview = escapeHtml(item.contentPreview || "");
+  const target = item.targetSummary
+    ? `<div class="content-meta">target ${escapeHtml(item.targetSummary)}</div>`
+    : "";
+  const variant = item.promptVariantId
+    ? `<div class="content-meta">variant ${escapeHtml(item.promptVariantId)}</div>`
+    : "";
+  return `
+    <div>${preview}</div>
+    ${target}
+    ${variant}
+  `;
+}
+
+function renderContent(agents, attribution) {
+  const subtitle = document.getElementById("content-subtitle");
+  const currentTable = document.getElementById("content-current-table");
+  const recentTable = document.getElementById("content-recent-table");
+  const agentsWithPrompt = (agents || []).filter((agent) => agent.currentPrompt);
+
+  if (!agentsWithPrompt.length) {
+    currentTable.innerHTML = `<tr><td colspan="5" class="subtle">No current prompt rotation state found.</td></tr>`;
+  } else {
+    currentTable.innerHTML = agentsWithPrompt
+      .map((agent) => {
+        const prompt = agent.currentPrompt;
+        const promptJson = JSON.stringify(prompt.promptParameters || {}, null, 2);
+        return `
+          <tr>
+            <td>
+              ${agentNameMarkup(agent)}
+              <div class="agent-id">${escapeHtml(agent.agentId)}</div>
+            </td>
+            <td>
+              <div class="agent-name">${escapeHtml(prompt.promptVariantLabel || prompt.promptVariantId || "n/a")}</div>
+              <div class="agent-id">${escapeHtml(prompt.promptProfileId || "no profile")}</div>
+              <div class="content-meta">${escapeHtml(prompt.lastSelectionRationale || "No rationale stored.")}</div>
+            </td>
+            <td>
+              <div>${formatNumber(prompt.actionsSinceRotation)} / ${formatNumber(prompt.rotateAfterActions || 0)} actions</div>
+              <div class="subtle">last action ${formatTime(prompt.lastActionAt)}</div>
+            </td>
+            <td>
+              <div class="prompt-chips">${promptSummaryMarkup(prompt)}</div>
+              <details>
+                <summary>Full current params</summary>
+                <pre class="prompt-json">${escapeHtml(promptJson)}</pre>
+              </details>
+            </td>
+            <td>${formatTime(prompt.lastRotationAt)}</td>
+          </tr>
+        `;
+      })
+      .join("");
+  }
+
+  const recentPublished = enrichRecentPublishedUrls(collectRecentPublished(agents), attribution);
+  subtitle.textContent = `Current prompt params plus ${formatNumber(recentPublished.length)} published posts, comments, and replies from agent runtime state.`;
+  if (!recentPublished.length) {
+    recentTable.innerHTML = `<tr><td colspan="5" class="subtle">No published posts, comments, or replies recorded in agent state yet.</td></tr>`;
+    return;
+  }
+
+  recentTable.innerHTML = recentPublished
+    .map((item) => {
+      const promptParams = JSON.stringify(item.promptParameters || {}, null, 2);
+      const linkLabel = item.type === "post" ? "Open post" : "Open thread";
+      const links = [
+        attributionLink(linkLabel, item.contentUrl),
+        item.ctaUrl && item.ctaUrl !== item.contentUrl
+          ? attributionLink("Open CTA", item.ctaUrl)
+          : ""
+      ].filter(Boolean);
+      return `
+        <tr>
+          <td>
+            <div>${formatTime(item.createdAt)}</div>
+            <div class="content-meta">${escapeHtml(item.type)}${item.refId ? ` · ${escapeHtml(item.refId)}` : ""}</div>
+          </td>
+          <td>
+            ${agentNameMarkup(item)}
+            <div class="agent-id">${escapeHtml(item.agentId)}</div>
+          </td>
+          <td>${contentSnippetMarkup(item)}</td>
+          <td>
+            <div class="prompt-chips">${promptSummaryMarkup(item)}</div>
+            <details>
+              <summary>Full params</summary>
+              <pre class="prompt-json">${escapeHtml(promptParams)}</pre>
+            </details>
+          </td>
+          <td>
+            <div class="inline-links">${links.join("") || '<span class="subtle">No links stored</span>'}</div>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
 function setBuilderStatus(message, isWarn = false) {
   const status = document.getElementById("cta-builder-status");
   status.textContent = message;
@@ -410,10 +548,37 @@ async function refresh() {
   renderAgents(payload.agents);
   renderCoti(payload.coti);
   renderAttribution(payload.attribution, payload.config);
+  renderContent(payload.agents, payload.attribution);
   renderManualBuilder(payload.config);
 }
 
+const COLLAPSE_STORAGE_KEY = "outreach-analytics-collapsed";
+
+function initCollapsibleSections() {
+  let stored = {};
+  try {
+    stored = JSON.parse(localStorage.getItem(COLLAPSE_STORAGE_KEY) || "{}");
+  } catch {
+    stored = {};
+  }
+
+  document.querySelectorAll("details.collapsible[data-section]").forEach((section) => {
+    const sectionId = section.dataset.section;
+    if (!sectionId) {
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(stored, sectionId)) {
+      section.open = !stored[sectionId];
+    }
+    section.addEventListener("toggle", () => {
+      stored[sectionId] = !section.open;
+      localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify(stored));
+    });
+  });
+}
+
 bindManualBuilder();
+initCollapsibleSections();
 
 refresh().catch((error) => {
   document.getElementById("last-refresh").textContent = `Error: ${error.message}`;

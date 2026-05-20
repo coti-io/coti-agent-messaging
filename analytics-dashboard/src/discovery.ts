@@ -1,9 +1,10 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
+import { extractRecentPublishedFromState } from "./content";
 import { summarizeEngagements } from "./engagements";
 import { readSqliteAgentSnapshot } from "./storage";
-import type { AgentMetadata, AgentRuntimePaths, DiscoveredAgent } from "./types";
+import type { AgentCurrentPrompt, AgentMetadata, AgentRuntimePaths, DiscoveredAgent } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -46,6 +47,158 @@ async function readJson(filePath: string): Promise<{
 
 function asOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function asOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : typeof value === "string" && value.length > 0 && Number.isFinite(Number(value))
+      ? Number(value)
+      : undefined;
+}
+
+function parseEnvFile(contents: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const line of contents.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    const separator = line.indexOf("=");
+    if (separator === -1) {
+      continue;
+    }
+    const key = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1).trim();
+    if (key) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+function resolveTildePath(filePath: string): string {
+  if (!filePath.startsWith("~/")) {
+    return filePath;
+  }
+  const homeDir = process.env.HOME;
+  return homeDir ? path.join(homeDir, filePath.slice(2)) : filePath;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function extractPromptParameterSummary(entry: Record<string, unknown> | undefined): {
+  promptParameters: Record<string, unknown>;
+  messageStyle?: string;
+  layout?: string;
+  ctaStyle?: string;
+  promotionLevel?: string;
+  productSpecificity?: string;
+  rewardEmphasis?: string;
+  audience?: string;
+  tone?: string;
+  technicalDepth?: string;
+  creativity?: string;
+} {
+  const promptParameters = { ...(asRecord(entry?.promptParameters) ?? {}) };
+  const readField = (key: string): string | undefined =>
+    asOptionalString(entry?.[key]) ?? asOptionalString(promptParameters[key]);
+
+  return {
+    promptParameters,
+    messageStyle: readField("messageStyle"),
+    layout: readField("layout"),
+    ctaStyle: readField("ctaStyle"),
+    promotionLevel: readField("promotionLevel"),
+    productSpecificity: readField("productSpecificity"),
+    rewardEmphasis: readField("rewardEmphasis"),
+    audience: readField("audience"),
+    tone: readField("tone"),
+    technicalDepth: readField("technicalDepth"),
+    creativity: readField("creativity")
+  };
+}
+
+async function resolvePromptRotationStatePath(paths: AgentRuntimePaths, agentRoot: string): Promise<string | undefined> {
+  const candidatePaths = new Set<string>();
+
+  try {
+    const envRaw = await readFile(paths.envPath, "utf8");
+    const configuredPath = parseEnvFile(envRaw).OUTREACH_PROMPT_ROTATION_STATE_PATH;
+    if (configuredPath) {
+      const resolved = resolveTildePath(configuredPath);
+      candidatePaths.add(path.isAbsolute(resolved) ? resolved : path.resolve(path.dirname(paths.envPath), resolved));
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  candidatePaths.add(path.join(paths.agentDir, ".data", "prompt-rotation.json"));
+  candidatePaths.add(path.join(path.dirname(paths.runtimeDir), "outreach-agent", ".data", "prompt-rotation.json"));
+  candidatePaths.add(path.join(path.dirname(agentRoot), "repo", "outreach-agent", ".data", "prompt-rotation.json"));
+
+  for (const candidatePath of candidatePaths) {
+    if (await pathExists(candidatePath)) {
+      return candidatePath;
+    }
+  }
+  return undefined;
+}
+
+async function readCurrentPrompt(
+  paths: AgentRuntimePaths,
+  agentRoot: string
+): Promise<AgentCurrentPrompt | undefined> {
+  const statePath = await resolvePromptRotationStatePath(paths, agentRoot);
+  if (!statePath) {
+    return undefined;
+  }
+
+  const promptJson = await readJson(statePath);
+  if (!promptJson.present || !promptJson.value) {
+    return undefined;
+  }
+
+  const state = asRecord(promptJson.value.state);
+  const history = Array.isArray(promptJson.value.history)
+    ? promptJson.value.history.filter((entry): entry is Record<string, unknown> => isRecord(entry))
+    : [];
+  const currentVariantId = asOptionalString(state?.currentPromptVariant);
+  const latestEntry =
+    [...history].reverse().find((entry) => asOptionalString(entry.promptVariantId) === currentVariantId) ??
+    [...history].reverse().find((entry) => Boolean(asOptionalString(entry.promptVariantId)));
+
+  if (!currentVariantId && !latestEntry && !state) {
+    return undefined;
+  }
+
+  const summary = extractPromptParameterSummary(latestEntry);
+  return {
+    statePath,
+    promptProfileId: asOptionalString(latestEntry?.promptProfileId),
+    promptVariantId: currentVariantId ?? asOptionalString(latestEntry?.promptVariantId),
+    promptVariantLabel: asOptionalString(latestEntry?.promptVariantLabel),
+    promptParameters: summary.promptParameters,
+    messageStyle: summary.messageStyle,
+    layout: summary.layout,
+    ctaStyle: summary.ctaStyle,
+    promotionLevel: summary.promotionLevel,
+    productSpecificity: summary.productSpecificity,
+    rewardEmphasis: summary.rewardEmphasis,
+    audience: summary.audience,
+    tone: summary.tone,
+    technicalDepth: summary.technicalDepth,
+    creativity: summary.creativity,
+    actionsSinceRotation: asOptionalNumber(state?.actionsSinceRotation) ?? 0,
+    rotateAfterActions: asOptionalNumber(state?.rotateAfterActions) ?? 0,
+    lastRotationAt: asOptionalString(state?.lastRotationAt),
+    lastSelectionRationale: asOptionalString(state?.lastSelectionRationale),
+    lastActionAt: asOptionalString(latestEntry?.createdAt)
+  };
 }
 
 function sanitizeServiceName(value: string): string {
@@ -100,10 +253,11 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
     }
 
     const paths = buildPaths(agentRoot, entry);
-    const [metadataJson, stateJson, reportJson] = await Promise.all([
+    const [metadataJson, stateJson, reportJson, currentPrompt] = await Promise.all([
       readJson(paths.metadataPath),
       readJson(paths.statePath),
-      readJson(paths.reportPath)
+      readJson(paths.reportPath),
+      readCurrentPrompt(paths, agentRoot)
     ]);
     const metadata = normalizeMetadata(agentDir, metadataJson.value);
     const normalizedPaths =
@@ -156,7 +310,9 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       latestFinishedAt: sqliteSnapshot?.latestFinishedAt ?? asOptionalString(report?.finishedAt),
       latestStatus: sqliteSnapshot?.latestStatus ?? asOptionalString(report?.status),
       latestErrors: errors,
-      latestSkipped: skipped
+      latestSkipped: skipped,
+      currentPrompt,
+      recentPublished: extractRecentPublishedFromState(state)
     });
   }
 

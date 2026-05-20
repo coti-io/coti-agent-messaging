@@ -17,48 +17,88 @@
         <div class="status-pill" id="last-refresh">Loading...</div>
       </header>
 
-      <section class="grid cards" id="engagement-cards"></section>
-
-      <section class="panel">
-        <div class="section-heading">
-          <h2>Agents</h2>
-          <p class="subtle">Runtime state discovered by stable agentId.</p>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Agent</th>
-                <th>Scheduler</th>
-                <th>Last run</th>
-                <th>2h</th>
-                <th>24h</th>
-                <th>7d</th>
-                <th>Total</th>
-                <th>Pending</th>
-                <th>Last success</th>
-              </tr>
-            </thead>
-            <tbody id="agents-table"></tbody>
-          </table>
-        </div>
+      <section class="panel" id="overview-section">
+        <details class="collapsible" data-section="overview" open>
+          <summary class="collapsible-summary">
+            <div class="section-heading">
+              <div>
+                <h2>Overview</h2>
+                <p class="subtle">Engagement totals across all discovered agents.</p>
+              </div>
+            </div>
+            <span class="collapsible-indicator" aria-hidden="true">▼</span>
+          </summary>
+          <div class="collapsible-body">
+            <section class="grid cards" id="engagement-cards"></section>
+          </div>
+        </details>
       </section>
 
-      <section class="panel">
-        <div class="section-heading">
-          <h2>COTI Messages</h2>
-          <p class="subtle">Plaintext size is not observable because message bodies are encrypted.</p>
-        </div>
-        <div class="grid cards" id="coti-window-cards"></div>
-        <div class="grid cards compact" id="coti-cards"></div>
-        <div class="route-list" id="route-list"></div>
+      <section class="panel" id="agents-section">
+        <details class="collapsible" data-section="agents" open>
+          <summary class="collapsible-summary">
+            <div class="section-heading">
+              <div>
+                <h2>Agents</h2>
+                <p class="subtle">Runtime state discovered by stable agentId.</p>
+              </div>
+            </div>
+            <span class="collapsible-indicator" aria-hidden="true">▼</span>
+          </summary>
+          <div class="collapsible-body">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Agent</th>
+                    <th>Scheduler</th>
+                    <th>Last run</th>
+                    <th>2h</th>
+                    <th>24h</th>
+                    <th>7d</th>
+                    <th>Total</th>
+                    <th>Pending</th>
+                    <th>Last success</th>
+                  </tr>
+                </thead>
+                <tbody id="agents-table"></tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel" id="coti-section">
+        <details class="collapsible" data-section="coti" open>
+          <summary class="collapsible-summary">
+            <div class="section-heading">
+              <div>
+                <h2>COTI Messages</h2>
+                <p class="subtle">Plaintext size is not observable because message bodies are encrypted.</p>
+              </div>
+            </div>
+            <span class="collapsible-indicator" aria-hidden="true">▼</span>
+          </summary>
+          <div class="collapsible-body">
+            <div class="grid cards" id="coti-window-cards"></div>
+            <div class="grid cards compact" id="coti-cards"></div>
+            <div class="route-list" id="route-list"></div>
+          </div>
+        </details>
       </section>
 
       <section class="panel" id="attribution-section">
-        <div class="section-heading">
-          <h2>Outreach Attribution</h2>
-          <p class="subtle" id="attribution-subtitle">Shared ref, grant, private-message, and skill-usage performance.</p>
-        </div>
+        <details class="collapsible" data-section="attribution" open>
+          <summary class="collapsible-summary">
+            <div class="section-heading">
+              <div>
+                <h2>Outreach Attribution</h2>
+                <p class="subtle" id="attribution-subtitle">Shared ref, grant, private-message, and skill-usage performance.</p>
+              </div>
+            </div>
+            <span class="collapsible-indicator" aria-hidden="true">▼</span>
+          </summary>
+          <div class="collapsible-body">
         <details class="cta-builder" id="cta-builder-disclosure">
           <summary class="builder-summary">
             <div>
@@ -182,6 +222,52 @@
             <tbody id="attribution-refs"></tbody>
           </table>
         </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel" id="content-section">
+        <details class="collapsible" data-section="content" open>
+          <summary class="collapsible-summary">
+            <div class="section-heading">
+              <div>
+                <h2>Content</h2>
+                <p class="subtle" id="content-subtitle">Current prompt params and all published posts, comments, and replies from agent state.</p>
+              </div>
+            </div>
+            <span class="collapsible-indicator" aria-hidden="true">▼</span>
+          </summary>
+          <div class="collapsible-body">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Agent</th>
+                    <th>Current Variant</th>
+                    <th>Window</th>
+                    <th>Params</th>
+                    <th>Last Rotation</th>
+                  </tr>
+                </thead>
+                <tbody id="content-current-table"></tbody>
+              </table>
+            </div>
+            <div class="table-wrap attribution-ref-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Published</th>
+                    <th>Agent</th>
+                    <th>Content</th>
+                    <th>Prompt</th>
+                    <th>Links</th>
+                  </tr>
+                </thead>
+                <tbody id="content-recent-table"></tbody>
+              </table>
+            </div>
+          </div>
+        </details>
       </section>
     </main>
 

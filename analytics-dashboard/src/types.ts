@@ -57,6 +57,58 @@ export interface DiscoveredAgent {
   latestStatus?: string;
   latestErrors: number;
   latestSkipped: number;
+  currentPrompt?: AgentCurrentPrompt;
+  recentPublished?: AgentRecentPublished[];
+}
+
+export interface AgentRecentPublished {
+  id: string;
+  type: "post" | "comment" | "reply";
+  createdAt: string;
+  title?: string;
+  contentPreview: string;
+  targetSummary?: string;
+  promptProfileId?: string;
+  promptVariantId?: string;
+  promptVariantRationale?: string;
+  promptParameters?: Record<string, unknown>;
+  messageStyle?: string;
+  layout?: string;
+  ctaStyle?: string;
+  promotionLevel?: string;
+  productSpecificity?: string;
+  rewardEmphasis?: string;
+  audience?: string;
+  tone?: string;
+  technicalDepth?: string;
+  creativity?: string;
+  ctaUrl?: string;
+  contentUrl?: string;
+  refId?: string;
+  attributed: boolean;
+}
+
+export interface AgentCurrentPrompt {
+  statePath?: string;
+  promptProfileId?: string;
+  promptVariantId?: string;
+  promptVariantLabel?: string;
+  promptParameters?: Record<string, unknown>;
+  messageStyle?: string;
+  layout?: string;
+  ctaStyle?: string;
+  promotionLevel?: string;
+  productSpecificity?: string;
+  rewardEmphasis?: string;
+  audience?: string;
+  tone?: string;
+  technicalDepth?: string;
+  creativity?: string;
+  actionsSinceRotation: number;
+  rotateAfterActions: number;
+  lastRotationAt?: string;
+  lastSelectionRationale?: string;
+  lastActionAt?: string;
 }
 
 export interface AnalyticsConfig {
@@ -164,4 +216,5 @@ export interface AttributionSummary {
     conversionRates: AttributionConversionRates;
   }>;
   topRefs: AttributionRefDetail[];
+  recentRefs?: AttributionRefDetail[];
 }

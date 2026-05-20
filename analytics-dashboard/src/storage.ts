@@ -112,6 +112,43 @@ function refColumnExpr(columns: ReadonlySet<string>, columnName: string, fallbac
   return columns.has(columnName) ? `r.${columnName}` : fallbackSql;
 }
 
+interface AttributionRefRow extends SqliteRow {
+  refId: string;
+  venue: string;
+  venueAccountId: string | null;
+  surface: string | null;
+  contentType: string;
+  campaignId: string;
+  promptProfileId: string;
+  promptParametersJson: string;
+  messageStyle: string;
+  layout: string;
+  attributionMode: string | null;
+  publicValueDeliveredFirst: number | null;
+  privateMessageEscalationReason: string | null;
+  ctaStyle: string | null;
+  promotionLevel: string | null;
+  productSpecificity: string | null;
+  rewardEmphasis: string | null;
+  audience: string | null;
+  candidateId: string;
+  generatedContentId: string;
+  remoteContentId: string | null;
+  remoteContentUrl: string | null;
+  utmJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+  clicks: number;
+  grantChallenges: number;
+  grantClaimAttempts: number;
+  grantClaimsQueued: number;
+  grantClaimsSucceeded: number;
+  grantClaimsFailed: number;
+  privateMessagesReceived: number;
+  skillUsages: number;
+  lastEventAt: string | null;
+}
+
 async function getBaselineCounts(db: SqliteDatabase): Promise<EngagementCounts> {
   const row = await db.get<{ value: string }>("SELECT value FROM agent_meta WHERE key = ?", [
     "engagement_baseline_json"
@@ -438,7 +475,8 @@ export function emptyAttributionSummary(databasePath?: string, error?: string): 
     groups: [],
     attributionModes: [],
     privateMessageReasons: [],
-    topRefs: []
+    topRefs: [],
+    recentRefs: []
   };
 }
 
@@ -580,42 +618,7 @@ export async function readAttributionSummary(
       ORDER BY skillUsages DESC, privateMessagesReceived DESC, grantClaimsSucceeded DESC, clicks DESC, refs DESC
     `);
 
-    const refRows = await db.all<{
-      refId: string;
-      venue: string;
-      venueAccountId: string | null;
-      surface: string | null;
-      contentType: string;
-      campaignId: string;
-      promptProfileId: string;
-      promptParametersJson: string;
-      messageStyle: string;
-      layout: string;
-      attributionMode: string | null;
-      publicValueDeliveredFirst: number | null;
-      privateMessageEscalationReason: string | null;
-      ctaStyle: string | null;
-      promotionLevel: string | null;
-      productSpecificity: string | null;
-      rewardEmphasis: string | null;
-      audience: string | null;
-      candidateId: string;
-      generatedContentId: string;
-      remoteContentId: string | null;
-      remoteContentUrl: string | null;
-      utmJson: string | null;
-      createdAt: string;
-      updatedAt: string;
-      clicks: number;
-      grantChallenges: number;
-      grantClaimAttempts: number;
-      grantClaimsQueued: number;
-      grantClaimsSucceeded: number;
-      grantClaimsFailed: number;
-      privateMessagesReceived: number;
-      skillUsages: number;
-      lastEventAt: string | null;
-    }>(`
+    const attributionRefSelectSql = `
       SELECT
         r.ref_id AS refId,
         r.venue AS venue,
@@ -654,8 +657,16 @@ export async function readAttributionSummary(
       FROM outreach_refs r
       LEFT JOIN attribution_events e ON e.ref_id = r.ref_id
       GROUP BY r.ref_id
+    `;
+    const refRows = await db.all<AttributionRefRow>(`
+      ${attributionRefSelectSql}
       ORDER BY skillUsages DESC, privateMessagesReceived DESC, grantClaimsSucceeded DESC, clicks DESC, COALESCE(lastEventAt, r.created_at) DESC
       LIMIT 25
+    `);
+    const recentRefRows = await db.all<AttributionRefRow>(`
+      ${attributionRefSelectSql}
+      ORDER BY COALESCE(r.updated_at, r.created_at) DESC, r.ref_id DESC
+      LIMIT 10
     `);
 
     const groups = groupRows.map((row) => {
@@ -693,6 +704,51 @@ export async function readAttributionSummary(
           totals: group.totals
         }))
     );
+    const mapRefDetail = (row: AttributionRefRow): AttributionRefDetail => {
+      const refTotals = attributionTotalsFromRow({
+        refs: 1,
+        clicks: row.clicks,
+        grantChallenges: row.grantChallenges,
+        grantClaimAttempts: row.grantClaimAttempts,
+        grantClaimsQueued: row.grantClaimsQueued,
+        grantClaimsSucceeded: row.grantClaimsSucceeded,
+        grantClaimsFailed: row.grantClaimsFailed,
+        privateMessagesReceived: row.privateMessagesReceived,
+        skillUsages: row.skillUsages,
+        unresolvedEvents: 0
+      });
+      return {
+        refId: row.refId,
+        venue: row.venue,
+        venueAccountId: row.venueAccountId ?? undefined,
+        surface: row.surface ?? undefined,
+        contentType: row.contentType,
+        campaignId: row.campaignId,
+        promptProfileId: row.promptProfileId,
+        promptParameters: sanitizeAttributionMetadata(parseJsonRecord(row.promptParametersJson)),
+        messageStyle: row.messageStyle,
+        layout: row.layout,
+        attributionMode: row.attributionMode ?? undefined,
+        publicValueDeliveredFirst:
+          row.publicValueDeliveredFirst === null ? undefined : Number(row.publicValueDeliveredFirst) !== 0,
+        privateMessageEscalationReason: row.privateMessageEscalationReason ?? undefined,
+        ctaStyle: row.ctaStyle ?? undefined,
+        promotionLevel: row.promotionLevel ?? undefined,
+        productSpecificity: row.productSpecificity ?? undefined,
+        rewardEmphasis: row.rewardEmphasis ?? undefined,
+        audience: row.audience ?? undefined,
+        candidateId: row.candidateId,
+        generatedContentId: row.generatedContentId,
+        remoteContentId: row.remoteContentId ?? undefined,
+        remoteContentUrl: row.remoteContentUrl ?? undefined,
+        utm: sanitizeAttributionMetadata(parseJsonRecord(row.utmJson)),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        totals: refTotals,
+        conversionRates: rates(refTotals),
+        lastEventAt: row.lastEventAt ?? undefined
+      };
+    };
 
     return {
       configured: true,
@@ -703,51 +759,8 @@ export async function readAttributionSummary(
       groups,
       attributionModes,
       privateMessageReasons,
-      topRefs: refRows.map((row): AttributionRefDetail => {
-        const refTotals = attributionTotalsFromRow({
-          refs: 1,
-          clicks: row.clicks,
-          grantChallenges: row.grantChallenges,
-          grantClaimAttempts: row.grantClaimAttempts,
-          grantClaimsQueued: row.grantClaimsQueued,
-          grantClaimsSucceeded: row.grantClaimsSucceeded,
-          grantClaimsFailed: row.grantClaimsFailed,
-          privateMessagesReceived: row.privateMessagesReceived,
-          skillUsages: row.skillUsages,
-          unresolvedEvents: 0
-        });
-        return {
-          refId: row.refId,
-          venue: row.venue,
-          venueAccountId: row.venueAccountId ?? undefined,
-          surface: row.surface ?? undefined,
-          contentType: row.contentType,
-          campaignId: row.campaignId,
-          promptProfileId: row.promptProfileId,
-          promptParameters: sanitizeAttributionMetadata(parseJsonRecord(row.promptParametersJson)),
-          messageStyle: row.messageStyle,
-          layout: row.layout,
-          attributionMode: row.attributionMode ?? undefined,
-          publicValueDeliveredFirst:
-            row.publicValueDeliveredFirst === null ? undefined : Number(row.publicValueDeliveredFirst) !== 0,
-          privateMessageEscalationReason: row.privateMessageEscalationReason ?? undefined,
-          ctaStyle: row.ctaStyle ?? undefined,
-          promotionLevel: row.promotionLevel ?? undefined,
-          productSpecificity: row.productSpecificity ?? undefined,
-          rewardEmphasis: row.rewardEmphasis ?? undefined,
-          audience: row.audience ?? undefined,
-          candidateId: row.candidateId,
-          generatedContentId: row.generatedContentId,
-          remoteContentId: row.remoteContentId ?? undefined,
-          remoteContentUrl: row.remoteContentUrl ?? undefined,
-          utm: sanitizeAttributionMetadata(parseJsonRecord(row.utmJson)),
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
-          totals: refTotals,
-          conversionRates: rates(refTotals),
-          lastEventAt: row.lastEventAt ?? undefined
-        };
-      })
+      topRefs: refRows.map(mapRefDetail),
+      recentRefs: recentRefRows.map(mapRefDetail)
     };
   } catch (error) {
     return emptyAttributionSummary(databasePath, error instanceof Error ? error.message : String(error));

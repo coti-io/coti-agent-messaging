@@ -237,6 +237,8 @@ test("readAttributionSummary groups conversions and exposes per-ref prompt drill
     assert.equal(summary.topRefs[0]?.remoteContentUrl, "https://www.moltbook.com/post/remote-a");
     assert.equal(summary.topRefs[0]?.attributionMode, "tracked_link");
     assert.equal(summary.topRefs.some((ref) => ref.refId === "ref-zero"), true);
+    assert.equal(summary.recentRefs?.[0]?.refId, "ref-zero");
+    assert.equal(summary.recentRefs?.[1]?.refId, "ref-a");
     assert.equal("walletAddress" in summary.topRefs[0]!, false);
     assert.equal("installId" in summary.topRefs[0]!, false);
     assert.equal("sessionId" in summary.topRefs[0]!, false);
@@ -278,6 +280,7 @@ test("readAttributionSummary tolerates legacy attribution schema without newer c
     assert.equal(summary.groups[0]?.publicValueDeliveredFirst, true);
     assert.equal(summary.topRefs[0]?.attributionMode, "tracked_link");
     assert.equal(summary.topRefs[0]?.remoteContentUrl, undefined);
+    assert.equal(summary.recentRefs?.[0]?.refId, "legacy-ref");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

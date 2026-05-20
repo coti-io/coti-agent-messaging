@@ -32,8 +32,10 @@ test("discoverAgents reads agent metadata, state, and heartbeat report", async (
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "analytics-discovery-"));
   const agentDir = path.join(tempDir, "agent-a");
   const runtimeDir = path.join(agentDir, ".runtime");
+  const promptDataDir = path.join(agentDir, ".data");
 
   await mkdir(runtimeDir, { recursive: true });
+  await mkdir(promptDataDir, { recursive: true });
   await writeFile(
     path.join(agentDir, "agent.json"),
     JSON.stringify({
@@ -61,6 +63,40 @@ test("discoverAgents reads agent metadata, state, and heartbeat report", async (
     JSON.stringify({ status: "ok", errors: [], skipped: ["cooldown"] }),
     "utf8"
   );
+  await writeFile(
+    path.join(promptDataDir, "prompt-rotation.json"),
+    JSON.stringify({
+      state: {
+        currentPromptVariant: "operator-qa-practical",
+        actionsSinceRotation: 3,
+        rotateAfterActions: 10,
+        lastRotationAt: "2026-05-04T10:00:00.000Z",
+        lastSelectionRationale: "Practical operator framing wins here."
+      },
+      history: [
+        {
+          id: "entry-1",
+          createdAt: "2026-05-04T11:55:00.000Z",
+          promptProfileId: "default-technical-soft-cta",
+          promptVariantId: "operator-qa-practical",
+          promptVariantLabel: "Operator QA Practical",
+          promptParameters: {
+            messageStyle: "informative",
+            layout: "question_answer",
+            ctaStyle: "soft_next_step",
+            promotionLevel: "soft",
+            productSpecificity: "coti_anchored",
+            rewardEmphasis: "secondary",
+            audience: "agent_builder",
+            tone: "operator",
+            technicalDepth: "practical",
+            creativity: "conservative"
+          }
+        }
+      ]
+    }),
+    "utf8"
+  );
 
   try {
     const agents = await discoverAgents(tempDir, new Date("2026-05-04T12:00:00.000Z"));
@@ -73,6 +109,9 @@ test("discoverAgents reads agent metadata, state, and heartbeat report", async (
     assert.equal(agents[0]?.latestStatus, "ok");
     assert.equal(agents[0]?.latestSkipped, 1);
     assert.equal(agents[0]?.engagementSummary.windows.last2Hours.posts, 1);
+    assert.equal(agents[0]?.currentPrompt?.promptVariantId, "operator-qa-practical");
+    assert.equal(agents[0]?.currentPrompt?.messageStyle, "informative");
+    assert.equal(agents[0]?.currentPrompt?.actionsSinceRotation, 3);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

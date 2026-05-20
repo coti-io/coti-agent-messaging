@@ -1,0 +1,23 @@
+[Unit]
+Description=Moltbook outreach executor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__REMOTE_USER__
+Group=__REMOTE_USER__
+WorkingDirectory=__PACKAGE_DIR__
+TimeoutStartSec=15min
+TimeoutStopSec=20s
+KillMode=control-group
+Environment=HOME=/home/__REMOTE_USER__
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=MOLTBOOK_AGENT_ID=__AGENT_ID__
+Environment=OUTREACH_AGENT_VENUE=moltbook
+Environment=MOLTBOOK_CREDENTIALS_PATH=__RUNTIME_DIR__/credentials.json
+Environment=MOLTBOOK_STATE_PATH=__RUNTIME_DIR__/state.json
+Environment=MOLTBOOK_HEARTBEAT_REPORT_PATH=__RUNTIME_DIR__/last-heartbeat.json
+EnvironmentFile=__ENV_FILE__
+ExecStartPre=/usr/bin/mkdir -p __RUNTIME_DIR__
+ExecStart=/usr/bin/env bash -lc 'exec 9>"__LOCK_FILE__"; if ! flock -n 9; then echo "Skipping executor because another run is active."; exit 0; fi; exec node dist/src/index.js executor'

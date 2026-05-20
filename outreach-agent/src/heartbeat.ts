@@ -69,6 +69,12 @@ export interface HeartbeatResult {
   plannedActions: PlannedAction["type"][];
 }
 
+export interface ExecutorResult {
+  summary: string;
+  performed: string[];
+  skipped: string[];
+}
+
 interface HeartbeatErrorEntry {
   phase: string;
   message: string;
@@ -261,6 +267,20 @@ function formatSummary(performed: string[], skipped: string[]): string {
   return parts.join(" ");
 }
 
+function formatExecutorSummary(performed: string[], skipped: string[]): string {
+  if (performed.length === 0 && skipped.length === 0) {
+    return "EXECUTOR_OK - No queued jobs were due.";
+  }
+  const parts: string[] = [];
+  if (performed.length > 0) {
+    parts.push(performed.join(" "));
+  }
+  if (skipped.length > 0) {
+    parts.push(`Skipped: ${skipped.join(" ")}`);
+  }
+  return parts.join(" ");
+}
+
 function describeCommentBlockReason(
   state: OutreachAgentState,
   isNew: boolean,
@@ -360,16 +380,6 @@ export async function runHeartbeat(
     );
     const performed: string[] = [];
     const skipped: string[] = [];
-    state = await executeDueActionJobs(
-      venue,
-      state,
-      report,
-      persistState,
-      config,
-      config.dryRun,
-      performed,
-      skipped
-    );
     const newAgent = isNewAgent(me.agent?.created_at, state);
     const actionCandidates = buildMoltbookActionCandidates({
       sources,
@@ -434,6 +444,13 @@ export async function runHeartbeat(
     let selectedWriteBlockedByConstraint = false;
     const followsAttempted = new Set<string>();
     const scheduledActionJobs: ActionJob[] = [];
+    let queuedJobOrder = 0;
+    const nextJobNotBefore = (needsContent: boolean): string =>
+      computeActionJobNotBefore({
+        now: new Date(startedAt),
+        order: queuedJobOrder++,
+        needsContent
+      });
     const followBudget = Math.max(
       0,
       config.policy?.followMaxPerHeartbeat ?? 3
@@ -467,7 +484,7 @@ export async function runHeartbeat(
           },
           candidateId: `candidate:follow:${agentName}`,
           sourceDecisionId: runId,
-          notBefore: startedAt
+          notBefore: nextJobNotBefore(false)
         })
       );
       performed.push(`Queued follow ${agentName} (${sourceLabel}).`);
@@ -584,11 +601,7 @@ export async function runHeartbeat(
                 },
                 candidateId: `candidate:upvote:${postId}`,
                 sourceDecisionId: runId,
-                notBefore: computeActionJobNotBefore({
-                  now: new Date(startedAt),
-                  order: scheduledActionJobs.length,
-                  needsContent: false
-                })
+                notBefore: nextJobNotBefore(false)
               })
             );
             performed.push(`Queued upvote "${action.post.title}".`);
@@ -675,17 +688,6 @@ export async function runHeartbeat(
       state = enqueueActionJobs(state, scheduledActionJobs);
       await persistState(state);
       report.queuedActionJobs = summarizeQueuedActionJobs(state);
-      state = await executeDueActionJobs(
-        venue,
-        state,
-        report,
-        persistState,
-        config,
-        config.dryRun,
-        performed,
-        skipped,
-        runId
-      );
     } else {
       report.queuedActionJobs = summarizeQueuedActionJobs(state);
     }
@@ -765,7 +767,7 @@ export async function runHeartbeat(
                   },
                   candidateId: candidate.id,
                   sourceDecisionId: runId,
-                  notBefore: startedAt
+                  notBefore: nextJobNotBefore(true)
                 })
               ]);
               await persistState(state);
@@ -803,7 +805,7 @@ export async function runHeartbeat(
                   },
                   candidateId: candidate.id,
                   sourceDecisionId: runId,
-                  notBefore: startedAt
+                  notBefore: nextJobNotBefore(true)
                 })
               ]);
               await persistState(state);
@@ -835,7 +837,7 @@ export async function runHeartbeat(
                   },
                   candidateId: candidate.id,
                   sourceDecisionId: runId,
-                  notBefore: startedAt
+                  notBefore: nextJobNotBefore(true)
                 })
               ]);
               await persistState(state);
@@ -892,6 +894,68 @@ export async function runHeartbeat(
     finalizeHeartbeatAlerts(report, previousReport);
     report.finishedAt = new Date().toISOString();
     await saveHeartbeatReport(config.statePath, config.heartbeatReportPath, report);
+  }
+}
+
+export async function runExecutor(
+  configInput?: MoltbookRuntimeConfig
+): Promise<ExecutorResult> {
+  const config = configInput ?? (await loadRuntimeConfig({ requireVenue: true }));
+  const venue = assertMoltbookVenueProvider(createVenueProvider(config));
+  if (!config.apiKey) {
+    throw new Error(
+      "Missing Moltbook API key. Set MOLTBOOK_API_KEY or save credentials via the register command."
+    );
+  }
+
+  let state = createInitialState();
+  const performed: string[] = [];
+  const skipped: string[] = [];
+  const report: HeartbeatReport = {
+    runId: `executor:${new Date().toISOString()}:${process.pid}`,
+    agentId: config.agentId,
+    startedAt: new Date().toISOString(),
+    status: "running",
+    dryRun: config.dryRun,
+    failureStreak: 0,
+    alerts: [],
+    plannedActions: [],
+    performed: [],
+    skipped: [],
+    errors: [],
+    reconciledPendingWrites: [],
+    writeCandidates: [],
+    actionCandidates: [],
+    queuedActionJobs: []
+  };
+
+  const persistState = async (nextState: OutreachAgentState): Promise<void> => {
+    state = normalizeState({
+      ...nextState,
+      agentId: config.agentId ?? nextState.agentId
+    });
+    state = await saveState(config.statePath, state);
+  };
+
+  try {
+    state = normalizeState(await loadState(config.statePath, config.heartbeatReportPath));
+    state = await executeDueActionJobs(
+      venue,
+      state,
+      report,
+      persistState,
+      config,
+      config.dryRun,
+      performed,
+      skipped
+    );
+    return {
+      summary: formatExecutorSummary(performed, skipped),
+      performed,
+      skipped
+    };
+  } catch (error) {
+    throw error;
   }
 }
 
@@ -1132,8 +1196,7 @@ async function executeDueActionJobs(
   config: MoltbookRuntimeConfig,
   dryRun: boolean,
   performed: string[],
-  skipped: string[],
-  sourceDecisionId?: string
+  skipped: string[]
 ): Promise<OutreachAgentState> {
   if (dryRun || state.queuedActionJobs.length === 0) {
     report.queuedActionJobs = summarizeQueuedActionJobs(state);
@@ -1151,8 +1214,7 @@ async function executeDueActionJobs(
       continue;
     }
     const dueNow = Date.parse(job.notBefore) <= now;
-    const forcedForCurrentRun = sourceDecisionId !== undefined && job.sourceDecisionId === sourceDecisionId;
-    if (job.status !== "queued" || (!dueNow && !forcedForCurrentRun)) {
+    if (job.status !== "queued" || !dueNow) {
       continue;
     }
     if (writeMetadata) {

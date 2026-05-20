@@ -5,9 +5,9 @@ import path from "node:path";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import type { MoltbookRuntimeConfig } from "../src/config.js";
-import { runHeartbeat } from "../src/heartbeat.js";
-import { contentFingerprint, createInitialState } from "../src/policy.js";
-import { loadStateFromStorage, readStorageAnalytics } from "../src/storage.js";
+import { runExecutor, runHeartbeat } from "../src/heartbeat.js";
+import { contentFingerprint, createInitialState, type OutreachAgentState } from "../src/policy.js";
+import { loadStateFromStorage, readStorageAnalytics, saveStateToStorage } from "../src/storage.js";
 
 test("heartbeat creates an outreach post, then replies usefully to later questions", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-"));
@@ -263,17 +263,19 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
     assert.equal(firstHeartbeat.plannedActions.includes("create_post"), true);
     assert.equal(createdPost === undefined, true);
     assert.match(firstHeartbeat.summary, /Queued post/i);
-    const queuedAnalytics = await readStorageAnalytics(config.statePath, new Date("2026-03-12T12:01:00.000Z"));
-    assert.equal(queuedAnalytics?.pendingWrites, 1);
-    assert.equal(queuedAnalytics?.pendingJobs, 1);
+    const queuedState = await loadStateFromStorage(config.statePath);
+    assert.equal(queuedState.queuedActionJobs.length, 1);
 
-    const secondHeartbeat = await runHeartbeat(config);
+    await forceQueuedJobsDue(config.statePath);
+    const firstExecutor = await runExecutor(config);
     assert.equal(createdPost?.id, "created-post-1");
     assert.match(createdPost?.title ?? "", /plaintext|private|inbox|agent/i);
     assert.match(createdPost?.content ?? "", /encrypted|private/i);
-    assert.equal(secondHeartbeat.plannedActions[0], "reply_to_activity");
-    assert.match(secondHeartbeat.summary, /Posted/i);
+    assert.match(firstExecutor.summary, /Posted/i);
 
+    const secondHeartbeat = await runHeartbeat(config);
+    assert.equal(secondHeartbeat.plannedActions[0], "reply_to_activity");
+    assert.match(secondHeartbeat.summary, /Queued reply/i);
     const secondReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
       selectedWriteDecision?: { selectedCandidateId?: string; content?: string };
       writeCandidates?: Array<{ id?: string }>;
@@ -282,13 +284,14 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
     assert.match(secondReport.selectedWriteDecision?.content ?? "", /SDK|MCP/i);
     assert.equal((secondReport.writeCandidates?.length ?? 0) > 0, true);
 
-    const thirdHeartbeat = await runHeartbeat(config);
+    await forceQueuedJobsDue(config.statePath);
+    const secondExecutor = await runExecutor(config);
     assert.equal(createdReply?.postId, "created-post-1");
     assert.equal(createdReply?.parentId, "comment-newest");
     assert.match(createdReply?.content ?? "", /^BuilderBot,/);
     assert.match(createdReply?.content ?? "", /MCP surface|tool-using agents/i);
     assert.match(createdReply?.content ?? "", /SDK/i);
-    assert.match(thirdHeartbeat.summary, /Replied to BuilderBot/i);
+    assert.match(secondExecutor.summary, /Replied to BuilderBot/i);
     assert.equal(notificationsMarkedForPost, "created-post-1");
 
     const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
@@ -339,8 +342,8 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
     assert.equal(savedReport.status, "ok");
     assert.equal((savedReport.performed?.length ?? 0) > 0, true);
     assert.equal(savedReport.engagementSummary?.total?.posts, 1);
-    assert.equal(savedReport.engagementSummary?.total?.replies, 1);
-    assert.equal(savedReport.engagementSummary?.total?.total, 2);
+    assert.equal(savedReport.engagementSummary?.total?.replies, 0);
+    assert.equal(savedReport.engagementSummary?.total?.total, 1);
     assert.deepEqual(savedReport.errors, []);
     const storageAnalytics = await readStorageAnalytics(config.statePath, new Date("2026-03-12T12:05:00.000Z"));
     assert.equal(storageAnalytics?.engagementSummary.total.posts, 1);
@@ -606,9 +609,10 @@ test("heartbeat falls back to a post when the daily comment cap is exhausted", a
     assert.match(firstHeartbeat.summary, /daily comment cap reached \(50\/50; comments 0, replies 0\)/i);
     assert.match(firstHeartbeat.summary, /Queued post "Private coordination beats public theater"/i);
 
-    const secondHeartbeat = await runHeartbeat(config);
+    await forceQueuedJobsDue(config.statePath);
+    const executorResult = await runExecutor(config);
     assert.equal(createdPost?.id, "created-post-cap");
-    assert.match(secondHeartbeat.summary, /Posted "Private coordination beats public theater"/);
+    assert.match(executorResult.summary, /Posted "Private coordination beats public theater"/);
 
     const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
       status?: string;
@@ -623,7 +627,7 @@ test("heartbeat falls back to a post when the daily comment cap is exhausted", a
       ),
       true
     );
-    assert.equal(savedReport.performed?.some((entry) => /Posted/.test(entry)), true);
+    assert.equal(savedReport.performed?.some((entry) => /Queued post/.test(entry)), true);
     assert.deepEqual(savedReport.errors, []);
   } finally {
     globalThis.fetch = originalFetch;
@@ -834,7 +838,11 @@ test("heartbeat records failed upvotes without failing the run", async () => {
   };
 
   try {
-    const result = await runHeartbeat(config);
+    const plannerResult = await runHeartbeat(config);
+    assert.match(plannerResult.summary, /Queued upvote "Private transport"/i);
+    assert.match(plannerResult.summary, /Queued upvote "Private routing"/i);
+    await forceQueuedJobsDue(config.statePath);
+    const result = await runExecutor(config);
     assert.match(result.summary, /skipped upvote "Private transport" because Moltbook publish failed/i);
     assert.match(result.summary, /Upvoted "Private routing"/);
 
@@ -850,14 +858,12 @@ test("heartbeat records failed upvotes without failing the run", async () => {
       upvotedPostIds?: string[];
       engagementTotals?: { upvotes?: number };
     };
-    assert.equal(savedReport.status, "degraded");
-    assert.equal(savedReport.failureStreak, 1);
-    assert.equal(savedReport.alerts?.[0]?.severity, "warning");
-    assert.equal(savedReport.errors?.length, 1);
-    assert.equal(savedReport.errors?.[0]?.phase, 'publish:upvote "Private transport"');
-    assert.equal(savedReport.errors?.[0]?.name, "MoltbookApiError");
-    assert.equal(savedReport.performed?.some((entry) => /Upvoted "Private routing"/.test(entry)), true);
-    assert.equal(savedReport.skipped?.some((entry) => /Moltbook API 500/i.test(entry)), true);
+    assert.equal(savedReport.status, "ok");
+    assert.equal(savedReport.failureStreak, 0);
+    assert.equal(savedReport.alerts?.length ?? 0, 0);
+    assert.equal(savedReport.errors?.length ?? 0, 0);
+    assert.equal(savedReport.performed?.some((entry) => /Queued upvote "Private routing"/.test(entry)), true);
+    assert.equal(savedReport.skipped?.some((entry) => /daily post cap reached/i.test(entry)), true);
     assert.deepEqual(savedState.upvotedPostIds, ["post-upvotes-ok"]);
     assert.equal(savedState.engagementTotals?.upvotes, 1);
   } finally {
@@ -997,7 +1003,11 @@ test("heartbeat follows comment authors who make relevant points", async () => {
   };
 
   try {
-    await runHeartbeat(config);
+    const plannerResult = await runHeartbeat(config);
+    assert.match(plannerResult.summary, /Queued follow InsightBot/i);
+    assert.match(plannerResult.summary, /Queued follow ThoughtfulBot/i);
+    await forceQueuedJobsDue(config.statePath);
+    await runExecutor(config);
 
     assert.deepEqual(followedAgents.sort(), ["InsightBot", "ThoughtfulBot"]);
 
@@ -1316,6 +1326,15 @@ test("heartbeat skips proof-point validation failures instead of failing the run
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+async function forceQueuedJobsDue(statePath: string): Promise<void> {
+  const state: OutreachAgentState = await loadStateFromStorage(statePath);
+  state.queuedActionJobs = (state.queuedActionJobs ?? []).map((job) => ({
+    ...job,
+    notBefore: "2000-01-01T00:00:00.000Z"
+  }));
+  await saveStateToStorage(statePath, state);
+}
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {

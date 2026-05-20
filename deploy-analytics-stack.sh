@@ -32,6 +32,7 @@ for agent in data.get("agents", []):
         raise SystemExit(f"Agent {agent['agentId']} needs envFile")
     agent.setdefault("displayName", agent["agentId"])
     agent.setdefault("serviceName", f"moltbook-outreach-{agent['agentId']}")
+    agent.setdefault("executorServiceName", f"{agent['serviceName']}-executor")
 
 print(json.dumps(data))
 PY
@@ -77,6 +78,7 @@ import json
 import os
 for agent in json.loads(os.environ["MANIFEST_JSON"]).get("agents", []):
     print(agent["serviceName"])
+    print(agent["executorServiceName"])
 PY
   ssh "$SSH_HOST" "sudo -n systemctl stop '${service_name}.timer' '${service_name}.service' >/dev/null 2>&1 || true"
 done
@@ -248,14 +250,14 @@ fi
 
 remote_user="$USER"
 
-python3 - <<'PY' | while IFS=$'\t' read -r agent_id service_name runtime_dir remote_env_file; do
+python3 - <<'PY' | while IFS=$'\t' read -r agent_id service_name executor_service_name runtime_dir remote_env_file; do
 import json
 import os
 deploy_path = json.loads(os.environ["MANIFEST_JSON"])["deployPath"]
 for agent in json.loads(os.environ["MANIFEST_JSON"]).get("agents", []):
     runtime_dir = agent.get("runtimeDir", f"{deploy_path}/agents/{agent['agentId']}/.runtime")
     remote_env_file = agent.get("remoteEnvFile", f"{deploy_path}/agents/{agent['agentId']}/.env")
-    print(f"{agent['agentId']}\t{agent['serviceName']}\t{runtime_dir}\t{remote_env_file}")
+    print(f"{agent['agentId']}\t{agent['serviceName']}\t{agent['executorServiceName']}\t{runtime_dir}\t{remote_env_file}")
 PY
   install_template \
     "$REMOTE_REPO_DIR/outreach-agent/deploy/systemd/moltbook-outreach-heartbeat.service" \
@@ -274,6 +276,24 @@ PY
     "/tmp/${service_name}.timer" \
     "__SERVICE_NAME__" "$service_name"
   sudo -n mv "/tmp/${service_name}.timer" "/etc/systemd/system/${service_name}.timer"
+
+  install_template \
+    "$REMOTE_REPO_DIR/outreach-agent/deploy/systemd/moltbook-outreach-executor.service" \
+    "/tmp/${executor_service_name}.service" \
+    "__REMOTE_USER__" "$remote_user" \
+    "__PACKAGE_DIR__" "$REMOTE_REPO_DIR/outreach-agent" \
+    "__RUNTIME_DIR__" "$runtime_dir" \
+    "__ENV_FILE__" "$remote_env_file" \
+    "__LOCK_FILE__" "$runtime_dir/heartbeat.lock" \
+    "__SERVICE_NAME__" "$executor_service_name" \
+    "__AGENT_ID__" "$agent_id"
+  sudo -n mv "/tmp/${executor_service_name}.service" "/etc/systemd/system/${executor_service_name}.service"
+
+  install_template \
+    "$REMOTE_REPO_DIR/outreach-agent/deploy/systemd/moltbook-outreach-executor.timer" \
+    "/tmp/${executor_service_name}.timer" \
+    "__SERVICE_NAME__" "$executor_service_name"
+  sudo -n mv "/tmp/${executor_service_name}.timer" "/etc/systemd/system/${executor_service_name}.timer"
 done
 
 install_template \
@@ -294,6 +314,7 @@ import json
 import os
 for agent in json.loads(os.environ["MANIFEST_JSON"]).get("agents", []):
     print(agent["serviceName"])
+    print(agent["executorServiceName"])
 PY
   sudo -n systemctl enable --now "${service_name}.timer"
   sudo -n systemctl restart "${service_name}.timer"

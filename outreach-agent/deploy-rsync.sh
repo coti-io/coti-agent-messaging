@@ -20,8 +20,11 @@ RSYNC_DELETE="${MOLTBOOK_OUTREACH_DEPLOY_DELETE:-1}"
 REMOTE_PACKAGE_DIR="$DEPLOY_PATH/outreach-agent"
 RUNTIME_DIR="$DEPLOY_PATH/.runtime"
 SERVICE_NAME="moltbook-outreach-heartbeat"
+EXECUTOR_SERVICE_NAME="${SERVICE_NAME}-executor"
 SERVICE_UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 TIMER_UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.timer"
+EXECUTOR_SERVICE_UNIT_PATH="/etc/systemd/system/${EXECUTOR_SERVICE_NAME}.service"
+EXECUTOR_TIMER_UNIT_PATH="/etc/systemd/system/${EXECUTOR_SERVICE_NAME}.timer"
 
 if [[ ! -f "$LOCAL_ENV_FILE" ]]; then
   echo "Missing local outreach env file: '$LOCAL_ENV_FILE'" >&2
@@ -35,7 +38,7 @@ if [[ "$RSYNC_DELETE" == "1" ]]; then
 fi
 
 ssh "$SSH_HOST" "mkdir -p '$DEPLOY_PATH' '$RUNTIME_DIR'"
-ssh "$SSH_HOST" "sudo -n systemctl stop '${SERVICE_NAME}.timer' '${SERVICE_NAME}.service' >/dev/null 2>&1 || true"
+ssh "$SSH_HOST" "sudo -n systemctl stop '${SERVICE_NAME}.timer' '${SERVICE_NAME}.service' '${EXECUTOR_SERVICE_NAME}.timer' '${EXECUTOR_SERVICE_NAME}.service' >/dev/null 2>&1 || true"
 
 rsync "${RSYNC_OPTS[@]}" \
   --exclude ".env" \
@@ -59,7 +62,7 @@ rsync "${RSYNC_OPTS[@]}" \
   "$SSH_HOST:$REMOTE_PACKAGE_DIR/.env"
 
 ssh "$SSH_HOST" \
-  "DEPLOY_PATH='$DEPLOY_PATH' REMOTE_PACKAGE_DIR='$REMOTE_PACKAGE_DIR' RUNTIME_DIR='$RUNTIME_DIR' SERVICE_NAME='$SERVICE_NAME' SERVICE_UNIT_PATH='$SERVICE_UNIT_PATH' TIMER_UNIT_PATH='$TIMER_UNIT_PATH' bash -se" <<'EOF'
+  "DEPLOY_PATH='$DEPLOY_PATH' REMOTE_PACKAGE_DIR='$REMOTE_PACKAGE_DIR' RUNTIME_DIR='$RUNTIME_DIR' SERVICE_NAME='$SERVICE_NAME' EXECUTOR_SERVICE_NAME='$EXECUTOR_SERVICE_NAME' SERVICE_UNIT_PATH='$SERVICE_UNIT_PATH' TIMER_UNIT_PATH='$TIMER_UNIT_PATH' EXECUTOR_SERVICE_UNIT_PATH='$EXECUTOR_SERVICE_UNIT_PATH' EXECUTOR_TIMER_UNIT_PATH='$EXECUTOR_TIMER_UNIT_PATH' bash -se" <<'EOF'
 set -euo pipefail
 
 APT_UPDATED=0
@@ -121,6 +124,7 @@ escape_sed_replacement() {
 install_unit_from_template() {
   local template_path="$1"
   local output_path="$2"
+  local unit_service_name="${3:-$SERVICE_NAME}"
   local remote_user="$USER"
   local escaped_user
   local escaped_package_dir
@@ -134,7 +138,7 @@ install_unit_from_template() {
   escaped_runtime_dir="$(escape_sed_replacement "$RUNTIME_DIR")"
   escaped_env_file="$(escape_sed_replacement "$REMOTE_PACKAGE_DIR/.env")"
   escaped_lock_file="$(escape_sed_replacement "$RUNTIME_DIR/heartbeat.lock")"
-  escaped_service_name="$(escape_sed_replacement "$SERVICE_NAME")"
+  escaped_service_name="$(escape_sed_replacement "$unit_service_name")"
 
   sed \
     -e "s|__REMOTE_USER__|$escaped_user|g" \
@@ -159,14 +163,26 @@ npm run build
 
 install_unit_from_template \
   "$REMOTE_PACKAGE_DIR/deploy/systemd/moltbook-outreach-heartbeat.service" \
-  "$SERVICE_UNIT_PATH"
+  "$SERVICE_UNIT_PATH" \
+  "$SERVICE_NAME"
 install_unit_from_template \
   "$REMOTE_PACKAGE_DIR/deploy/systemd/moltbook-outreach-heartbeat.timer" \
-  "$TIMER_UNIT_PATH"
+  "$TIMER_UNIT_PATH" \
+  "$SERVICE_NAME"
+install_unit_from_template \
+  "$REMOTE_PACKAGE_DIR/deploy/systemd/moltbook-outreach-executor.service" \
+  "$EXECUTOR_SERVICE_UNIT_PATH" \
+  "$EXECUTOR_SERVICE_NAME"
+install_unit_from_template \
+  "$REMOTE_PACKAGE_DIR/deploy/systemd/moltbook-outreach-executor.timer" \
+  "$EXECUTOR_TIMER_UNIT_PATH" \
+  "$EXECUTOR_SERVICE_NAME"
 
 sudo -n systemctl daemon-reload
 sudo -n systemctl enable --now "${SERVICE_NAME}.timer"
 sudo -n systemctl restart "${SERVICE_NAME}.timer"
+sudo -n systemctl enable --now "${EXECUTOR_SERVICE_NAME}.timer"
+sudo -n systemctl restart "${EXECUTOR_SERVICE_NAME}.timer"
 EOF
 
 echo
@@ -174,7 +190,10 @@ echo "Moltbook outreach agent deployed."
 echo "Remote path: $DEPLOY_PATH"
 echo "Check timer:"
 echo "ssh $SSH_HOST 'sudo systemctl status ${SERVICE_NAME}.timer --no-pager'"
+echo "ssh $SSH_HOST 'sudo systemctl status ${EXECUTOR_SERVICE_NAME}.timer --no-pager'"
 echo "Run one heartbeat now:"
 echo "ssh $SSH_HOST 'sudo systemctl start ${SERVICE_NAME}.service'"
+echo "Run executor now:"
+echo "ssh $SSH_HOST 'sudo systemctl start ${EXECUTOR_SERVICE_NAME}.service'"
 echo "Recent logs:"
 echo "ssh $SSH_HOST 'sudo journalctl -u ${SERVICE_NAME}.service -n 100 --no-pager'"

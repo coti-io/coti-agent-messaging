@@ -100,12 +100,10 @@ export function computeActionJobNotBefore(input: {
   needsContent: boolean;
   rng?: () => number;
 }): string {
-  if (input.order <= 0) {
-    return input.now.toISOString();
-  }
   const rng = input.rng ?? Math.random;
-  const minMs = input.needsContent ? 5 * 60_000 : 15_000;
-  const maxMs = input.needsContent ? 30 * 60_000 : 90_000;
+  const minMs = input.needsContent ? 5 * 60_000 : 30_000;
+  const maxMs = input.needsContent ? 30 * 60_000 : 3 * 60_000;
+  const orderSpacingMs = input.order * (input.needsContent ? 90_000 : 15_000);
   const jitterMs = Math.floor(minMs + (maxMs - minMs) * Math.min(0.999, Math.max(0, rng())));
-  return new Date(input.now.getTime() + jitterMs).toISOString();
+  return new Date(input.now.getTime() + orderSpacingMs + jitterMs).toISOString();
 }

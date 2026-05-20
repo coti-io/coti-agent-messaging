@@ -76,6 +76,47 @@ function attributionSchemaSql(): string {
   `;
 }
 
+function legacyAttributionSchemaSql(): string {
+  return `
+    CREATE TABLE outreach_refs (
+      ref_id TEXT PRIMARY KEY,
+      venue TEXT NOT NULL,
+      venue_account_id TEXT,
+      surface TEXT,
+      content_type TEXT NOT NULL,
+      campaign_id TEXT NOT NULL,
+      prompt_profile_id TEXT NOT NULL,
+      prompt_parameters_json TEXT NOT NULL,
+      message_style TEXT NOT NULL,
+      layout TEXT NOT NULL,
+      cta_style TEXT,
+      promotion_level TEXT,
+      product_specificity TEXT,
+      reward_emphasis TEXT,
+      audience TEXT,
+      candidate_id TEXT NOT NULL,
+      generated_content_id TEXT NOT NULL,
+      remote_content_id TEXT,
+      utm_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE attribution_events (
+      event_id TEXT PRIMARY KEY,
+      ref_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      venue TEXT,
+      wallet_address TEXT,
+      install_id TEXT,
+      session_id TEXT,
+      skill_id TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL
+    );
+  `;
+}
+
 function populatedAttributionSql(): string {
   const prompt = JSON.stringify({
     intent: "starter-grant",
@@ -199,6 +240,44 @@ test("readAttributionSummary groups conversions and exposes per-ref prompt drill
     assert.equal("walletAddress" in summary.topRefs[0]!, false);
     assert.equal("installId" in summary.topRefs[0]!, false);
     assert.equal("sessionId" in summary.topRefs[0]!, false);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("readAttributionSummary tolerates legacy attribution schema without newer columns", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "analytics-attribution-legacy-"));
+  const databasePath = path.join(tempDir, "attribution.sqlite");
+  const prompt = JSON.stringify({ intent: "starter-grant" }).replaceAll("'", "''");
+  await execSql(
+    databasePath,
+    `
+      ${legacyAttributionSchemaSql()}
+      INSERT INTO outreach_refs(
+        ref_id, venue, venue_account_id, surface, content_type, campaign_id, prompt_profile_id,
+        prompt_parameters_json, message_style, layout, cta_style, promotion_level,
+        product_specificity, reward_emphasis, audience, candidate_id, generated_content_id,
+        remote_content_id, utm_json, created_at, updated_at
+      ) VALUES (
+        'legacy-ref', 'moltbook', 'agent-a', 'timeline', 'post', 'campaign-a', 'profile-a',
+        '${prompt}', 'informative', 'structured', 'soft', 'low', 'generic', 'medium',
+        'builders', 'candidate-a', 'generated-a', 'remote-a', '{"source":"moltbook"}',
+        '2026-05-04T10:00:00.000Z', '2026-05-04T10:00:00.000Z'
+      );
+
+      INSERT INTO attribution_events(event_id, ref_id, event_type, venue, created_at) VALUES
+        ('legacy-click', 'legacy-ref', 'click', 'moltbook', '2026-05-04T10:01:00.000Z');
+    `
+  );
+
+  try {
+    const summary = await readAttributionSummary(databasePath, new Date("2026-05-04T12:00:00.000Z"));
+    assert.equal(summary.error, undefined);
+    assert.equal(summary.totals.refs, 1);
+    assert.equal(summary.groups[0]?.attributionMode, "tracked_link");
+    assert.equal(summary.groups[0]?.publicValueDeliveredFirst, true);
+    assert.equal(summary.topRefs[0]?.attributionMode, "tracked_link");
+    assert.equal(summary.topRefs[0]?.remoteContentUrl, undefined);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

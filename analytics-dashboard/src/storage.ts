@@ -103,6 +103,15 @@ class SqliteDatabase {
   }
 }
 
+async function getTableColumns(db: SqliteDatabase, tableName: string): Promise<Set<string>> {
+  const rows = await db.all<{ name: string }>(`PRAGMA table_info(${tableName})`);
+  return new Set(rows.map((row) => row.name));
+}
+
+function refColumnExpr(columns: ReadonlySet<string>, columnName: string, fallbackSql: string): string {
+  return columns.has(columnName) ? `r.${columnName}` : fallbackSql;
+}
+
 async function getBaselineCounts(db: SqliteDatabase): Promise<EngagementCounts> {
   const row = await db.get<{ value: string }>("SELECT value FROM agent_meta WHERE key = ?", [
     "engagement_baseline_json"
@@ -466,6 +475,24 @@ export async function readAttributionSummary(
       };
     }
 
+    const refColumns = await getTableColumns(db, "outreach_refs");
+    const attributionModeExpr = refColumnExpr(refColumns, "attribution_mode", "'tracked_link'");
+    const publicValueDeliveredFirstExpr = refColumnExpr(refColumns, "public_value_delivered_first", "1");
+    const privateMessageEscalationReasonExpr = refColumnExpr(
+      refColumns,
+      "private_message_escalation_reason",
+      "NULL"
+    );
+    const ctaStyleExpr = refColumnExpr(refColumns, "cta_style", "NULL");
+    const promotionLevelExpr = refColumnExpr(refColumns, "promotion_level", "NULL");
+    const productSpecificityExpr = refColumnExpr(refColumns, "product_specificity", "NULL");
+    const rewardEmphasisExpr = refColumnExpr(refColumns, "reward_emphasis", "NULL");
+    const audienceExpr = refColumnExpr(refColumns, "audience", "NULL");
+    const venueAccountIdExpr = refColumnExpr(refColumns, "venue_account_id", "NULL");
+    const surfaceExpr = refColumnExpr(refColumns, "surface", "NULL");
+    const remoteContentUrlExpr = refColumnExpr(refColumns, "remote_content_url", "NULL");
+    const utmJsonExpr = refColumnExpr(refColumns, "utm_json", "NULL");
+
     const totalsRow = await db.get<{
       refs: number;
       clicks: number;
@@ -520,20 +547,20 @@ export async function readAttributionSummary(
     }>(`
       SELECT
         r.venue || ':' || r.campaign_id || ':' || r.prompt_profile_id || ':' || r.message_style || ':' || r.layout || ':' ||
-        COALESCE(r.attribution_mode, 'tracked_link') || ':' ||
-        CASE COALESCE(r.public_value_delivered_first, 1) WHEN 1 THEN 'public_first' ELSE 'private_first' END || ':' ||
-        COALESCE(r.private_message_escalation_reason, 'none') || ':' || COALESCE(r.cta_style, '') AS key,
+        COALESCE(${attributionModeExpr}, 'tracked_link') || ':' ||
+        CASE COALESCE(${publicValueDeliveredFirstExpr}, 1) WHEN 1 THEN 'public_first' ELSE 'private_first' END || ':' ||
+        COALESCE(${privateMessageEscalationReasonExpr}, 'none') || ':' || COALESCE(${ctaStyleExpr}, '') AS key,
         r.venue AS venue,
         r.campaign_id AS campaignId,
         r.prompt_profile_id AS promptProfileId,
         r.message_style AS messageStyle,
         r.layout AS layout,
-        COALESCE(r.attribution_mode, 'tracked_link') AS attributionMode,
-        COALESCE(r.public_value_delivered_first, 1) AS publicValueDeliveredFirst,
-        r.private_message_escalation_reason AS privateMessageEscalationReason,
-        r.cta_style AS ctaStyle,
-        r.promotion_level AS promotionLevel,
-        r.reward_emphasis AS rewardEmphasis,
+        COALESCE(${attributionModeExpr}, 'tracked_link') AS attributionMode,
+        COALESCE(${publicValueDeliveredFirstExpr}, 1) AS publicValueDeliveredFirst,
+        ${privateMessageEscalationReasonExpr} AS privateMessageEscalationReason,
+        ${ctaStyleExpr} AS ctaStyle,
+        ${promotionLevelExpr} AS promotionLevel,
+        ${rewardEmphasisExpr} AS rewardEmphasis,
         COUNT(DISTINCT r.ref_id) AS refs,
         SUM(CASE WHEN e.event_type = 'click' THEN 1 ELSE 0 END) AS clicks,
         SUM(CASE WHEN e.event_type = 'grant_challenge' THEN 1 ELSE 0 END) AS grantChallenges,
@@ -548,8 +575,8 @@ export async function readAttributionSummary(
       LEFT JOIN attribution_events e ON e.ref_id = r.ref_id
       GROUP BY
         r.venue, r.campaign_id, r.prompt_profile_id, r.message_style, r.layout,
-        r.attribution_mode, r.public_value_delivered_first, r.private_message_escalation_reason,
-        r.cta_style, r.promotion_level, r.reward_emphasis
+        ${attributionModeExpr}, ${publicValueDeliveredFirstExpr}, ${privateMessageEscalationReasonExpr},
+        ${ctaStyleExpr}, ${promotionLevelExpr}, ${rewardEmphasisExpr}
       ORDER BY skillUsages DESC, privateMessagesReceived DESC, grantClaimsSucceeded DESC, clicks DESC, refs DESC
     `);
 
@@ -592,27 +619,27 @@ export async function readAttributionSummary(
       SELECT
         r.ref_id AS refId,
         r.venue AS venue,
-        r.venue_account_id AS venueAccountId,
-        r.surface AS surface,
+        ${venueAccountIdExpr} AS venueAccountId,
+        ${surfaceExpr} AS surface,
         r.content_type AS contentType,
         r.campaign_id AS campaignId,
         r.prompt_profile_id AS promptProfileId,
         r.prompt_parameters_json AS promptParametersJson,
         r.message_style AS messageStyle,
         r.layout AS layout,
-        r.attribution_mode AS attributionMode,
-        r.public_value_delivered_first AS publicValueDeliveredFirst,
-        r.private_message_escalation_reason AS privateMessageEscalationReason,
-        r.cta_style AS ctaStyle,
-        r.promotion_level AS promotionLevel,
-        r.product_specificity AS productSpecificity,
-        r.reward_emphasis AS rewardEmphasis,
-        r.audience AS audience,
+        ${attributionModeExpr} AS attributionMode,
+        ${publicValueDeliveredFirstExpr} AS publicValueDeliveredFirst,
+        ${privateMessageEscalationReasonExpr} AS privateMessageEscalationReason,
+        ${ctaStyleExpr} AS ctaStyle,
+        ${promotionLevelExpr} AS promotionLevel,
+        ${productSpecificityExpr} AS productSpecificity,
+        ${rewardEmphasisExpr} AS rewardEmphasis,
+        ${audienceExpr} AS audience,
         r.candidate_id AS candidateId,
         r.generated_content_id AS generatedContentId,
         r.remote_content_id AS remoteContentId,
-        r.remote_content_url AS remoteContentUrl,
-        r.utm_json AS utmJson,
+        ${remoteContentUrlExpr} AS remoteContentUrl,
+        ${utmJsonExpr} AS utmJson,
         r.created_at AS createdAt,
         r.updated_at AS updatedAt,
         SUM(CASE WHEN e.event_type = 'click' THEN 1 ELSE 0 END) AS clicks,

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Moltbook outreach executor every 30 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Unit=__SERVICE_NAME__.service
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

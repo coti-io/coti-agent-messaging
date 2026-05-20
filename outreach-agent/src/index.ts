@@ -11,7 +11,7 @@ import { runRedditSessionCli } from "./reddit-session.js";
 import { readAttributionSummaryFromStore, readMessageFunnelSummaryFromStore } from "./attribution-store.js";
 import { getOutreachAgentConfig, getRedditControllerConfig, loadRuntimeConfig, saveStoredCredentials } from "./config.js";
 import { mergeFeedPosts, rankDesignPartnerCandidates } from "./design-partners.js";
-import { runHeartbeat } from "./heartbeat.js";
+import { runExecutor, runHeartbeat } from "./heartbeat.js";
 import { MoltbookApiClient, type MoltbookAgentProfile } from "./moltbook-api.js";
 import {
   createInitialState,
@@ -73,7 +73,8 @@ function printUsage(): void {
   coti-outreach-agent message-funnel [--db FILE]
   coti-outreach-agent bridge-server
   coti-outreach-agent bridge-stop
-  coti-outreach-agent heartbeat`);
+  coti-outreach-agent heartbeat
+  coti-outreach-agent executor`);
 }
 
 async function flushStream(stream: NodeJS.WriteStream): Promise<void> {
@@ -449,6 +450,12 @@ async function run(): Promise<void> {
     case "heartbeat": {
       const config = await loadRuntimeConfig({ requireVenue: true });
       const result = await runHeartbeat(config);
+      console.log(result.summary);
+      await exitCliProcess(0);
+    }
+    case "executor": {
+      const config = await loadRuntimeConfig({ requireVenue: true });
+      const result = await runExecutor(config);
       console.log(result.summary);
       await exitCliProcess(0);
     }

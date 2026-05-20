@@ -34,6 +34,7 @@
     "attribution:summary": "node dist/src/index.js attribution-summary",
     "message-funnel": "node dist/src/index.js message-funnel",
     "heartbeat": "node dist/src/index.js heartbeat",
+    "executor": "node dist/src/index.js executor",
     "deploy:rsync": "bash ./deploy-rsync.sh",
     "remote:inspect": "bash ./inspect-remote.sh inspect",
     "remote:status": "bash ./inspect-remote.sh status",

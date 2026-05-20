@@ -739,6 +739,13 @@ export async function loadStateFromStorage(
     await ensureSchema(db);
     await migrateLegacyStateIfNeeded(db, statePath, heartbeatReportPath);
     const analytics = await buildAnalytics(db);
+    const fileState = await readStateFileFallback(statePath);
+    if ((analytics.state.queuedActionJobs.length === 0) && (fileState?.queuedActionJobs.length ?? 0) > 0) {
+      return normalizeState({
+        ...analytics.state,
+        queuedActionJobs: fileState?.queuedActionJobs ?? analytics.state.queuedActionJobs
+      });
+    }
     return analytics.state;
   } finally {
     await db.close();
@@ -923,8 +930,16 @@ export async function readStorageAnalytics(
         analytics.lastSuccessfulHeartbeatAt ??
         (await getMetaValue(db, LAST_SUCCESSFUL_RUN_AT_META_KEY)) ??
         undefined;
+      const fileState = await readStateFileFallback(statePath);
+      const filePendingJobs = fileState?.queuedActionJobs?.length ?? 0;
+      const filePendingWrites = countPendingWork({
+        pendingWrites: fileState?.pendingWrites,
+        queuedJobs: fileState?.queuedActionJobs
+      });
       return {
         ...analytics,
+        pendingWrites: Math.max(analytics.pendingWrites, filePendingWrites),
+        pendingJobs: Math.max(analytics.pendingJobs, filePendingJobs),
         lastSuccessfulHeartbeatAt
       };
     } finally {
@@ -935,6 +950,17 @@ export async function readStorageAnalytics(
       return undefined;
     }
     throw error;
+  }
+}
+
+async function readStateFileFallback(statePath: string): Promise<OutreachAgentState | undefined> {
+  try {
+    return normalizeState(JSON.parse(await readFile(statePath, "utf8")) as Partial<OutreachAgentState>);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    return undefined;
   }
 }
 

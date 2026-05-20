@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { ActionJob } from "./action-planning.js";
 import type { RedditOutboundMemoryEntry } from "./reddit-outreach.js";
 
 export interface RedditDecisionMemoryEntry extends RedditOutboundMemoryEntry {
@@ -18,6 +19,7 @@ export interface RedditDecisionMemoryEntry extends RedditOutboundMemoryEntry {
 export interface RedditMemoryStore {
   generatedAt: string;
   history: RedditDecisionMemoryEntry[];
+  queuedJobs?: ActionJob[];
 }
 
 export async function loadRedditMemory(filePath: string): Promise<RedditMemoryStore> {
@@ -32,13 +34,15 @@ export async function loadRedditMemory(filePath: string): Promise<RedditMemorySt
     }
     return {
       generatedAt: parsed.generatedAt ?? new Date().toISOString(),
-      history: Array.isArray(parsed.history) ? parsed.history : []
+      history: Array.isArray(parsed.history) ? parsed.history : [],
+      queuedJobs: Array.isArray(parsed.queuedJobs) ? parsed.queuedJobs : []
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return {
         generatedAt: new Date().toISOString(),
-        history: []
+        history: [],
+        queuedJobs: []
       };
     }
     throw error;

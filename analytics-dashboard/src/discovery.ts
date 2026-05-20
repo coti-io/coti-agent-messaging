@@ -119,8 +119,13 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       }
     }
     const engagementSummary = sqliteSnapshot?.engagementSummary ?? summarizeEngagements(state, now);
+    const jsonPendingWrites =
+      (Array.isArray(state?.pendingWrites) ? state.pendingWrites.length : 0) +
+      (Array.isArray(state?.queuedActionJobs) ? state.queuedActionJobs.length : 0);
     const pendingWrites =
-      sqliteSnapshot?.pendingWrites ?? (Array.isArray(state?.pendingWrites) ? state.pendingWrites.length : 0);
+      sqliteSnapshot?.pendingWrites === undefined
+        ? jsonPendingWrites
+        : Math.max(sqliteSnapshot.pendingWrites, jsonPendingWrites);
     const errors =
       sqliteSnapshot?.latestErrors ?? (Array.isArray(report?.errors) ? report.errors.length : 0);
     const skipped =

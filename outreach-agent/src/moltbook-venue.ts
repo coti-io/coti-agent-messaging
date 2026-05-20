@@ -26,6 +26,7 @@ export interface MoltbookHeartbeatSources {
   followingFeed: MoltbookFeedResponse;
   hotFeed: MoltbookFeedResponse;
   exploreFeed: MoltbookFeedResponse;
+  activityCommentsByPostId: Record<string, MoltbookComment[]>;
   factSheet: ProductFactSheet;
 }
 
@@ -99,6 +100,23 @@ export class MoltbookVenueProvider implements VenueProvider {
       this.api.getFeed({ sort: "hot", limit: 10 }),
       this.api.getFeed({ sort: "new", limit: 10 })
     ]);
+    const activityPostIds = [...new Set(home.activity_on_your_posts.map((activity) => activity.post_id).filter(Boolean))]
+      .slice(0, 3);
+    const activityCommentsByPostId = Object.fromEntries(
+      await Promise.all(
+        activityPostIds.map(async (postId) => {
+          try {
+            const response = await this.api.getPostComments(postId, {
+              sort: "new",
+              limit: 25
+            });
+            return [postId, response.comments ?? []] as const;
+          } catch {
+            return [postId, []] as const;
+          }
+        })
+      )
+    );
 
     return {
       home,
@@ -109,7 +127,8 @@ export class MoltbookVenueProvider implements VenueProvider {
         posts: home.posts_from_accounts_you_follow?.posts ?? []
       },
       hotFeed,
-      exploreFeed
+      exploreFeed,
+      activityCommentsByPostId
     };
   }
 

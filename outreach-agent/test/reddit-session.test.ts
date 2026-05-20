@@ -89,6 +89,9 @@ test("reddit session dry-run emits decision report and records draft without pub
   assert.equal(published, false);
   assert.equal(report.dryRun, true);
   assert.equal(report.decision.action?.type, "reply_to_comment");
+  assert.equal(report.actionCandidates.length, 1);
+  assert.equal(report.actionCandidates[0]?.type, "reply_to_activity");
+  assert.equal(report.selectedActionBundle?.selectedWriteCandidateId, "comment:sales:comment-1");
   assert.ok(report.draft?.content);
   const memory = await loadRedditMemory(memoryPath);
   assert.equal(memory.history.length, 1);
@@ -102,6 +105,30 @@ test("reddit session live mode publishes at most one action and records outcome"
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-live-"));
   const memoryPath = path.join(tempDir, "memory.json");
   const published: VenueAction[] = [];
+  const firstReport = await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: false,
+    publishAction: async (action) => {
+      published.push(action);
+      return {
+        id: "outcome-1",
+        venue: "reddit",
+        actionId: action.id,
+        candidateId: action.candidateId,
+        remoteContentId: "reply-1",
+        remoteContentUrl: "https://www.reddit.com/r/sales/comments/post-1/_/reply-1/",
+        type: "replied",
+        occurredAt: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(published.length, 0);
+  assert.equal(firstReport.outcome, undefined);
+  assert.equal(firstReport.queuedActionJobs.length, 1);
+  assert.equal(firstReport.selectedActionBundle?.selectedWriteCandidateId, "comment:sales:comment-1");
+
   const report = await runRedditSession({
     config: createConfig(memoryPath),
     ingestion,
@@ -129,6 +156,7 @@ test("reddit session live mode publishes at most one action and records outcome"
   assert.equal(memory.history[0]?.status, "posted");
   assert.ok(memory.history[0]?.promptVariantId);
   assert.ok(memory.history[0]?.nextEligibleAt);
+  assert.equal((memory.queuedJobs?.length ?? 0), 0);
 });
 
 test("reddit session ignores prior dry-run drafts when selecting a live target", async () => {
@@ -141,6 +169,26 @@ test("reddit session ignores prior dry-run drafts when selecting a live target",
   });
 
   const published: VenueAction[] = [];
+  const queued = await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: false,
+    publishAction: async (action) => {
+      published.push(action);
+      return {
+        id: "outcome-2",
+        venue: "reddit",
+        actionId: action.id,
+        candidateId: action.candidateId,
+        remoteContentId: "reply-2",
+        remoteContentUrl: "https://www.reddit.com/r/sales/comments/post-1/_/reply-2/",
+        type: "replied",
+        occurredAt: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(queued.outcome, undefined);
   const report = await runRedditSession({
     config: createConfig(memoryPath),
     ingestion,

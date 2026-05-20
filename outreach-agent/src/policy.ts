@@ -9,6 +9,7 @@ import type { MoltbookOutreachPolicyConfig } from "./config.js";
 import type { ProductFactSheet } from "./product-facts.js";
 import type { OutreachRef } from "./outreach-attribution.js";
 import type { LayoutVariant, PromptParameterSet } from "./prompt-profile.js";
+import type { ActionJob } from "./action-planning.js";
 
 export interface RecentGeneratedArtifact {
   id: string;
@@ -99,6 +100,7 @@ export interface OutreachAgentState {
   createdPostFingerprints: string[];
   recentGeneratedArtifacts: RecentGeneratedArtifact[];
   pendingWrites: PendingWrite[];
+  queuedActionJobs: ActionJob[];
   engagementEvents: EngagementEvent[];
   engagementTotals: EngagementCounts;
 }
@@ -124,6 +126,7 @@ const MAX_REPLIED_COMMENT_IDS = 500;
 const MAX_CREATED_POST_FINGERPRINTS = 50;
 const MAX_RECENT_GENERATED_ARTIFACTS = 20;
 const MAX_PENDING_WRITES = 10;
+const MAX_QUEUED_ACTION_JOBS = 30;
 const MAX_ENGAGEMENT_EVENTS = 1_000;
 const ENGAGEMENT_EVENT_RETENTION_MS = 8 * 24 * 60 * 60 * 1_000;
 const MAX_STORED_ARTIFACT_TITLE_LENGTH = 140;
@@ -338,6 +341,7 @@ export function createInitialState(): OutreachAgentState {
     createdPostFingerprints: [],
     recentGeneratedArtifacts: [],
     pendingWrites: [],
+    queuedActionJobs: [],
     engagementEvents: [],
     engagementTotals: createEmptyEngagementCounts()
   };
@@ -502,6 +506,10 @@ function enforceStateSizeLimit(state: OutreachAgentState): OutreachAgentState {
     }),
     (current) => ({
       ...current,
+      queuedActionJobs: current.queuedActionJobs.slice(-10)
+    }),
+    (current) => ({
+      ...current,
       engagementEvents: current.engagementEvents.slice(-500)
     })
   ];
@@ -541,6 +549,7 @@ export function normalizeState(
     createdPostFingerprints: state?.createdPostFingerprints ?? initial.createdPostFingerprints,
     recentGeneratedArtifacts: state?.recentGeneratedArtifacts ?? initial.recentGeneratedArtifacts,
     pendingWrites: state?.pendingWrites ?? initial.pendingWrites,
+    queuedActionJobs: state?.queuedActionJobs ?? initial.queuedActionJobs,
     engagementEvents: state?.engagementEvents ?? initial.engagementEvents,
     engagementTotals: normalizeEngagementCounts(state?.engagementTotals)
   };
@@ -579,6 +588,7 @@ export function normalizeState(
       reconciliationMisses: pendingWrite.reconciliationMisses ?? 0
     }))
     .slice(-MAX_PENDING_WRITES);
+  normalized.queuedActionJobs = normalized.queuedActionJobs.slice(-MAX_QUEUED_ACTION_JOBS);
   normalized.engagementEvents = trimEngagementEvents(
     normalized.engagementEvents.map((event) => ({
       ...event,

@@ -1,8 +1,15 @@
 import { getOutreachAgentConfig, getRedditControllerConfig, getRedditOperatingAgentConfig, loadRuntimeConfig } from "./config.js";
+import { createActionJob, type ActionJob } from "./action-planning.js";
 import { draftRedditResponse } from "./reddit-drafting.js";
 import { recordPromptRotationAction, selectPromptVariant } from "./prompt-rotation.js";
 import { ingestRedditState } from "./reddit-ingestion.js";
-import { appendRedditMemory, loadRedditMemory } from "./reddit-memory.js";
+import { enqueueActionJobs, removeActionJob, summarizeActionJobs } from "./job-queue.js";
+import { appendRedditMemory, loadRedditMemory, saveRedditMemory, type RedditMemoryStore } from "./reddit-memory.js";
+import {
+  buildRedditActionCandidates,
+  chooseRedditActionBundle,
+  plannedRedditActionFromCandidate
+} from "./reddit-action-planning.js";
 import {
   DEFAULT_REDDIT_OPERATING_RULES,
   DEFAULT_REDDIT_OPERATING_TARGETING,
@@ -25,6 +32,30 @@ export interface RedditSessionReport {
     sourceItemCount: number;
     skipped: string[];
   };
+  actionCandidates: Array<{
+    id: string;
+    type: string;
+    source: string;
+    score: number;
+    allowed: boolean;
+    needsContent: boolean;
+    blockedBy: string[];
+  }>;
+  selectedActionBundle?: {
+    selectedCandidateIds: string[];
+    selectedWriteCandidateId?: string;
+    selectedNoContentCandidateIds: string[];
+    deferredCandidateIds: string[];
+    rationale: string;
+    strategy?: "llm" | "deterministic_fallback";
+  };
+  queuedActionJobs: Array<{
+    id: string;
+    type: string;
+    candidateId: string;
+    status: ActionJob["status"];
+    notBefore: string;
+  }>;
   decision: ReturnType<typeof planRedditAction>;
   draft?: {
     content: string;
@@ -56,15 +87,46 @@ export async function runRedditSession(input: {
   const now = new Date();
   const recentKillReason = findKillSwitch(memory.history);
   if (recentKillReason) {
-    const decision = { skipped: [recentKillReason], candidates: [] };
+    const decision = { skipped: [recentKillReason], candidates: [], plannedCandidates: [] };
     return {
       generatedAt: now.toISOString(),
       dryRun,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
       ingestion: { snapshotCount: 0, sourceItemCount: 0, skipped: [] },
+      actionCandidates: [],
+      selectedActionBundle: chooseRedditActionBundle([], maxActions),
+      queuedActionJobs: summarizeQueuedRedditJobs(memory),
       decision
     };
+  }
+
+  if (!dryRun) {
+    const executed = await executeQueuedRedditJob(memory, {
+      config,
+      publishAction: input.publishAction,
+      now
+    });
+    if (executed) {
+      return {
+        generatedAt: now.toISOString(),
+        dryRun,
+        readSource: operating.readController,
+        memoryPath: operating.memoryPath,
+        ingestion: { snapshotCount: 0, sourceItemCount: 0, skipped: [] },
+        actionCandidates: [],
+        selectedActionBundle: chooseRedditActionBundle([], maxActions),
+        queuedActionJobs: summarizeQueuedRedditJobs(executed.store),
+        decision: {
+          action: undefined,
+          plannedCandidates: [],
+          skipped: ["Executed one queued Reddit action instead of planning a new one."],
+          candidates: []
+        },
+        outcome: executed.outcome,
+        recorded: executed.recorded
+      };
+    }
   }
 
   const ingestion = input.ingestion ?? await ingestRedditState({
@@ -90,6 +152,8 @@ export async function runRedditSession(input: {
       maxDelayMinutes: operating.maxJitterMinutes
     }
   });
+  const actionCandidates = buildRedditActionCandidates(decision);
+  const selectedActionBundle = chooseRedditActionBundle(actionCandidates, maxActions);
 
   const dailyLimitReason = findDailyActionLimitReason(memory.history, operating.maxActionsPerDay, now);
   if (dailyLimitReason) {
@@ -103,6 +167,9 @@ export async function runRedditSession(input: {
         sourceItemCount: ingestion.sourceItems.length,
         skipped: ingestion.skipped
       },
+      actionCandidates: summarizeActionCandidates(actionCandidates),
+      selectedActionBundle,
+      queuedActionJobs: summarizeQueuedRedditJobs(memory),
       decision: {
         ...decision,
         action: undefined,
@@ -123,6 +190,9 @@ export async function runRedditSession(input: {
         sourceItemCount: ingestion.sourceItems.length,
         skipped: ingestion.skipped
       },
+      actionCandidates: summarizeActionCandidates(actionCandidates),
+      selectedActionBundle,
+      queuedActionJobs: summarizeQueuedRedditJobs(memory),
       decision: {
         ...decision,
         action: undefined,
@@ -131,7 +201,11 @@ export async function runRedditSession(input: {
     };
   }
 
-  if (!decision.action || maxActions < 1) {
+  const selectedAction = selectedActionBundle.selectedWriteCandidateId
+    ? actionCandidates.find((candidate) => candidate.id === selectedActionBundle.selectedWriteCandidateId)
+    : undefined;
+  const plannedAction = selectedAction ? plannedRedditActionFromCandidate(selectedAction) : undefined;
+  if (!plannedAction || maxActions < 1) {
     return {
       generatedAt: now.toISOString(),
       dryRun,
@@ -142,49 +216,79 @@ export async function runRedditSession(input: {
         sourceItemCount: ingestion.sourceItems.length,
         skipped: ingestion.skipped
       },
-      decision
+      actionCandidates: summarizeActionCandidates(actionCandidates),
+      selectedActionBundle,
+      queuedActionJobs: summarizeQueuedRedditJobs(memory),
+      decision: {
+        ...decision,
+        action: undefined
+      }
     };
   }
 
   const selectedVariant = await selectPromptVariant({
     config,
     venue: "reddit",
-    actionType: decision.action.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
+    actionType: plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
     fetchImpl: input.fetchImpl
   });
   const draft = await draftRedditResponse({
     config,
-    item: decision.action.item,
+    item: plannedAction.item,
     targeting: DEFAULT_REDDIT_OPERATING_TARGETING,
-    actionType: decision.action.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
+    actionType: plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
     recentContent: memory.history.slice(-20).map((entry) => entry.content),
     promptVariantId: selectedVariant.variantId,
     promptParameterOverrides: selectedVariant.parameterOverrides,
     fetchImpl: input.fetchImpl
   });
-  const action = toVenueAction(decision.action, draft.content);
+  const action = toVenueAction(plannedAction, draft.content);
   let outcome: VenueOutcome | undefined;
+  let nextQueuedJobs = memory.queuedJobs ?? [];
+
   if (!dryRun) {
-    outcome = input.publishAction
-      ? await input.publishAction(action)
-      : await createVenueProvider(config).publishAction(action);
+    nextQueuedJobs = enqueueActionJobs(nextQueuedJobs, [
+      createActionJob({
+        action: {
+          ...action,
+          raw: {
+            kind: "queued_reddit_write",
+            plannedAction,
+            promptProfileId: draft.promptProfileId,
+            promptParameters: draft.promptParameters,
+            layout: draft.layout,
+            promptVariantId: selectedVariant.variantId,
+            promptVariantRationale: selectedVariant.rationale,
+            rotateAfterActions: selectedVariant.rotateAfterActions,
+            reusedExisting: selectedVariant.reusedExisting
+          }
+        },
+        candidateId: plannedAction.item.id,
+        sourceDecisionId: plannedAction.item.id,
+        notBefore: now.toISOString()
+      })
+    ]).slice(-1);
+    await saveRedditMemory(operating.memoryPath, {
+      ...memory,
+      queuedJobs: nextQueuedJobs
+    });
   }
 
   const recorded: RedditDecisionMemoryEntry = {
-    id: `${dryRun ? "draft" : "outcome"}:${decision.action.item.source.id}:${Date.now()}`,
-    decisionId: decision.action.item.id,
-    subreddit: decision.action.item.source.subreddit,
-    kind: decision.action.type === "reply_to_comment" ? "reply" : "comment",
+    id: `${dryRun ? "draft" : "outcome"}:${plannedAction.item.source.id}:${Date.now()}`,
+    decisionId: plannedAction.item.id,
+    subreddit: plannedAction.item.source.subreddit,
+    kind: plannedAction.type === "reply_to_comment" ? "reply" : "comment",
     action: dryRun
       ? "skipped"
-      : decision.action.type === "reply_to_comment"
+      : plannedAction.type === "reply_to_comment"
         ? "replied"
         : "commented",
     content: draft.content,
     createdAt: now.toISOString(),
-    targetId: dryRun ? undefined : decision.action.item.source.id,
-    targetSummary: decision.action.item.source.body ?? decision.action.item.source.title,
-    nextEligibleAt: dryRun ? undefined : decision.action.nextEligibleAt,
+    targetId: dryRun ? undefined : plannedAction.item.source.id,
+    targetSummary: plannedAction.item.source.body ?? plannedAction.item.source.title,
+    nextEligibleAt: dryRun ? undefined : plannedAction.nextEligibleAt,
     status: dryRun ? "drafted" : "posted",
     firstReply: true,
     productMentioned: false,
@@ -196,25 +300,135 @@ export async function runRedditSession(input: {
     layout: draft.layout,
     structuralFingerprint: structuralFingerprint(draft.content),
     controller: getRedditControllerConfig(config).controller,
-    decisionReason: decision.action.reason,
-    relevanceScore: decision.action.item.relevanceScore,
-    riskScore: decision.action.item.riskScore,
+    decisionReason: plannedAction.reason,
+    relevanceScore: plannedAction.item.relevanceScore,
+    riskScore: plannedAction.item.riskScore,
     remoteContentUrl: outcome?.remoteContentUrl
   };
-  await appendRedditMemory(operating.memoryPath, recorded);
-  if (!dryRun) {
+  if (dryRun) {
+    await appendRedditMemory(operating.memoryPath, recorded);
+  }
+
+  return {
+    generatedAt: now.toISOString(),
+    dryRun,
+    readSource: operating.readController,
+    memoryPath: operating.memoryPath,
+    ingestion: {
+      snapshotCount: ingestion.snapshots.length,
+      sourceItemCount: ingestion.sourceItems.length,
+      skipped: ingestion.skipped
+    },
+    actionCandidates: summarizeActionCandidates(actionCandidates),
+    selectedActionBundle,
+    queuedActionJobs: dryRun ? summarizeQueuedRedditJobs(memory) : summarizeQueuedRedditJobs({ ...memory, queuedJobs: nextQueuedJobs }),
+    decision: {
+      ...decision,
+      action: plannedAction
+    },
+    draft,
+    outcome,
+    recorded: dryRun ? recorded : undefined
+  };
+}
+
+function summarizeActionCandidates(
+  candidates: ReturnType<typeof buildRedditActionCandidates>
+): RedditSessionReport["actionCandidates"] {
+  return candidates.map((candidate) => ({
+    id: candidate.id,
+    type: candidate.type,
+    source: candidate.source,
+    score: candidate.score,
+    allowed: candidate.allowed,
+    needsContent: candidate.needsContent,
+    blockedBy: candidate.constraints.filter((constraint) => !constraint.passed).map((constraint) => constraint.id)
+  }));
+}
+
+function summarizeQueuedRedditJobs(store: Pick<RedditMemoryStore, "queuedJobs">): RedditSessionReport["queuedActionJobs"] {
+  return summarizeActionJobs(store.queuedJobs ?? []);
+}
+
+async function executeQueuedRedditJob(
+  store: RedditMemoryStore,
+  input: {
+    config: MoltbookRuntimeConfig;
+    publishAction?: (action: VenueAction) => Promise<VenueOutcome>;
+    now: Date;
+  }
+): Promise<{ store: RedditMemoryStore; outcome: VenueOutcome; recorded: RedditDecisionMemoryEntry } | undefined> {
+  const queuedJob = (store.queuedJobs ?? []).find(
+    (job) => job.status === "queued" && Date.parse(job.notBefore) <= input.now.getTime()
+  );
+  if (!queuedJob) {
+    return undefined;
+  }
+  const metadata = queuedJob.payload.raw as {
+    kind: "queued_reddit_write";
+    plannedAction: NonNullable<ReturnType<typeof planRedditAction>["action"]>;
+    promptProfileId?: string;
+    promptParameters?: RedditDecisionMemoryEntry["promptParameters"];
+    layout?: RedditDecisionMemoryEntry["layout"];
+    promptVariantId?: string;
+    promptVariantRationale?: string;
+    rotateAfterActions?: number;
+    reusedExisting?: boolean;
+  };
+  const outcome = input.publishAction
+    ? await input.publishAction(queuedJob.payload)
+    : await createVenueProvider(input.config).publishAction(queuedJob.payload);
+  const operating = getRedditOperatingAgentConfig(input.config);
+  const recorded: RedditDecisionMemoryEntry = {
+    id: `outcome:${metadata.plannedAction.item.source.id}:${input.now.getTime()}`,
+    decisionId: metadata.plannedAction.item.id,
+    subreddit: metadata.plannedAction.item.source.subreddit,
+    kind: metadata.plannedAction.type === "reply_to_comment" ? "reply" : "comment",
+    action: metadata.plannedAction.type === "reply_to_comment" ? "replied" : "commented",
+    content: queuedJob.payload.content ?? "",
+    createdAt: input.now.toISOString(),
+    targetId: metadata.plannedAction.item.source.id,
+    targetSummary: metadata.plannedAction.item.source.body ?? metadata.plannedAction.item.source.title,
+    nextEligibleAt: new Date(
+      input.now.getTime() +
+        (operating.minJitterMinutes + Math.max(0, operating.maxJitterMinutes - operating.minJitterMinutes) / 2) *
+          60_000
+    ).toISOString(),
+    status: "posted",
+    firstReply: true,
+    productMentioned: false,
+    linkIncluded: false,
+    promptProfileId: metadata.promptProfileId,
+    promptVariantId: metadata.promptVariantId,
+    promptVariantRationale: metadata.promptVariantRationale,
+    promptParameters: metadata.promptParameters,
+    layout: metadata.layout,
+    structuralFingerprint: structuralFingerprint(queuedJob.payload.content ?? ""),
+    controller: getRedditControllerConfig(input.config).controller,
+    decisionReason: metadata.plannedAction.reason,
+    relevanceScore: metadata.plannedAction.item.relevanceScore,
+    riskScore: metadata.plannedAction.item.riskScore,
+    remoteContentUrl: outcome.remoteContentUrl
+  };
+  const nextStore: RedditMemoryStore = {
+    ...store,
+    history: [...store.history, recorded].slice(-500),
+    queuedJobs: removeActionJob(store.queuedJobs ?? [], queuedJob.id)
+  };
+  await saveRedditMemory(operating.memoryPath, nextStore);
+  if (metadata.promptVariantId) {
     await recordPromptRotationAction({
-      config,
+      config: input.config,
       selection: {
-        variantId: selectedVariant.variantId,
-        rationale: selectedVariant.rationale,
-        rotateAfterActions: selectedVariant.rotateAfterActions,
-        reusedExisting: selectedVariant.reusedExisting
+        variantId: metadata.promptVariantId,
+        rationale: metadata.promptVariantRationale ?? "",
+        rotateAfterActions: metadata.rotateAfterActions ?? 10,
+        reusedExisting: metadata.reusedExisting ?? true
       },
       entry: {
         id: `reddit:${recorded.id}`,
         venue: "reddit",
-        actionType: decision.action.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
+        actionType: metadata.plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
         createdAt: recorded.createdAt,
         status: recorded.action,
         promptProfileId: recorded.promptProfileId,
@@ -230,19 +444,8 @@ export async function runRedditSession(input: {
       }
     });
   }
-
   return {
-    generatedAt: now.toISOString(),
-    dryRun,
-    readSource: operating.readController,
-    memoryPath: operating.memoryPath,
-    ingestion: {
-      snapshotCount: ingestion.snapshots.length,
-      sourceItemCount: ingestion.sourceItems.length,
-      skipped: ingestion.skipped
-    },
-    decision,
-    draft,
+    store: nextStore,
     outcome,
     recorded
   };

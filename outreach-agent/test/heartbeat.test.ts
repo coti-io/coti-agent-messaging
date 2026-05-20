@@ -109,35 +109,46 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
 
     if (url.hostname === "openrouter.test" && url.pathname === "/api/v1/chat/completions") {
       llmCallCount += 1;
+      const systemPrompt = String(body?.messages?.[0]?.content ?? "");
+      const bundleCandidateId = (() => {
+        try {
+          const payload = JSON.parse(String(body?.messages?.[1]?.content ?? "{}")) as {
+            candidates?: Array<{ id?: string }>;
+          };
+          return payload.candidates?.[0]?.id;
+        } catch {
+          return undefined;
+        }
+      })();
       return jsonResponse({
         choices: [
           {
             message: {
-              content:
-                llmCallCount === 1
+              content: systemPrompt.includes("safe Moltbook action bundle")
+                ? JSON.stringify({
+                    selectedCandidateIds: bundleCandidateId ? [bundleCandidateId] : [],
+                    selectedWriteCandidateId: bundleCandidateId,
+                    rationale: "Pick the top write candidate."
+                  })
+                : systemPrompt.includes("selecting exactly one authored Moltbook action")
                   ? JSON.stringify({
                       selectedCandidateId: "A",
-                      rationale: "No replies are waiting, so a grounded top-level post is the best move."
+                      rationale: "Pick the only authored candidate."
                     })
-                  : llmCallCount === 2
+                  : systemPrompt.includes("You are gating reply candidates")
                     ? JSON.stringify({
-                        selectedCandidateId: "A",
-                        title: "Private coordination breaks once plaintext is the default",
-                        content:
-                          "Message bodies are encrypted while routing metadata stays public enough to query and coordinate. The SDK already covers encrypted sends, inbox reads, and reward inspection, so private coordination can be tested instead of hand-waved.",
-                        rationale: "Lead with a concrete tradeoff and keep it grounded."
+                        selectedCommentId: "comment-newest",
+                        rationale: "This is the only comment that asks a concrete product question."
                       })
-                    : llmCallCount === 3
+                    : llmCallCount <= 3
                       ? JSON.stringify({
-                          selectedCommentId: "comment-newest",
-                          rationale: "This is the only comment that asks a concrete product question."
+                          selectedCandidateId: "A",
+                          title: "Private coordination breaks once plaintext is the default",
+                          content:
+                            "Message bodies are encrypted while routing metadata stays public enough to query and coordinate. The SDK already covers encrypted sends, inbox reads, and reward inspection, so private coordination can be tested instead of hand-waved.",
+                          rationale: "Lead with a concrete tradeoff and keep it grounded."
                         })
-                      : llmCallCount === 4
-                        ? JSON.stringify({
-                            selectedCandidateId: "A",
-                            rationale: "The shortlisted reply candidate is the highest-value authored action."
-                          })
-                        : JSON.stringify({
+                      : JSON.stringify({
                           selectedCandidateId: "A",
                           content:
                             "BuilderBot, the SDK already exposes encrypted sends, inbox reads, and reward inspection, and the MCP surface wraps the same workflow for tool-using agents. That matters because private coordination becomes testable without inventing a transport layer from scratch.",
@@ -249,18 +260,35 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
       "utf8"
     );
     const firstHeartbeat = await runHeartbeat(config);
+    assert.equal(firstHeartbeat.plannedActions.includes("create_post"), true);
+    assert.equal(createdPost === undefined, true);
+    assert.match(firstHeartbeat.summary, /Queued post/i);
+    const queuedAnalytics = await readStorageAnalytics(config.statePath, new Date("2026-03-12T12:01:00.000Z"));
+    assert.equal(queuedAnalytics?.pendingWrites, 1);
+    assert.equal(queuedAnalytics?.pendingJobs, 1);
+
+    const secondHeartbeat = await runHeartbeat(config);
     assert.equal(createdPost?.id, "created-post-1");
     assert.match(createdPost?.title ?? "", /plaintext|private|inbox|agent/i);
     assert.match(createdPost?.content ?? "", /encrypted|private/i);
-    assert.equal(firstHeartbeat.plannedActions.includes("create_post"), true);
+    assert.equal(secondHeartbeat.plannedActions[0], "reply_to_activity");
+    assert.match(secondHeartbeat.summary, /Posted/i);
 
-    const secondHeartbeat = await runHeartbeat(config);
+    const secondReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      selectedWriteDecision?: { selectedCandidateId?: string; content?: string };
+      writeCandidates?: Array<{ id?: string }>;
+    };
+    assert.equal(secondReport.selectedWriteDecision?.selectedCandidateId, "reply:created-post-1:comment-newest");
+    assert.match(secondReport.selectedWriteDecision?.content ?? "", /SDK|MCP/i);
+    assert.equal((secondReport.writeCandidates?.length ?? 0) > 0, true);
+
+    const thirdHeartbeat = await runHeartbeat(config);
     assert.equal(createdReply?.postId, "created-post-1");
     assert.equal(createdReply?.parentId, "comment-newest");
     assert.match(createdReply?.content ?? "", /^BuilderBot,/);
     assert.match(createdReply?.content ?? "", /MCP surface|tool-using agents/i);
     assert.match(createdReply?.content ?? "", /SDK/i);
-    assert.equal(secondHeartbeat.plannedActions[0], "reply_to_activity");
+    assert.match(thirdHeartbeat.summary, /Replied to BuilderBot/i);
     assert.equal(notificationsMarkedForPost, "created-post-1");
 
     const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
@@ -272,8 +300,6 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
     const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
       status?: string;
       performed?: string[];
-      selectedWriteDecision?: { selectedCandidateId?: string; content?: string };
-      writeCandidates?: Array<{ id?: string }>;
       engagementSummary?: { total?: { posts?: number; replies?: number; total?: number } };
       errors?: unknown[];
     };
@@ -312,9 +338,6 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
     );
     assert.equal(savedReport.status, "ok");
     assert.equal((savedReport.performed?.length ?? 0) > 0, true);
-    assert.equal(savedReport.selectedWriteDecision?.selectedCandidateId, "reply:created-post-1:comment-newest");
-    assert.match(savedReport.selectedWriteDecision?.content ?? "", /SDK|MCP/i);
-    assert.equal((savedReport.writeCandidates?.length ?? 0) > 0, true);
     assert.equal(savedReport.engagementSummary?.total?.posts, 1);
     assert.equal(savedReport.engagementSummary?.total?.replies, 1);
     assert.equal(savedReport.engagementSummary?.total?.total, 2);
@@ -513,12 +536,28 @@ test("heartbeat falls back to a post when the daily comment cap is exhausted", a
 
     if (url.hostname === "openrouter.test" && url.pathname === "/api/v1/chat/completions") {
       llmCallCount += 1;
+      const systemPrompt = String(body?.messages?.[0]?.content ?? "");
+      const bundleCandidateId = (() => {
+        try {
+          const payload = JSON.parse(String(body?.messages?.[1]?.content ?? "{}")) as {
+            candidates?: Array<{ id?: string }>;
+          };
+          return payload.candidates?.find((candidate) => candidate.id?.includes("create_post"))?.id ?? payload.candidates?.[0]?.id;
+        } catch {
+          return undefined;
+        }
+      })();
       return jsonResponse({
         choices: [
           {
             message: {
-              content:
-                llmCallCount === 1
+              content: systemPrompt.includes("safe Moltbook action bundle")
+                ? JSON.stringify({
+                    selectedCandidateIds: bundleCandidateId ? [bundleCandidateId] : [],
+                    selectedWriteCandidateId: bundleCandidateId,
+                    rationale: "Comments blocked, so take the post slot."
+                  })
+                : systemPrompt.includes("selecting exactly one authored Moltbook action")
                   ? JSON.stringify({
                       selectedCandidateId: "A",
                       rationale: "Replies are unavailable, so the post candidate is the only authored action."
@@ -562,10 +601,14 @@ test("heartbeat falls back to a post when the daily comment cap is exhausted", a
   };
 
   try {
-    const result = await runHeartbeat(config);
+    const firstHeartbeat = await runHeartbeat(config);
+    assert.equal(createdPost === undefined, true);
+    assert.match(firstHeartbeat.summary, /daily comment cap reached \(50\/50; comments 0, replies 0\)/i);
+    assert.match(firstHeartbeat.summary, /Queued post "Private coordination beats public theater"/i);
+
+    const secondHeartbeat = await runHeartbeat(config);
     assert.equal(createdPost?.id, "created-post-cap");
-    assert.match(result.summary, /daily comment cap reached \(50\/50; comments 0, replies 0\)/i);
-    assert.match(result.summary, /Posted "Private coordination beats public theater"/);
+    assert.match(secondHeartbeat.summary, /Posted "Private coordination beats public theater"/);
 
     const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
       status?: string;
@@ -631,6 +674,7 @@ test("heartbeat reports the daily post cap with explicit usage", async () => {
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const url = new URL(requestUrl);
     const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
 
     if (url.pathname === "/api/v1/home" && method === "GET") {
       return jsonResponse({
@@ -725,6 +769,7 @@ test("heartbeat records failed upvotes without failing the run", async () => {
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const url = new URL(requestUrl);
     const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
 
     if (url.pathname === "/api/v1/home" && method === "GET") {
       return jsonResponse({
@@ -870,6 +915,7 @@ test("heartbeat follows comment authors who make relevant points", async () => {
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const url = new URL(requestUrl);
     const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
 
     if (url.pathname === "/api/v1/home" && method === "GET") {
       return jsonResponse({
@@ -1019,6 +1065,7 @@ test("heartbeat skips duplicate draft validation instead of failing the run", as
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const url = new URL(requestUrl);
     const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
 
     if (url.pathname === "/api/v1/home" && method === "GET") {
       return jsonResponse({
@@ -1048,12 +1095,28 @@ test("heartbeat skips duplicate draft validation instead of failing the run", as
 
     if (url.hostname === "openrouter.test" && url.pathname === "/api/v1/chat/completions") {
       llmCallCount += 1;
+      const systemPrompt = String(body?.messages?.[0]?.content ?? "");
+      const bundleCandidateId = (() => {
+        try {
+          const payload = JSON.parse(String(body?.messages?.[1]?.content ?? "{}")) as {
+            candidates?: Array<{ id?: string }>;
+          };
+          return payload.candidates?.[0]?.id;
+        } catch {
+          return undefined;
+        }
+      })();
       return jsonResponse({
         choices: [
           {
             message: {
-              content:
-                llmCallCount === 1
+              content: systemPrompt.includes("safe Moltbook action bundle")
+                ? JSON.stringify({
+                    selectedCandidateIds: bundleCandidateId ? [bundleCandidateId] : [],
+                    selectedWriteCandidateId: bundleCandidateId,
+                    rationale: "Only the post slot is available."
+                  })
+                : systemPrompt.includes("selecting exactly one authored Moltbook action")
                   ? JSON.stringify({
                       selectedCandidateId: "A",
                       rationale: "A top-level post is the only authored action."
@@ -1096,6 +1159,155 @@ test("heartbeat skips duplicate draft validation instead of failing the run", as
     assert.equal(savedReport.selectedWriteDecision, undefined);
     assert.equal(
       savedReport.skipped?.some((entry) => /generated draft was too similar/i.test(entry)),
+      true
+    );
+    assert.deepEqual(savedReport.errors, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat skips proof-point validation failures instead of failing the run", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-proof-skip-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false,
+    llm: {
+      apiKey: "llm-test-key",
+      baseUrl: "https://openrouter.test/api/v1",
+      model: "openrouter/test-model",
+      timeoutMs: 5000,
+      appName: "heartbeat-test"
+    }
+  };
+
+  let createPostCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+
+    if (url.pathname === "/api/v1/home" && method === "GET") {
+      return jsonResponse({
+        your_account: { name: "OutreachBot" },
+        activity_on_your_posts: [],
+        your_direct_messages: { pending_request_count: 0, unread_message_count: 0 },
+        posts_from_accounts_you_follow: { posts: [] }
+      });
+    }
+
+    if (url.pathname === "/api/v1/agents/me" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        agent: {
+          name: "OutreachBot",
+          created_at: "2026-03-10T08:00:00.000Z"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/v1/feed" && method === "GET") {
+      return jsonResponse({
+        success: true,
+        posts: []
+      });
+    }
+
+    if (url.hostname === "openrouter.test" && url.pathname === "/api/v1/chat/completions") {
+      const systemPrompt = String(body?.messages?.[0]?.content ?? "");
+      const bundleCandidateId = (() => {
+        try {
+          const payload = JSON.parse(String(body?.messages?.[1]?.content ?? "{}")) as {
+            candidates?: Array<{ id?: string }>;
+          };
+          return payload.candidates?.[0]?.id;
+        } catch {
+          return undefined;
+        }
+      })();
+      return jsonResponse({
+        choices: [
+          {
+            message: {
+              content: systemPrompt.includes("safe Moltbook action bundle")
+                ? JSON.stringify({
+                    selectedCandidateIds: bundleCandidateId ? [bundleCandidateId] : [],
+                    selectedWriteCandidateId: bundleCandidateId,
+                    rationale: "Only the post slot is available."
+                  })
+                : systemPrompt.includes("selecting exactly one authored Moltbook action")
+                  ? JSON.stringify({
+                      selectedCandidateId: "A",
+                      rationale: "A top-level post is the only authored action."
+                    })
+                  : JSON.stringify({
+                      selectedCandidateId: "A",
+                      title: "Agents need private bodies and public routing",
+                      content:
+                        "Encrypted message bodies and queryable public metadata are the practical split for agent messaging. That keeps coordination usable without forcing everything back into public threads.",
+                      rationale: "Still no proof point."
+                    })
+            }
+          }
+        ]
+      });
+    }
+
+    if (url.pathname === "/api/v1/posts" && method === "POST") {
+      createPostCalls += 1;
+      throw new Error("proof-point failure should be skipped before publish");
+    }
+
+    throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
+  };
+
+  try {
+    await writeFile(
+      config.promptRotationStatePath!,
+      JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        state: {
+          currentPromptVariant: "operator-problem-solution",
+          actionsSinceRotation: 1,
+          rotateAfterActions: 10,
+          lastRotationAt: new Date().toISOString(),
+          lastSelectionRationale: "Seeded for deterministic heartbeat tests."
+        },
+        history: []
+      }),
+      "utf8"
+    );
+
+    const result = await runHeartbeat(config);
+    assert.equal(createPostCalls, 0);
+    assert.match(result.summary, /still lacked a concrete proof point after retry/i);
+
+    const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
+      status?: string;
+      skipped?: string[];
+      errors?: unknown[];
+      selectedWriteDecision?: unknown;
+      failureStreak?: number;
+    };
+    assert.equal(savedReport.status, "ok");
+    assert.equal(savedReport.failureStreak, 0);
+    assert.equal(savedReport.selectedWriteDecision, undefined);
+    assert.equal(
+      savedReport.skipped?.some((entry) => /still lacked a concrete proof point after retry/i.test(entry)),
       true
     );
     assert.deepEqual(savedReport.errors, []);

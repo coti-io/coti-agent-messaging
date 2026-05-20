@@ -13,6 +13,7 @@ import {
   type OutreachAgentState,
   type PendingWrite
 } from "./policy.js";
+import { countPendingWork } from "./job-queue.js";
 
 export interface StoredHeartbeatRun {
   runId: string;
@@ -48,6 +49,7 @@ interface StorageAnalytics {
   state: OutreachAgentState;
   engagementSummary: EngagementSummary;
   pendingWrites: number;
+  pendingJobs: number;
   lastSuccessfulHeartbeatAt?: string;
   latestStatus?: string;
   latestErrors: number;
@@ -552,7 +554,11 @@ async function buildAnalytics(db: SqliteDatabase, now = new Date()): Promise<Sto
       engagementTotals: total
     }),
     engagementSummary: summary,
-    pendingWrites: pendingWrites.length,
+    pendingWrites: countPendingWork({
+      pendingWrites,
+      queuedJobs: state.queuedActionJobs
+    }),
+    pendingJobs: state.queuedActionJobs.length,
     lastSuccessfulHeartbeatAt:
       typeof latestSuccess?.finished_at === "string" ? latestSuccess.finished_at : undefined,
     latestStatus: typeof latestRun?.status === "string" ? latestRun.status : undefined,

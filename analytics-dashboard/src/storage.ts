@@ -165,6 +165,10 @@ export interface SqliteAgentSnapshot {
   schedulerHealth: "fresh" | "stale" | "unknown";
 }
 
+interface SnapshotStateRow extends SqliteRow {
+  snapshot_json?: string;
+}
+
 export async function readSqliteAgentSnapshot(
   databasePath: string,
   now = new Date()
@@ -183,7 +187,7 @@ export async function readSqliteAgentSnapshot(
     const last2Hours = new Date(now.getTime() - 2 * 60 * 60 * 1_000).toISOString();
     const lastDay = new Date(now.getTime() - 24 * 60 * 60 * 1_000).toISOString();
     const lastWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1_000).toISOString();
-    const [latestRun, latestSuccess, pendingWritesRow, total, twoHours, day, week] = await Promise.all([
+    const [latestRun, latestSuccess, pendingWritesRow, snapshotStateRow, total, twoHours, day, week] = await Promise.all([
       db.get<{
         status: string;
         error_count: number;
@@ -208,6 +212,14 @@ export async function readSqliteAgentSnapshot(
         `
       ),
       db.get<{ count: number }>("SELECT COUNT(*) AS count FROM pending_writes"),
+      db.get<SnapshotStateRow>(
+        `
+          SELECT snapshot_json
+          FROM state_snapshots
+          WHERE snapshot_id = 'current'
+          LIMIT 1
+        `
+      ),
       getLifetimeCounts(db),
       getWindowCounts(db, last2Hours),
       getWindowCounts(db, lastDay),
@@ -236,7 +248,7 @@ export async function readSqliteAgentSnapshot(
         },
         total
       },
-      pendingWrites: Number(pendingWritesRow?.count) || 0,
+      pendingWrites: countPendingWork(snapshotStateRow?.snapshot_json, Number(pendingWritesRow?.count) || 0),
       latestStatus: typeof latestRun?.status === "string" ? String(latestRun.status) : undefined,
       latestErrors: Number(latestRun?.error_count) || 0,
       latestSkipped: Number(latestRun?.skip_count) || 0,
@@ -249,6 +261,23 @@ export async function readSqliteAgentSnapshot(
     };
   } finally {
     await db.close();
+  }
+}
+
+function countPendingWork(snapshotJson: string | undefined, fallbackPendingWrites: number): number {
+  if (!snapshotJson) {
+    return fallbackPendingWrites;
+  }
+  try {
+    const parsed = JSON.parse(snapshotJson) as {
+      pendingWrites?: unknown[];
+      queuedActionJobs?: unknown[];
+    };
+    const pendingWrites = Array.isArray(parsed.pendingWrites) ? parsed.pendingWrites.length : 0;
+    const queuedActionJobs = Array.isArray(parsed.queuedActionJobs) ? parsed.queuedActionJobs.length : 0;
+    return pendingWrites + queuedActionJobs;
+  } catch {
+    return fallbackPendingWrites;
   }
 }
 

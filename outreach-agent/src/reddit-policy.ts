@@ -25,6 +25,7 @@ export interface RedditPlannedAction {
 
 export interface RedditPlannerResult {
   action?: RedditPlannedAction;
+  plannedCandidates: RedditPlannedAction[];
   skipped: string[];
   candidates: Array<{
     id: string;
@@ -133,16 +134,16 @@ export function planRedditAction(input: {
     .sort((left, right) => right.score - left.score);
 
   const nextEligibleAt = new Date(now.getTime() + jitterDelayMs(config, input.rng ?? Math.random)).toISOString();
+  const plannedCandidates = ranked.map((candidate) => ({
+    type: candidate.type,
+    item: candidate.item,
+    score: candidate.score,
+    reason: candidate.reason,
+    nextEligibleAt
+  }));
   return {
-    action: ranked[0]
-      ? {
-          type: ranked[0].type,
-          item: ranked[0].item,
-          score: ranked[0].score,
-          reason: ranked[0].reason,
-          nextEligibleAt
-        }
-      : undefined,
+    action: plannedCandidates[0],
+    plannedCandidates,
     skipped,
     candidates: ranked.map((candidate) => ({
       id: candidate.id,

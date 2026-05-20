@@ -50,6 +50,7 @@ test("discoverAgents reads agent metadata, state, and heartbeat report", async (
     JSON.stringify({
       lastHeartbeatAt: "2026-05-04T12:00:00.000Z",
       pendingWrites: [{ id: "pending-1" }],
+      queuedActionJobs: [{ id: "job-1" }],
       engagementEvents: [{ type: "post", createdAt: "2026-05-04T11:00:00.000Z" }],
       engagementTotals: { posts: 1 }
     }),
@@ -68,7 +69,7 @@ test("discoverAgents reads agent metadata, state, and heartbeat report", async (
     assert.equal(agents[0]?.metadata.agentId, "agent-a");
     assert.equal(agents[0]?.metadata.displayName, "Agent A");
     assert.equal(agents[0]?.metadata.profileUrl, "https://www.moltbook.com/u/signalfoundry");
-    assert.equal(agents[0]?.pendingWrites, 1);
+    assert.equal(agents[0]?.pendingWrites, 2);
     assert.equal(agents[0]?.latestStatus, "ok");
     assert.equal(agents[0]?.latestSkipped, 1);
     assert.equal(agents[0]?.engagementSummary.windows.last2Hours.posts, 1);
@@ -138,6 +139,11 @@ test("discoverAgents prefers sqlite health and counters when present", async () 
         reply_to_author TEXT,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE state_snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        snapshot_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       INSERT INTO heartbeat_runs(
         run_id, agent_id, started_at, finished_at, status, summary, dry_run, error_count, skip_count,
         planned_actions_json, performed_json, skipped_json, errors_json,
@@ -149,6 +155,8 @@ test("discoverAgents prefers sqlite health and counters when present", async () 
         ('event-reply', 'run-ok', 'reply', '2026-05-04T11:50:00.000Z', 'comment-1', 'reply target');
       INSERT INTO pending_writes(id, type, fingerprint, content, created_at) VALUES
         ('pending-1', 'comment', 'fp-1', 'still pending', '2026-05-04T11:58:00.000Z');
+      INSERT INTO state_snapshots(snapshot_id, snapshot_json, updated_at) VALUES
+        ('current', '{"pendingWrites":[{"id":"pending-1"}],"queuedActionJobs":[{"id":"job-1"}]}', '2026-05-04T12:00:00.000Z');
     `
   );
 
@@ -160,7 +168,7 @@ test("discoverAgents prefers sqlite health and counters when present", async () 
     assert.equal(agents[0]?.schedulerHealth, "fresh");
     assert.equal(agents[0]?.latestStatus, "failed");
     assert.equal(agents[0]?.lastSuccessfulHeartbeatAt, "2026-05-04T11:45:00.000Z");
-    assert.equal(agents[0]?.pendingWrites, 1);
+    assert.equal(agents[0]?.pendingWrites, 2);
     assert.equal(agents[0]?.engagementSummary.windows.last2Hours.replies, 1);
     assert.equal(agents[0]?.engagementSummary.total.posts, 2);
     assert.equal(agents[0]?.engagementSummary.total.replies, 1);

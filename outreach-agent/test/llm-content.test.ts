@@ -14,6 +14,24 @@ import type { ChatMessage } from "../src/llm-client.js";
 import { createInitialState } from "../src/policy.js";
 import type { ProductFactSheet } from "../src/product-facts.js";
 
+async function seedPromptRotationState(pathname: string): Promise<void> {
+  await writeFile(
+    pathname,
+    JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      state: {
+        currentPromptVariant: "operator-problem-solution",
+        actionsSinceRotation: 1,
+        rotateAfterActions: 10,
+        lastRotationAt: new Date().toISOString(),
+        lastSelectionRationale: "Seeded for deterministic llm-content tests."
+      },
+      history: []
+    }),
+    "utf8"
+  );
+}
+
 test("comment drafts strip inline backticks instead of crashing validation", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-content-"));
   const packageRoot = path.resolve(import.meta.dirname, "..", "..");
@@ -77,21 +95,7 @@ test("comment drafts strip inline backticks instead of crashing validation", asy
   let llmCallCount = 0;
 
   try {
-    await writeFile(
-      config.promptRotationStatePath!,
-      JSON.stringify({
-        generatedAt: new Date().toISOString(),
-        state: {
-          currentPromptVariant: "operator-problem-solution",
-          actionsSinceRotation: 1,
-          rotateAfterActions: 10,
-          lastRotationAt: new Date().toISOString(),
-          lastSelectionRationale: "Seeded for deterministic llm-content tests."
-        },
-        history: []
-      }),
-      "utf8"
-    );
+    await seedPromptRotationState(config.promptRotationStatePath!);
     const decision = await chooseAndDraftWriteAction(
       config,
       candidates,
@@ -118,6 +122,7 @@ test("comment and reply prompts require a natural COTI attribution anchor", asyn
     credentialsPath: path.join(tempDir, "credentials.json"),
     statePath: path.join(tempDir, "state.json"),
     heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: false,
@@ -170,6 +175,7 @@ test("comment and reply prompts require a natural COTI attribution anchor", asyn
   };
 
   try {
+    await seedPromptRotationState(config.promptRotationStatePath!);
     const decision = await chooseAndDraftWriteAction(
       config,
       candidates,
@@ -201,6 +207,7 @@ test("injected and HTTP providers receive identical prompt messages", async () =
     credentialsPath: path.join(tempDir, "credentials.json"),
     statePath: path.join(tempDir, "state.json"),
     heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: false,
@@ -242,6 +249,7 @@ test("injected and HTTP providers receive identical prompt messages", async () =
   let httpCallCount = 0;
 
   try {
+    await seedPromptRotationState(baseConfig.promptRotationStatePath);
     const injectedConfig: MoltbookRuntimeConfig = {
       ...baseConfig,
       llmProvider: {
@@ -339,6 +347,7 @@ test("reply gate can ignore low-signal candidates", async () => {
     credentialsPath: path.join(tempDir, "credentials.json"),
     statePath: path.join(tempDir, "state.json"),
     heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: false,
@@ -408,6 +417,7 @@ test("Moltbook CTA profile injects style layout and tracked URL into drafts", as
     credentialsPath: path.join(tempDir, "credentials.json"),
     statePath: path.join(tempDir, "state.json"),
     heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: false,
@@ -473,6 +483,7 @@ test("Moltbook CTA profile injects style layout and tracked URL into drafts", as
   };
 
   try {
+    await seedPromptRotationState(config.promptRotationStatePath!);
     const decision = await chooseAndDraftWriteAction(
       config,
       candidates,
@@ -508,6 +519,7 @@ test("Moltbook comments do not get a CTA unless the target explicitly asks for a
     credentialsPath: path.join(tempDir, "credentials.json"),
     statePath: path.join(tempDir, "state.json"),
     heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: false,
@@ -563,6 +575,7 @@ test("Moltbook comments do not get a CTA unless the target explicitly asks for a
   };
 
   try {
+    await seedPromptRotationState(config.promptRotationStatePath!);
     const decision = await chooseAndDraftWriteAction(config, candidates, factSheet, createInitialState());
 
     assert.equal(decision.ctaUrl, undefined);
@@ -582,6 +595,7 @@ test("Moltbook replies can include a tracked CTA when the target explicitly asks
     credentialsPath: path.join(tempDir, "credentials.json"),
     statePath: path.join(tempDir, "state.json"),
     heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: false,
@@ -639,6 +653,7 @@ test("Moltbook replies can include a tracked CTA when the target explicitly asks
   };
 
   try {
+    await seedPromptRotationState(config.promptRotationStatePath!);
     const decision = await chooseAndDraftWriteAction(config, candidates, factSheet, createInitialState());
 
     assert.match(decision.ctaUrl ?? "", /utm_source=moltbook/);
@@ -657,6 +672,7 @@ test("create_post drafts trim overlong title and content without dropping tracke
     credentialsPath: path.join(tempDir, "credentials.json"),
     statePath: path.join(tempDir, "state.json"),
     heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: false,
@@ -717,6 +733,7 @@ test("create_post drafts trim overlong title and content without dropping tracke
   };
 
   try {
+    await seedPromptRotationState(config.promptRotationStatePath!);
     const decision = await chooseAndDraftWriteAction(
       config,
       candidates,
@@ -806,6 +823,253 @@ test("create_post drafts reject repeated private-routing thesis even with new wo
     await assert.rejects(
       () => chooseAndDraftWriteAction(config, candidates, factSheet, state),
       /too similar to recent authored artifact recent-post-1/
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("create_post drafts retry once to add a missing concrete proof point", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-proof-retry-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  let llmCallCount = 0;
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+        llmCallCount += 1;
+        if (String(messages[0]?.content ?? "").includes("selecting exactly one authored Moltbook action")) {
+          return {
+            selectedCandidateId: "A",
+            rationale: "Only one post candidate exists."
+          } as T;
+        }
+        if (llmCallCount === 2) {
+          return {
+            selectedCandidateId: "A",
+            title: "Private coordination stops working when plaintext is assumed",
+            content:
+              "Private message bodies plus public routing metadata is the practical split for agent messaging. The point is to make coordination usable without forcing every workflow back into public threads.",
+            rationale: "First draft misses the artifact."
+          } as T;
+        }
+        return {
+          selectedCandidateId: "A",
+          title: "Private coordination stops working when plaintext is assumed",
+          content:
+            "Private message bodies plus public routing metadata is the practical split for agent messaging. The MCP quickstart gives builders a concrete path to test that flow instead of hand-waving it.",
+          rationale: "Repair by adding an explicit proof point."
+        } as T;
+      }
+    }
+  };
+  const candidates: WriteCandidate[] = [
+    {
+      id: "create-post",
+      type: "create_post",
+      reason: "Create one top-level post."
+    }
+  ];
+  const factSheet: ProductFactSheet = {
+    claims: [
+      {
+        id: "private-bodies-public-routing",
+        headline: "Private message bodies, queryable routing",
+        detail: "Message bodies are encrypted while routing metadata stays public.",
+        sourcePaths: ["docs/overview.md"],
+        evidence: ["The message body is encrypted while routing metadata remains queryable."],
+        emphasis: "primary"
+      }
+    ],
+    liveSnapshot: {}
+  };
+
+  try {
+    await seedPromptRotationState(config.promptRotationStatePath!);
+    const decision = await chooseAndDraftWriteAction(config, candidates, factSheet, createInitialState());
+    assert.match(decision.content, /quickstart/i);
+    assert.equal(llmCallCount, 3);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("reply drafts can revisit the same thesis across different threads", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-reply-soft-dup-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+        if (String(messages[0]?.content ?? "").includes("selecting exactly one authored Moltbook action")) {
+          return {
+            selectedCandidateId: "A",
+            rationale: "Only one candidate exists."
+          } as T;
+        }
+
+        return {
+          selectedCandidateId: "A",
+          content:
+            "The useful distinction is still privacy versus authorization. Encrypting the payload keeps the body private, but it does not prove who had authority to send, delegate, or replay the route. That is why agent systems need explicit provenance on top of private transport.",
+          rationale: "Answer directly."
+        } as T;
+      }
+    }
+  };
+  const candidates: WriteCandidate[] = [
+    {
+      id: "reply:post-2:comment-9",
+      type: "reply_to_activity",
+      reason: "Answer the objection.",
+      postId: "post-2",
+      postTitle: "A2A identity is not workload identity",
+      target: {
+        commentId: "comment-9",
+        postId: "post-2",
+        authorName: "ThreadUser",
+        content: "How do you separate encrypted transport from actual authorization?"
+      }
+    }
+  ];
+  const factSheet: ProductFactSheet = {
+    claims: [
+      {
+        id: "private-bodies-public-routing",
+        headline: "Private message bodies, queryable routing",
+        detail: "Message bodies are encrypted while routing metadata stays public.",
+        sourcePaths: ["docs/overview.md"],
+        evidence: ["The message body is encrypted while routing metadata remains queryable."],
+        emphasis: "primary"
+      }
+    ],
+    liveSnapshot: {}
+  };
+  const state = {
+    ...createInitialState(),
+    recentGeneratedArtifacts: [
+      {
+        id: "recent-reply-1",
+        type: "reply" as const,
+        content:
+          "Privacy and authorization are different layers. Encrypting the body protects contents, but it does not prove which agent had authority to send or delegate the message. You still need provenance and policy above transport.",
+        targetId: "our-comment-1",
+        targetSummary: "Why do private channels still need provenance checks?",
+        createdAt: "2026-05-12T10:00:00.000Z"
+      }
+    ]
+  };
+
+  try {
+    await seedPromptRotationState(config.promptRotationStatePath!);
+    const decision = await chooseAndDraftWriteAction(config, candidates, factSheet, state);
+    assert.match(decision.content, /privacy versus authorization/i);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("reply drafts still block near-identical echoes on the same target discussion", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-reply-hard-dup-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>(messages: readonly ChatMessage[]) {
+        if (String(messages[0]?.content ?? "").includes("selecting exactly one authored Moltbook action")) {
+          return {
+            selectedCandidateId: "A",
+            rationale: "Only one candidate exists."
+          } as T;
+        }
+
+        return {
+          selectedCandidateId: "A",
+          content:
+            "Privacy and authorization are different layers. Encrypting the body protects the contents, but it does not prove who was authorized to send, delegate, or replay the route. You still need provenance checks above transport for agent systems.",
+          rationale: "Answer directly."
+        } as T;
+      }
+    }
+  };
+  const candidates: WriteCandidate[] = [
+    {
+      id: "reply:post-2:comment-9",
+      type: "reply_to_activity",
+      reason: "Answer the objection.",
+      postId: "post-2",
+      postTitle: "A2A identity is not workload identity",
+      target: {
+        commentId: "comment-9",
+        postId: "post-2",
+        authorName: "ThreadUser",
+        content: "How do you separate encrypted transport from actual authorization?"
+      }
+    }
+  ];
+  const factSheet: ProductFactSheet = {
+    claims: [
+      {
+        id: "private-bodies-public-routing",
+        headline: "Private message bodies, queryable routing",
+        detail: "Message bodies are encrypted while routing metadata stays public.",
+        sourcePaths: ["docs/overview.md"],
+        evidence: ["The message body is encrypted while routing metadata remains queryable."],
+        emphasis: "primary"
+      }
+    ],
+    liveSnapshot: {}
+  };
+  const state = {
+    ...createInitialState(),
+    recentGeneratedArtifacts: [
+      {
+        id: "recent-reply-1",
+        type: "reply" as const,
+        content:
+          "Privacy and authorization are different layers. Encrypting the body protects the contents, but it does not prove who was authorized to send, delegate, or replay the route. You still need provenance checks above transport for agent systems.",
+        targetId: "our-comment-1",
+        targetSummary: "How do you separate encrypted transport from actual authorization?",
+        createdAt: "2026-05-12T10:00:00.000Z"
+      }
+    ]
+  };
+
+  try {
+    await seedPromptRotationState(config.promptRotationStatePath!);
+    await assert.rejects(
+      () => chooseAndDraftWriteAction(config, candidates, factSheet, state),
+      /too similar to recent authored artifact recent-reply-1/
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });

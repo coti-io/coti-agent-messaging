@@ -66,6 +66,8 @@ const MAX_POST_CONTENT_CHARS = 1_100;
 const MAX_REPLY_OR_COMMENT_CHARS = 700;
 const DUPLICATE_DRAFT_ERROR_PATTERN =
   /^Generated content is too similar to recent authored (?:history|artifact\b)/;
+const MISSING_PROOF_POINT_ERROR_PATTERN =
+  /^Generated post is missing a concrete proof point\b/;
 const EXPLICIT_RESOURCE_REQUEST_PATTERNS = [
   /\b(?:link|docs?|documentation|repo|repository|quickstart|guide|tutorial|walkthrough|example|sample|how[- ]to)\b.{0,24}\?/i,
   /\b(?:can you|could you|would you|do you have|got|share|send|drop|post|show)\b.{0,40}\b(?:link|docs?|documentation|repo|repository|quickstart|guide|tutorial|walkthrough|example|sample)\b/i,
@@ -98,6 +100,10 @@ interface LabeledCandidate {
 
 export function isDuplicateDraftError(error: unknown): boolean {
   return error instanceof Error && DUPLICATE_DRAFT_ERROR_PATTERN.test(error.message);
+}
+
+export function isMissingConcreteProofPointError(error: unknown): boolean {
+  return error instanceof Error && MISSING_PROOF_POINT_ERROR_PATTERN.test(error.message);
 }
 
 const PROMPT_VERSION = "v4-coti-attribution";
@@ -275,46 +281,45 @@ export async function chooseAndDraftWriteAction(
     resolvedProfile,
     ctaLink
   );
+  try {
+    return await finalizeGeneratedDecision({
+      config,
+      selectedCandidate,
+      response,
+      selectionRationale: selection.rationale,
+      state,
+      resolvedProfile,
+      ctaLink,
+      selectedVariant
+    });
+  } catch (error) {
+    if (!(selectedCandidate.type === "create_post" && isMissingConcreteProofPointError(error))) {
+      throw error;
+    }
+  }
 
-  const rawContent = applyCtaToContent(
-    normalizeDraftContent(selectedCandidate, (response.content ?? "").trim()),
+  const repairedResponse = await repairDraftCandidateForProofPoint(
+    llmProvider,
+    selectedLabeledCandidate.label,
+    selectedCandidate,
+    selection.rationale,
+    factSheet,
+    state,
+    repoContext,
     resolvedProfile,
-    ctaLink
+    ctaLink,
+    response
   );
-  if (!rawContent) {
-    throw new Error(`LLM returned empty content for candidate ${selectedCandidate.id}`);
-  }
-
-  const rawTitle =
-    selectedCandidate.type === "create_post" ? (response.title ?? "").trim() : undefined;
-  if (selectedCandidate.type === "create_post" && !rawTitle) {
-    throw new Error("LLM selected a post candidate but did not return a title.");
-  }
-  const { title, content } = normalizeDraftForPublish(selectedCandidate, rawTitle, rawContent, ctaLink);
-
-  validateDraft(selectedCandidate, title, content, state, resolvedProfile, ctaLink);
-  validateDraftAgainstPromptProfile(resolvedProfile, content, ctaLink?.url);
-  if (ctaLink?.ref) {
-    await saveOutreachRefToAttributionStore(config.attributionDbPath, ctaLink.ref).catch(() => undefined);
-  }
-
-  return {
-    selectedCandidateId: selectedCandidate.id,
-    title,
-    content,
-    rationale: [selection.rationale, response.rationale].filter(Boolean).join(" ").trim() || "No rationale provided.",
-    fingerprint: contentFingerprint(`${title ?? ""}\n${content}`),
-    promptProfileId: resolvedProfile.id,
-    promptVariantId: selectedVariant.variantId,
-    promptVariantRationale: selectedVariant.rationale,
-    promptParameters: resolvedProfile.parameters,
-    layout: resolvedProfile.parameters.layout,
-    ctaUrl: ctaLink?.url,
-    outreachRef: ctaLink?.ref,
-    structuralFingerprint: structuralFingerprint(`${title ?? ""}\n${content}`),
-    promptRotationReusedExisting: selectedVariant.reusedExisting,
-    promptRotateAfterActions: selectedVariant.rotateAfterActions
-  };
+  return await finalizeGeneratedDecision({
+    config,
+    selectedCandidate,
+    response: repairedResponse,
+    selectionRationale: [selection.rationale, response.rationale].filter(Boolean).join(" ").trim(),
+    state,
+    resolvedProfile,
+    ctaLink,
+    selectedVariant
+  });
 }
 
 async function chooseCandidate(
@@ -366,6 +371,122 @@ async function draftCandidate(
       )
     }
   ]);
+}
+
+async function repairDraftCandidateForProofPoint(
+  llmProvider: JsonLlmProvider,
+  candidateLabel: string,
+  candidate: WriteCandidate,
+  selectionRationale: string | undefined,
+  factSheet: ProductFactSheet,
+  state: OutreachAgentState,
+  repoContext: Awaited<ReturnType<typeof buildRepoContext>>,
+  resolvedProfile: ResolvedPromptProfile,
+  ctaLink: CtaLink | undefined,
+  previousResponse: LlmDraftResponse
+): Promise<LlmDraftResponse> {
+  return llmProvider.createJsonCompletion<LlmDraftResponse>([
+    {
+      role: "system",
+      content: [
+        buildDraftSystemPrompt(candidateLabel, candidate, resolvedProfile),
+        "You are revising a rejected draft.",
+        "Fix the draft by adding exactly one explicit concrete proof point.",
+        "Allowed proof points include SDK, MCP, quickstart, contract address, tx hash, COTIscan link, messageId, inbox/read-back, or a send/read smoke-test result.",
+        "Keep the draft compact and preserve the same core claim."
+      ].join(" ")
+    },
+    {
+      role: "user",
+      content: [
+        buildDraftUserPrompt(
+          candidateLabel,
+          candidate,
+          selectionRationale,
+          factSheet,
+          state,
+          repoContext,
+          resolvedProfile,
+          ctaLink
+        ),
+        "",
+        "Previous draft that failed validation:",
+        JSON.stringify(
+          {
+            selectedCandidateId: previousResponse.selectedCandidateId,
+            title: previousResponse.title,
+            content: previousResponse.content,
+            rationale: previousResponse.rationale
+          },
+          null,
+          2
+        ),
+        "",
+        "Validation failure:",
+        "The draft did not include an explicit concrete proof point. Revise it and return corrected JSON only."
+      ].join("\n")
+    }
+  ]);
+}
+
+async function finalizeGeneratedDecision(input: {
+  config: MoltbookRuntimeConfig;
+  selectedCandidate: WriteCandidate;
+  response: LlmDraftResponse;
+  selectionRationale: string | undefined;
+  state: OutreachAgentState;
+  resolvedProfile: ResolvedPromptProfile;
+  ctaLink: CtaLink | undefined;
+  selectedVariant: Awaited<ReturnType<typeof selectPromptVariant>>;
+}): Promise<GeneratedWriteDecision> {
+  const rawContent = applyCtaToContent(
+    normalizeDraftContent(input.selectedCandidate, (input.response.content ?? "").trim()),
+    input.resolvedProfile,
+    input.ctaLink
+  );
+  if (!rawContent) {
+    throw new Error(`LLM returned empty content for candidate ${input.selectedCandidate.id}`);
+  }
+
+  const rawTitle =
+    input.selectedCandidate.type === "create_post" ? (input.response.title ?? "").trim() : undefined;
+  if (input.selectedCandidate.type === "create_post" && !rawTitle) {
+    throw new Error("LLM selected a post candidate but did not return a title.");
+  }
+  const { title, content } = normalizeDraftForPublish(
+    input.selectedCandidate,
+    rawTitle,
+    rawContent,
+    input.ctaLink
+  );
+
+  validateDraft(input.selectedCandidate, title, content, input.state, input.resolvedProfile, input.ctaLink);
+  validateDraftAgainstPromptProfile(input.resolvedProfile, content, input.ctaLink?.url);
+  if (input.ctaLink?.ref) {
+    await saveOutreachRefToAttributionStore(input.config.attributionDbPath, input.ctaLink.ref).catch(
+      () => undefined
+    );
+  }
+
+  return {
+    selectedCandidateId: input.selectedCandidate.id,
+    title,
+    content,
+    rationale:
+      [input.selectionRationale, input.response.rationale].filter(Boolean).join(" ").trim() ||
+      "No rationale provided.",
+    fingerprint: contentFingerprint(`${title ?? ""}\n${content}`),
+    promptProfileId: input.resolvedProfile.id,
+    promptVariantId: input.selectedVariant.variantId,
+    promptVariantRationale: input.selectedVariant.rationale,
+    promptParameters: input.resolvedProfile.parameters,
+    layout: input.resolvedProfile.parameters.layout,
+    ctaUrl: input.ctaLink?.url,
+    outreachRef: input.ctaLink?.ref,
+    structuralFingerprint: structuralFingerprint(`${title ?? ""}\n${content}`),
+    promptRotationReusedExisting: input.selectedVariant.reusedExisting,
+    promptRotateAfterActions: input.selectedVariant.rotateAfterActions
+  };
 }
 
 function normalizeDraftForPublish(
@@ -631,26 +752,16 @@ function validateDraft(
     throw new Error("Replies/comments should avoid doc-style inline code formatting.");
   }
 
-  const fingerprint = contentFingerprint(`${title ?? ""}\n${content}`);
-  if (state.createdPostFingerprints.includes(fingerprint)) {
-    throw new Error("Generated content is too similar to recent authored history.");
+  if (candidate.type === "create_post") {
+    const fingerprint = contentFingerprint(`${title ?? ""}\n${content}`);
+    if (state.createdPostFingerprints.includes(fingerprint)) {
+      throw new Error("Generated content is too similar to recent authored history.");
+    }
   }
 
-  const draftStructure = structuralFingerprint(`${title ?? ""}\n${content}`);
-  const nearDuplicate = state.recentGeneratedArtifacts.find((artifact) => {
-    const artifactText = `${artifact.title ?? ""}\n${artifact.content}`;
-    return (
-      artifact.structuralFingerprint === draftStructure ||
-      contentTokenSimilarity(`${title ?? ""}\n${content}`, artifactText) >= 0.72 ||
-      (
-        candidate.type === "create_post" &&
-        artifact.type === "post" &&
-        hasRepeatedPostTheme(`${title ?? ""}\n${content}`, artifactText)
-      )
-    );
-  });
-  if (nearDuplicate) {
-    throw new Error(`Generated content is too similar to recent authored artifact ${nearDuplicate.id}.`);
+  const duplicateArtifact = findDuplicateDraftArtifact(candidate, title, content, state);
+  if (duplicateArtifact) {
+    throw new Error(`Generated content is too similar to recent authored artifact ${duplicateArtifact.id}.`);
   }
 
   if (resolvedProfile.cta.requirement === "required" && ctaLink && !content.includes(ctaLink.url)) {
@@ -662,6 +773,72 @@ function validateDraft(
       "Generated post is missing a concrete proof point such as SDK, MCP, quickstart, contract address, tx hash, COTIscan link, messageId, inbox/read-back, or smoke-test result."
     );
   }
+}
+
+function findDuplicateDraftArtifact(
+  candidate: WriteCandidate,
+  title: string | undefined,
+  content: string,
+  state: OutreachAgentState
+) {
+  const draftText = `${title ?? ""}\n${content}`;
+  if (candidate.type === "create_post") {
+    const draftStructure = structuralFingerprint(draftText);
+    return state.recentGeneratedArtifacts.find((artifact) => {
+      const artifactText = `${artifact.title ?? ""}\n${artifact.content}`;
+      return (
+        artifact.structuralFingerprint === draftStructure ||
+        contentTokenSimilarity(draftText, artifactText) >= 0.72 ||
+        (artifact.type === "post" && hasRepeatedPostTheme(draftText, artifactText))
+      );
+    });
+  }
+
+  return state.recentGeneratedArtifacts.find((artifact) => {
+    if (!isComparableDiscussionArtifact(candidate, artifact)) {
+      return false;
+    }
+    const artifactText = `${artifact.title ?? ""}\n${artifact.content}`;
+    const similarity = contentTokenSimilarity(draftText, artifactText);
+    return similarity >= duplicateThresholdForCandidate(candidate) || normalizedBody(content) === normalizedBody(artifact.content);
+  });
+}
+
+function isComparableDiscussionArtifact(
+  candidate: WriteCandidate,
+  artifact: OutreachAgentState["recentGeneratedArtifacts"][number]
+): boolean {
+  if (candidate.type === "comment_on_post" && artifact.type !== "comment") {
+    return false;
+  }
+  if (candidate.type === "reply_to_activity" && artifact.type !== "reply") {
+    return false;
+  }
+
+  const candidateTarget = discussionTargetForCandidate(candidate);
+  const artifactTarget = normalizedBody(artifact.targetSummary);
+  if (!candidateTarget || !artifactTarget) {
+    return false;
+  }
+  return candidateTarget === artifactTarget;
+}
+
+function discussionTargetForCandidate(candidate: WriteCandidate): string {
+  if (candidate.type === "comment_on_post") {
+    return normalizedBody(`${candidate.post.title} ${candidate.post.content_preview ?? ""}`.trim());
+  }
+  if (candidate.type === "reply_to_activity") {
+    return normalizedBody(candidate.target.content);
+  }
+  return "";
+}
+
+function duplicateThresholdForCandidate(candidate: WriteCandidate): number {
+  return candidate.type === "comment_on_post" ? 0.96 : 0.93;
+}
+
+function normalizedBody(value: string | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function hasConcretePostProofPoint(value: string): boolean {

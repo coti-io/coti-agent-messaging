@@ -92,6 +92,7 @@ export interface MoltbookRuntimeConfig extends RuntimePaths {
   promptProfileId?: string;
   promptProfile?: PromptProfile;
   promptRotationStatePath?: string;
+  llmDebugDir?: string;
   attributionCampaignId?: string;
   attributionDbPath?: string;
   ctaBaseUrl?: string;
@@ -141,6 +142,10 @@ function defaultRedditMemoryPath(packageRoot: string): string {
 
 function defaultPromptRotationStatePath(packageRoot: string): string {
   return path.join(packageRoot, ".data", "prompt-rotation.json");
+}
+
+function defaultLlmDebugDir(packageRoot: string): string {
+  return path.join(packageRoot, ".data", "llm-debug");
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
@@ -450,6 +455,7 @@ export async function loadRuntimeConfig(
     promptRotationStatePath:
       getOptionalEnv("OUTREACH_PROMPT_ROTATION_STATE_PATH") ??
       defaultPromptRotationStatePath(paths.packageRoot),
+    llmDebugDir: getOptionalEnv("MOLTBOOK_LLM_DEBUG_DIR") ?? defaultLlmDebugDir(paths.packageRoot),
     attributionCampaignId,
     attributionDbPath: getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH"),
     ctaBaseUrl:

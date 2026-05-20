@@ -6,12 +6,30 @@ import {
   type MoltbookRuntimeConfig
 } from "./config.js";
 import {
+  computeActionJobNotBefore,
+  createActionJob,
+  type ActionJob,
+  type ConstrainedActionCandidate
+} from "./action-planning.js";
+import {
+  enqueueActionJobs as enqueueJobs,
+  removeActionJob,
+  summarizeActionJobs,
+  updateActionJob
+} from "./job-queue.js";
+import {
   chooseReplyTargetOrIgnore,
   chooseAndDraftWriteAction,
   isDuplicateDraftError,
+  isMissingConcreteProofPointError,
   type GeneratedWriteDecision,
   type WriteCandidate
 } from "./llm-content.js";
+import {
+  buildMoltbookActionCandidates,
+  chooseMoltbookActionBundle,
+  plannedActionFromCandidate
+} from "./moltbook-action-planning.js";
 import { MoltbookVenueProvider } from "./moltbook-venue.js";
 import { MoltbookApiError, type MoltbookComment } from "./moltbook-api.js";
 import {
@@ -26,7 +44,6 @@ import {
   isNewAgent,
   listReplyTargets,
   normalizeState,
-  planHeartbeatActions,
   replyParentKey,
   selectFollowCandidatesFromComments,
   topLevelCommentParentKey,
@@ -88,8 +105,41 @@ interface HeartbeatReport {
     reason: string;
     targetSummary?: string;
   }>;
+  actionCandidates: Array<{
+    id: string;
+    type: string;
+    source: string;
+    score: number;
+    allowed: boolean;
+    needsContent: boolean;
+    blockedBy: string[];
+  }>;
+  selectedActionBundle?: {
+    selectedCandidateIds: string[];
+    selectedWriteCandidateId?: string;
+    selectedNoContentCandidateIds: string[];
+    deferredCandidateIds: string[];
+    rationale: string;
+    debugInputPath?: string;
+  };
+  queuedActionJobs: Array<{
+    id: string;
+    type: string;
+    candidateId: string;
+    status: ActionJob["status"];
+    notBefore: string;
+  }>;
   selectedWriteDecision?: GeneratedWriteDecision;
   engagementSummary?: EngagementSummary;
+}
+
+interface QueuedWriteJobMetadata {
+  kind: "queued_write";
+  candidate: WriteCandidate;
+  decision: GeneratedWriteDecision;
+  successMessage: string;
+  failureLabel: string;
+  markNotificationsPostId?: string;
 }
 
 const PENDING_WRITE_MAX_RECONCILIATION_MISSES = 3;
@@ -281,7 +331,9 @@ export async function runHeartbeat(
     skipped: [],
     errors: [],
     reconciledPendingWrites: [],
-    writeCandidates: []
+    writeCandidates: [],
+    actionCandidates: [],
+    queuedActionJobs: []
   };
   let state = createInitialState();
 
@@ -306,31 +358,82 @@ export async function runHeartbeat(
       report,
       persistState
     );
-    const newAgent = isNewAgent(me.agent?.created_at, state);
     const performed: string[] = [];
     const skipped: string[] = [];
-    const planned = planHeartbeatActions({
-      home,
-      followingFeed,
-      hotFeed,
-      exploreFeed,
+    state = await executeDueActionJobs(
+      venue,
       state,
+      report,
+      persistState,
+      config,
+      config.dryRun,
+      performed,
+      skipped
+    );
+    const newAgent = isNewAgent(me.agent?.created_at, state);
+    const actionCandidates = buildMoltbookActionCandidates({
+      sources,
+      state,
+      config,
       policy: config.policy,
-      factSheet,
-      profileCreatedAt: me.agent?.created_at
+      now: new Date(startedAt),
+      mode: venue.mode
     });
+    report.actionCandidates = actionCandidates.map((candidate) => ({
+      id: candidate.id,
+      type: candidate.type,
+      source: candidate.source,
+      score: candidate.score,
+      allowed: candidate.allowed,
+      needsContent: candidate.needsContent,
+      blockedBy: candidate.constraints.filter((constraint) => !constraint.passed).map((constraint) => constraint.id)
+    }));
+    const selectedBundle = await chooseMoltbookActionBundle({
+      candidates: actionCandidates,
+      config,
+      sources,
+      state,
+      runId
+    });
+    report.selectedActionBundle = selectedBundle;
+    const selectedIds = new Set(selectedBundle.selectedCandidateIds);
+    const selectedCandidates = actionCandidates.filter((candidate) => selectedIds.has(candidate.id));
+    const deferredWriteActions = actionCandidates
+      .filter(
+        (candidate) =>
+          selectedBundle.deferredCandidateIds.includes(candidate.id) && candidate.needsContent
+      )
+      .map((candidate) => plannedActionFromCandidate(candidate));
+    const planned =
+      selectedCandidates.length > 0
+        ? selectedCandidates.map((candidate) => plannedActionFromCandidate(candidate))
+        : actionCandidates
+            .filter((candidate) => candidate.type === "noop")
+            .slice(0, 1)
+            .map((candidate) => plannedActionFromCandidate(candidate));
     report.plannedActions = planned.map((entry) => entry.type);
     const plannedActionTypes = new Set(report.plannedActions);
     const postBlockReason = describePostBlockReason(state, newAgent, config.policy);
+    const selectedCommentLikeAction = planned.some(
+      (entry) => entry.type === "reply_to_activity" || entry.type === "comment_on_post"
+    );
+    if (!selectedCommentLikeAction && !canComment(state, newAgent, config.policy)) {
+      const highestBlockedCommentCandidate = actionCandidates
+        .filter((candidate) => candidate.type === "reply_to_activity" || candidate.type === "comment_on_post")
+        .sort((left, right) => right.score - left.score)[0];
+      if (highestBlockedCommentCandidate?.title) {
+        skipped.push(
+          describeCommentBlockReason(state, newAgent, config.policy, highestBlockedCommentCandidate.title)
+        );
+      }
+    }
     if (!plannedActionTypes.has("create_post") && postBlockReason) {
       skipped.push(postBlockReason);
     }
-    const recordPublishFailure = (actionLabel: string, error: unknown): void => {
-      report.errors.push(toHeartbeatError(`publish:${actionLabel}`, error));
-      skipped.push(`skipped ${actionLabel} because Moltbook publish failed: ${formatErrorMessage(error)}`);
-    };
     const writeCandidates: WriteCandidate[] = [];
+    let selectedWriteBlockedByConstraint = false;
     const followsAttempted = new Set<string>();
+    const scheduledActionJobs: ActionJob[] = [];
     const followBudget = Math.max(
       0,
       config.policy?.followMaxPerHeartbeat ?? 3
@@ -338,11 +441,11 @@ export async function runHeartbeat(
     const plannedFollowCount = planned.filter((entry) => entry.type === "follow_agent").length;
     let commentFollowBudget = Math.max(0, followBudget - plannedFollowCount);
 
-    const tryFollowAgent = async (
+    const tryFollowAgent = (
       agentName: string,
       reason: string,
       sourceLabel: string
-    ): Promise<boolean> => {
+    ): boolean => {
       if (!agentName || followsAttempted.has(agentName) || state.followedAgentNames.includes(agentName)) {
         return false;
       }
@@ -350,24 +453,24 @@ export async function runHeartbeat(
       followsAttempted.add(agentName);
 
       if (config.dryRun) {
-        performed.push(`Would follow ${agentName} (${sourceLabel}).`);
+        performed.push(`Would queue follow ${agentName} (${sourceLabel}).`);
         return true;
       }
-
-      try {
-        await venue.publishAction({
-          id: `follow:${agentName}`,
-          venue: "moltbook",
-          type: "follow_account",
-          parentId: agentName,
-          raw: { type: "follow_agent", agentName, reason }
-        });
-      } catch (error) {
-        recordPublishFailure(`follow ${agentName}`, error);
-        return false;
-      }
-      state = applyActionResult(state, { type: "follow_agent", agentName });
-      performed.push(`Followed ${agentName} (${sourceLabel}).`);
+      scheduledActionJobs.push(
+        createActionJob({
+          action: {
+            id: `follow:${agentName}`,
+            venue: "moltbook",
+            type: "follow_account",
+            parentId: agentName,
+            raw: { type: "follow_agent", agentName, reason }
+          },
+          candidateId: `candidate:follow:${agentName}`,
+          sourceDecisionId: runId,
+          notBefore: startedAt
+        })
+      );
+      performed.push(`Queued follow ${agentName} (${sourceLabel}).`);
       return true;
     };
 
@@ -376,6 +479,7 @@ export async function runHeartbeat(
         switch (action.type) {
           case "reply_to_activity": {
             if (!canComment(state, newAgent, config.policy)) {
+              selectedWriteBlockedByConstraint = true;
               skipped.push(
                 describeCommentBlockReason(state, newAgent, config.policy, action.activity.post_title)
               );
@@ -407,7 +511,7 @@ export async function runHeartbeat(
                 if (commentFollowBudget <= 0) {
                   break;
                 }
-                const followed = await tryFollowAgent(
+                const followed = tryFollowAgent(
                   candidate.agentName,
                   candidate.reason,
                   "comment author"
@@ -466,31 +570,36 @@ export async function runHeartbeat(
             }
 
             if (config.dryRun) {
-              performed.push(`Would upvote "${action.post.title}".`);
+              performed.push(`Would queue upvote "${action.post.title}".`);
               break;
             }
-
-            try {
-              await venue.publishAction({
-                id: `upvote:${postId}`,
-                venue: "moltbook",
-                type: "upvote_post",
-                parentId: postId,
-                raw: action
-              });
-            } catch (error) {
-              recordPublishFailure(`upvote "${action.post.title}"`, error);
-              break;
-            }
-            state = applyActionResult(state, { type: "upvote_post", postId });
-            performed.push(`Upvoted "${action.post.title}".`);
+            scheduledActionJobs.push(
+              createActionJob({
+                action: {
+                  id: `upvote:${postId}`,
+                  venue: "moltbook",
+                  type: "upvote_post",
+                  parentId: postId,
+                  raw: action
+                },
+                candidateId: `candidate:upvote:${postId}`,
+                sourceDecisionId: runId,
+                notBefore: computeActionJobNotBefore({
+                  now: new Date(startedAt),
+                  order: scheduledActionJobs.length,
+                  needsContent: false
+                })
+              })
+            );
+            performed.push(`Queued upvote "${action.post.title}".`);
             break;
           }
           case "follow_agent":
-            await tryFollowAgent(action.agentName, action.reason, "post author");
+            tryFollowAgent(action.agentName, action.reason, "post author");
             break;
           case "comment_on_post": {
             if (!canComment(state, newAgent, config.policy)) {
+              selectedWriteBlockedByConstraint = true;
               skipped.push(
                 describeCommentBlockReason(state, newAgent, config.policy, action.post.title)
               );
@@ -534,6 +643,53 @@ export async function runHeartbeat(
       }
     }
 
+    if (selectedWriteBlockedByConstraint && writeCandidates.length === 0) {
+      for (const action of deferredWriteActions) {
+        if (action.type === "comment_on_post") {
+          if (!canComment(state, newAgent, config.policy)) {
+            continue;
+          }
+          const postId = action.post.post_id ?? action.post.id;
+          if (!postId) {
+            continue;
+          }
+          writeCandidates.push({
+            id: `comment:${postId}`,
+            type: "comment_on_post",
+            reason: action.reason,
+            post: action.post
+          });
+          continue;
+        }
+        if (action.type === "create_post") {
+          writeCandidates.push({
+            id: "create-post",
+            type: "create_post",
+            reason: action.reason
+          });
+        }
+      }
+    }
+
+    if (!config.dryRun && scheduledActionJobs.length > 0) {
+      state = enqueueActionJobs(state, scheduledActionJobs);
+      await persistState(state);
+      report.queuedActionJobs = summarizeQueuedActionJobs(state);
+      state = await executeDueActionJobs(
+        venue,
+        state,
+        report,
+        persistState,
+        config,
+        config.dryRun,
+        performed,
+        skipped,
+        runId
+      );
+    } else {
+      report.queuedActionJobs = summarizeQueuedActionJobs(state);
+    }
+
     const eligibleWriteCandidates =
       config.forceWriteMode === undefined
         ? writeCandidates
@@ -566,6 +722,8 @@ export async function runHeartbeat(
       } catch (error) {
         if (isDuplicateDraftError(error)) {
           skipped.push("skipped authored write because the generated draft was too similar to recent authored history.");
+        } else if (isMissingConcreteProofPointError(error)) {
+          skipped.push("skipped authored write because the generated post still lacked a concrete proof point after retry.");
         } else {
           throw error;
         }
@@ -587,29 +745,33 @@ export async function runHeartbeat(
                 `Would reply to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`
               );
             } else {
-              const pendingWrite = buildPendingWrite(candidate, decision);
-              await persistState(addPendingWrite(state, pendingWrite));
-              try {
-                const outcome = await venue.publishAction({
-                  id: `reply:${candidate.postId}:${candidate.target.commentId}`,
-                  venue: "moltbook",
-                  type: "reply_to_comment",
-                  parentId: candidate.postId,
-                  candidateId: candidate.target.commentId,
-                  content: decision.content,
-                  raw: candidate
-                });
-                const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
-                await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
-                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, decision, "replied");
-                await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
-              } catch (error) {
-                recordPublishFailure(`reply on "${candidate.postTitle}"`, error);
-                break;
-              }
-              await venue.markNotificationsReadByPost(candidate.postId);
+              state = enqueueActionJobs(state, [
+                createActionJob({
+                  action: {
+                    id: `reply:${candidate.postId}:${candidate.target.commentId}`,
+                    venue: "moltbook",
+                    type: "reply_to_comment",
+                    parentId: candidate.postId,
+                    candidateId: candidate.target.commentId,
+                    content: decision.content,
+                    raw: {
+                      kind: "queued_write",
+                      candidate,
+                      decision,
+                      failureLabel: `reply on "${candidate.postTitle}"`,
+                      successMessage: `Replied to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`,
+                      markNotificationsPostId: candidate.postId
+                    } satisfies QueuedWriteJobMetadata
+                  },
+                  candidateId: candidate.id,
+                  sourceDecisionId: runId,
+                  notBefore: startedAt
+                })
+              ]);
+              await persistState(state);
+              report.queuedActionJobs = summarizeQueuedActionJobs(state);
               performed.push(
-                `Replied to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`
+                `Queued reply to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`
               );
             }
             break;
@@ -623,26 +785,30 @@ export async function runHeartbeat(
             if (config.dryRun) {
               performed.push(`Would comment on "${candidate.post.title}".`);
             } else {
-              const pendingWrite = buildPendingWrite(candidate, decision);
-              await persistState(addPendingWrite(state, pendingWrite));
-              try {
-                const outcome = await venue.publishAction({
-                  id: `comment:${postId}`,
-                  venue: "moltbook",
-                  type: "comment_on_post",
-                  parentId: postId,
-                  content: decision.content,
-                  raw: candidate
-                });
-                const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
-                await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
-                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, decision, "commented");
-                await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
-              } catch (error) {
-                recordPublishFailure(`comment on "${candidate.post.title}"`, error);
-                break;
-              }
-              performed.push(`Commented on "${candidate.post.title}".`);
+              state = enqueueActionJobs(state, [
+                createActionJob({
+                  action: {
+                    id: `comment:${postId}`,
+                    venue: "moltbook",
+                    type: "comment_on_post",
+                    parentId: postId,
+                    content: decision.content,
+                    raw: {
+                      kind: "queued_write",
+                      candidate,
+                      decision,
+                      failureLabel: `comment on "${candidate.post.title}"`,
+                      successMessage: `Commented on "${candidate.post.title}".`
+                    } satisfies QueuedWriteJobMetadata
+                  },
+                  candidateId: candidate.id,
+                  sourceDecisionId: runId,
+                  notBefore: startedAt
+                })
+              ]);
+              await persistState(state);
+              report.queuedActionJobs = summarizeQueuedActionJobs(state);
+              performed.push(`Queued comment on "${candidate.post.title}".`);
             }
             break;
           }
@@ -650,27 +816,31 @@ export async function runHeartbeat(
             if (config.dryRun) {
               performed.push(`Would post "${decision.title ?? "Untitled post"}".`);
             } else {
-              const pendingWrite = buildPendingWrite(candidate, decision);
-              await persistState(addPendingWrite(state, pendingWrite));
-              try {
-                const outcome = await venue.publishAction({
-                  id: "create-post",
-                  venue: "moltbook",
-                  type: "create_post",
-                  surface: config.defaultSubmolt,
-                  title: decision.title!,
-                  content: decision.content,
-                  raw: candidate
-                });
-                const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
-                await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
-                await recordMoltbookPromptRotation(config, candidate.type, publishedWrite, decision, "posted");
-                await persistState(removePendingWrite(recoverPendingWrite(state, publishedWrite), publishedWrite.id));
-              } catch (error) {
-                recordPublishFailure(`post "${decision.title ?? "Untitled post"}"`, error);
-                break;
-              }
-              performed.push(`Posted "${decision.title}".`);
+              state = enqueueActionJobs(state, [
+                createActionJob({
+                  action: {
+                    id: "create-post",
+                    venue: "moltbook",
+                    type: "create_post",
+                    surface: config.defaultSubmolt,
+                    title: decision.title!,
+                    content: decision.content,
+                    raw: {
+                      kind: "queued_write",
+                      candidate,
+                      decision,
+                      failureLabel: `post "${decision.title ?? "Untitled post"}"`,
+                      successMessage: `Posted "${decision.title}".`
+                    } satisfies QueuedWriteJobMetadata
+                  },
+                  candidateId: candidate.id,
+                  sourceDecisionId: runId,
+                  notBefore: startedAt
+                })
+              ]);
+              await persistState(state);
+              report.queuedActionJobs = summarizeQueuedActionJobs(state);
+              performed.push(`Queued post "${decision.title}".`);
             }
             break;
         }
@@ -915,6 +1085,169 @@ async function recordMoltbookPromptRotation(
       creativity: pendingWrite.promptParameters?.creativity
     }
   });
+}
+
+function enqueueActionJobs(state: OutreachAgentState, jobs: readonly ActionJob[]): OutreachAgentState {
+  return normalizeState({
+    ...state,
+    queuedActionJobs: enqueueJobs(state.queuedActionJobs, jobs)
+  });
+}
+
+function removeQueuedActionJob(state: OutreachAgentState, jobId: string): OutreachAgentState {
+  return normalizeState({
+    ...state,
+    queuedActionJobs: removeActionJob(state.queuedActionJobs, jobId)
+  });
+}
+
+function updateQueuedActionJob(
+  state: OutreachAgentState,
+  jobId: string,
+  updater: (job: ActionJob) => ActionJob
+): OutreachAgentState {
+  return normalizeState({
+    ...state,
+    queuedActionJobs: updateActionJob(state.queuedActionJobs, jobId, updater)
+  });
+}
+
+function summarizeQueuedActionJobs(state: OutreachAgentState): HeartbeatReport["queuedActionJobs"] {
+  return summarizeActionJobs(state.queuedActionJobs);
+}
+
+function getQueuedWriteJobMetadata(job: ActionJob): QueuedWriteJobMetadata | undefined {
+  const raw = job.payload.raw;
+  if (!raw || typeof raw !== "object" || !("kind" in raw)) {
+    return undefined;
+  }
+  return raw.kind === "queued_write" ? (raw as QueuedWriteJobMetadata) : undefined;
+}
+
+async function executeDueActionJobs(
+  venue: MoltbookVenueProvider,
+  state: OutreachAgentState,
+  report: HeartbeatReport,
+  persistState: (state: OutreachAgentState) => Promise<void>,
+  config: MoltbookRuntimeConfig,
+  dryRun: boolean,
+  performed: string[],
+  skipped: string[],
+  sourceDecisionId?: string
+): Promise<OutreachAgentState> {
+  if (dryRun || state.queuedActionJobs.length === 0) {
+    report.queuedActionJobs = summarizeQueuedActionJobs(state);
+    return state;
+  }
+  const now = Date.now();
+  let nextState = state;
+  for (const job of state.queuedActionJobs) {
+    const writeMetadata = getQueuedWriteJobMetadata(job);
+    if (job.status === "running" && writeMetadata) {
+      if (!nextState.pendingWrites.some((entry) => entry.id === writeMetadata.candidate.id)) {
+        nextState = removeQueuedActionJob(nextState, job.id);
+        await persistState(nextState);
+      }
+      continue;
+    }
+    const dueNow = Date.parse(job.notBefore) <= now;
+    const forcedForCurrentRun = sourceDecisionId !== undefined && job.sourceDecisionId === sourceDecisionId;
+    if (job.status !== "queued" || (!dueNow && !forcedForCurrentRun)) {
+      continue;
+    }
+    if (writeMetadata) {
+      const pendingWrite = buildPendingWrite(writeMetadata.candidate, writeMetadata.decision);
+      nextState = addPendingWrite(
+        updateQueuedActionJob(nextState, job.id, (entry) => ({
+          ...entry,
+          status: "running"
+        })),
+        pendingWrite
+      );
+      await persistState(nextState);
+      try {
+        const outcome = await venue.publishAction(job.payload);
+        const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
+        await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
+        await recordMoltbookPromptRotation(
+          config,
+          writeMetadata.candidate.type,
+          publishedWrite,
+          writeMetadata.decision,
+          queuedWriteStatus(writeMetadata.candidate.type)
+        );
+        nextState = removeQueuedActionJob(
+          removePendingWrite(recoverPendingWrite(nextState, publishedWrite), pendingWrite.id),
+          job.id
+        );
+        if (writeMetadata.markNotificationsPostId) {
+          await venue.markNotificationsReadByPost(writeMetadata.markNotificationsPostId);
+        }
+        performed.push(writeMetadata.successMessage);
+      } catch (error) {
+        report.errors.push(toHeartbeatError(`publish:${writeMetadata.failureLabel}`, error));
+        skipped.push(
+          `skipped ${writeMetadata.failureLabel} because Moltbook publish failed: ${formatErrorMessage(error)}`
+        );
+        nextState = removeQueuedActionJob(removePendingWrite(nextState, pendingWrite.id), job.id);
+      }
+      await persistState(nextState);
+      continue;
+    }
+    const actionLabel = describeQueuedActionLabel(job);
+    try {
+      await venue.publishAction(job.payload);
+      if (job.type === "upvote_post" && job.payload.parentId) {
+        nextState = applyActionResult(nextState, { type: "upvote_post", postId: job.payload.parentId });
+        performed.push(actionLabel.replace(/^upvote /, "Upvoted "));
+      } else if (job.type === "follow_account" && job.payload.parentId) {
+        nextState = applyActionResult(nextState, { type: "follow_agent", agentName: job.payload.parentId });
+        performed.push(actionLabel.replace(/^follow /, "Followed "));
+      } else {
+        performed.push(`Executed queued ${actionLabel}.`);
+      }
+      nextState = removeQueuedActionJob(nextState, job.id);
+    } catch (error) {
+      report.errors.push(toHeartbeatError(`publish:${actionLabel}`, error));
+      skipped.push(`skipped ${actionLabel} because Moltbook publish failed: ${formatErrorMessage(error)}`);
+      nextState = removeQueuedActionJob(nextState, job.id);
+    }
+    await persistState(nextState);
+  }
+  report.queuedActionJobs = summarizeQueuedActionJobs(nextState);
+  return nextState;
+}
+
+function queuedWriteStatus(
+  type: WriteCandidate["type"]
+): "posted" | "commented" | "replied" {
+  switch (type) {
+    case "create_post":
+      return "posted";
+    case "comment_on_post":
+      return "commented";
+    case "reply_to_activity":
+      return "replied";
+  }
+}
+
+function describeQueuedActionLabel(job: ActionJob): string {
+  if (job.type === "upvote_post") {
+    const title =
+      typeof job.payload.raw === "object" &&
+      job.payload.raw &&
+      "post" in job.payload.raw &&
+      typeof job.payload.raw.post === "object" &&
+      job.payload.raw.post &&
+      "title" in job.payload.raw.post
+        ? String(job.payload.raw.post.title)
+        : job.payload.parentId;
+    return `upvote "${title ?? job.payload.parentId ?? job.candidateId}"`;
+  }
+  if (job.type === "follow_account") {
+    return `follow ${job.payload.parentId ?? job.candidateId}`;
+  }
+  return job.type;
 }
 
 function addPendingWrite(state: OutreachAgentState, pendingWrite: PendingWrite): OutreachAgentState {

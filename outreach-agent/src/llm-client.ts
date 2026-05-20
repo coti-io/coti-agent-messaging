@@ -111,6 +111,7 @@ export async function createJsonChatCompletion<T>(
     if (!response.ok) {
       throw new Error(`Chat completion failed with status ${response.status}.`);
     }
+    throwIfPayloadHasError(payload);
 
     const content = extractResponseText(payload);
     if (!content) {
@@ -137,6 +138,7 @@ export async function parseResponseBody(response: Response): Promise<unknown> {
 }
 
 export function extractJsonCompletionResult<T>(payload: unknown): T {
+  throwIfPayloadHasError(payload);
   if (payload && typeof payload === "object" && "result" in payload) {
     return (payload as { result: T }).result;
   }
@@ -161,6 +163,23 @@ export function extractResponseText(payload: unknown): string {
     if (typeof content === "string") {
       return content;
     }
+    if (Array.isArray(content)) {
+      const text = content
+        .map((item) => {
+          if (typeof item === "string") {
+            return item;
+          }
+          if (item && typeof item === "object" && "text" in item && typeof item.text === "string") {
+            return item.text;
+          }
+          return "";
+        })
+        .join("")
+        .trim();
+      if (text) {
+        return text;
+      }
+    }
   }
 
   const outputText = record.output_text;
@@ -169,4 +188,17 @@ export function extractResponseText(payload: unknown): string {
   }
 
   return "";
+}
+
+function throwIfPayloadHasError(payload: unknown): void {
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+  const error = (payload as { error?: unknown }).error;
+  if (!error || typeof error !== "object") {
+    return;
+  }
+  const message = "message" in error && typeof error.message === "string" ? error.message : JSON.stringify(error);
+  const code = "code" in error && typeof error.code === "string" ? ` (${error.code})` : "";
+  throw new Error(`Chat completion returned provider error${code}: ${message}`);
 }

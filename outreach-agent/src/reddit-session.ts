@@ -258,9 +258,13 @@ export async function runRedditSession(input: {
             promptParameters: draft.promptParameters,
             layout: draft.layout,
             promptVariantId: selectedVariant.variantId,
+            promptVariantLabel: selectedVariant.label,
             promptVariantRationale: selectedVariant.rationale,
             rotateAfterActions: selectedVariant.rotateAfterActions,
-            reusedExisting: selectedVariant.reusedExisting
+            reusedExisting: selectedVariant.reusedExisting,
+            selectionSource: selectedVariant.selectionSource,
+            selectionDebugPath: selectedVariant.selectionDebugPath,
+            scopeKey: selectedVariant.scopeKey
           }
         },
         candidateId: plannedAction.item.id,
@@ -371,13 +375,53 @@ async function executeQueuedRedditJob(
     promptParameters?: RedditDecisionMemoryEntry["promptParameters"];
     layout?: RedditDecisionMemoryEntry["layout"];
     promptVariantId?: string;
+    promptVariantLabel?: string;
     promptVariantRationale?: string;
     rotateAfterActions?: number;
     reusedExisting?: boolean;
+    selectionSource?: "llm" | "deterministic_fallback";
+    selectionDebugPath?: string;
+    scopeKey?: "reddit:create_post" | "reddit:comment_on_post" | "reddit:reply_to_activity";
   };
-  const outcome = input.publishAction
-    ? await input.publishAction(queuedJob.payload)
-    : await createVenueProvider(input.config).publishAction(queuedJob.payload);
+  let outcome: VenueOutcome;
+  try {
+    outcome = input.publishAction
+      ? await input.publishAction(queuedJob.payload)
+      : await createVenueProvider(input.config).publishAction(queuedJob.payload);
+  } catch (error) {
+    if (metadata.promptVariantId) {
+      await recordPromptRotationAction({
+        config: input.config,
+        eventType: "failed",
+        entry: {
+          id: `reddit:${metadata.plannedAction.item.id}:failed`,
+          venue: "reddit",
+          actionType:
+            metadata.plannedAction.type === "reply_to_comment"
+              ? "reply_to_activity"
+              : "comment_on_post",
+          scopeKey: metadata.scopeKey,
+          createdAt: input.now.toISOString(),
+          status: "failed",
+          promptProfileId: metadata.promptProfileId,
+          promptVariantId: metadata.promptVariantId,
+          promptVariantLabel: metadata.promptVariantLabel,
+          promptParameters: metadata.promptParameters,
+          layout: metadata.layout,
+          messageStyle: metadata.promptParameters?.messageStyle,
+          technicalDepth: metadata.promptParameters?.technicalDepth,
+          tone: metadata.promptParameters?.tone,
+          creativity: metadata.promptParameters?.creativity,
+          selectionSource: metadata.selectionSource,
+          rotateAfterActions: metadata.rotateAfterActions,
+          selectionRationale: metadata.promptVariantRationale,
+          correlationId: metadata.plannedAction.item.id,
+          debugInputPath: metadata.selectionDebugPath
+        }
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
   const operating = getRedditOperatingAgentConfig(input.config);
   const recorded: RedditDecisionMemoryEntry = {
     id: `outcome:${metadata.plannedAction.item.source.id}:${input.now.getTime()}`,
@@ -419,20 +463,27 @@ async function executeQueuedRedditJob(
   if (metadata.promptVariantId) {
     await recordPromptRotationAction({
       config: input.config,
+      eventType: "published",
       selection: {
         variantId: metadata.promptVariantId,
+        label: metadata.promptVariantLabel,
         rationale: metadata.promptVariantRationale ?? "",
         rotateAfterActions: metadata.rotateAfterActions ?? 10,
-        reusedExisting: metadata.reusedExisting ?? true
+        reusedExisting: metadata.reusedExisting ?? true,
+        selectionSource: metadata.selectionSource,
+        selectedAt: input.now.toISOString(),
+        selectionDebugPath: metadata.selectionDebugPath
       },
       entry: {
         id: `reddit:${recorded.id}`,
         venue: "reddit",
         actionType: metadata.plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
+        scopeKey: metadata.scopeKey,
         createdAt: recorded.createdAt,
         status: recorded.action,
         promptProfileId: recorded.promptProfileId,
         promptVariantId: recorded.promptVariantId,
+        promptVariantLabel: metadata.promptVariantLabel,
         promptParameters: recorded.promptParameters,
         layout: recorded.layout,
         messageStyle: recorded.promptParameters?.messageStyle,
@@ -440,7 +491,12 @@ async function executeQueuedRedditJob(
         tone: recorded.promptParameters?.tone,
         creativity: recorded.promptParameters?.creativity,
         clickCount: recorded.clickCount,
-        privateMessageCount: recorded.privateMessageCount
+        privateMessageCount: recorded.privateMessageCount,
+        selectionSource: metadata.selectionSource,
+        rotateAfterActions: metadata.rotateAfterActions,
+        selectionRationale: metadata.promptVariantRationale,
+        correlationId: metadata.plannedAction.item.id,
+        debugInputPath: metadata.selectionDebugPath
       }
     });
   }

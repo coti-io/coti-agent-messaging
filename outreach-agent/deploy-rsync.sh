@@ -155,11 +155,36 @@ ensure_runtime_prereqs
 
 mkdir -p "$RUNTIME_DIR"
 
+migrate_runtime_artifacts() {
+  local runtime_prompt_rotation="$RUNTIME_DIR/prompt-rotation.json"
+  local runtime_llm_debug_dir="$RUNTIME_DIR/llm-debug"
+  local legacy_prompt_rotation="$REMOTE_PACKAGE_DIR/.data/prompt-rotation.json"
+  local legacy_llm_debug_dir="$REMOTE_PACKAGE_DIR/.data/llm-debug"
+  local migrated_suffix
+
+  migrated_suffix="$(date +%Y%m%d%H%M%S)"
+
+  if [[ -f "$legacy_prompt_rotation" && ! -f "$runtime_prompt_rotation" ]]; then
+    mv "$legacy_prompt_rotation" "$runtime_prompt_rotation"
+  elif [[ -f "$legacy_prompt_rotation" ]]; then
+    mv "$legacy_prompt_rotation" "${legacy_prompt_rotation}.migrated-${migrated_suffix}"
+  fi
+
+  if [[ -d "$legacy_llm_debug_dir" ]]; then
+    mkdir -p "$runtime_llm_debug_dir"
+    if compgen -G "$legacy_llm_debug_dir/*.json" >/dev/null 2>&1; then
+      cp -n "$legacy_llm_debug_dir"/*.json "$runtime_llm_debug_dir"/ 2>/dev/null || true
+    fi
+    mv "$legacy_llm_debug_dir" "${legacy_llm_debug_dir}.migrated-${migrated_suffix}"
+  fi
+}
+
 cd "$REMOTE_PACKAGE_DIR"
 rm -f package-lock.json
 rm -rf node_modules/@coti-io/coti-sdk-private-messaging
 npm install --no-fund --no-audit
 npm run build
+migrate_runtime_artifacts
 
 install_unit_from_template \
   "$REMOTE_PACKAGE_DIR/deploy/systemd/moltbook-outreach-heartbeat.service" \

@@ -243,19 +243,187 @@ function contentSnippetMarkup(item) {
   `;
 }
 
+function promptBucketSummary(prompt) {
+  const buckets = Array.isArray(prompt.buckets) ? prompt.buckets : [];
+  if (!buckets.length) {
+    return '<span class="subtle">No scoped buckets</span>';
+  }
+  return buckets
+    .map((bucket) => {
+      const label = bucket.promptVariantLabel || bucket.promptVariantId || "n/a";
+      return `<div class="rotation-line"><strong>${escapeHtml(bucket.scopeKey)}</strong><span>${escapeHtml(label)} · ${formatNumber(bucket.actionsSinceRotation)} / ${formatNumber(bucket.rotateAfterActions || 0)}</span></div>`;
+    })
+    .join("");
+}
+
+function promptRecentHistoryMarkup(prompt) {
+  const recentHistory = Array.isArray(prompt.recentHistory) ? prompt.recentHistory : [];
+  if (!recentHistory.length) {
+    return '<span class="subtle">No recent rotation events</span>';
+  }
+  return recentHistory
+    .slice(-6)
+    .reverse()
+    .map((entry) => {
+      const variant = entry.promptVariantLabel || entry.promptVariantId || "n/a";
+      const summary = [
+        entry.eventType || "event",
+        entry.scopeKey || "unknown-scope",
+        variant
+      ].join(" · ");
+      const detail = [
+        entry.selectionSource,
+        entry.reusedExisting === undefined ? "" : entry.reusedExisting ? "reused" : "rotated",
+        entry.actionsSinceRotation === undefined || entry.rotateAfterActions === undefined
+          ? ""
+          : `${formatNumber(entry.actionsSinceRotation)} / ${formatNumber(entry.rotateAfterActions)}`
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return `
+        <div class="rotation-event">
+          <div>${escapeHtml(summary)}</div>
+          <div class="content-meta">${escapeHtml(detail || "no extra detail")} · ${escapeHtml(formatTime(entry.createdAt))}</div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function collectAgentsWithPrompt(agents) {
+  return (agents || []).filter((agent) => agent.currentPrompt);
+}
+
+function collectPromptRotationEvents(agents) {
+  const rows = [];
+  for (const agent of collectAgentsWithPrompt(agents)) {
+    for (const entry of agent.currentPrompt.recentHistory || []) {
+      rows.push({
+        ...entry,
+        agentId: agent.agentId,
+        displayName: agent.displayName,
+        profileUrl: agent.profileUrl
+      });
+    }
+  }
+  return rows.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+}
+
+function renderPromptRotation(agents) {
+  const subtitle = document.getElementById("prompt-rotation-subtitle");
+  const cards = document.getElementById("prompt-rotation-cards");
+  const root = document.getElementById("prompt-rotation-agents");
+  const agentsWithPrompt = collectAgentsWithPrompt(agents);
+  const events = collectPromptRotationEvents(agents);
+
+  if (!agentsWithPrompt.length) {
+    subtitle.textContent = "No prompt rotation state discovered.";
+    cards.innerHTML = card("Prompt rotation", "Unavailable", "No agents exposed current prompt state");
+    root.innerHTML = `<div class="rotation-empty subtle">No rotation state found.</div>`;
+    return;
+  }
+
+  const bucketCount = agentsWithPrompt.reduce(
+    (sum, agent) => sum + ((agent.currentPrompt?.buckets || []).length || 0),
+    0
+  );
+  const scopedAgents = agentsWithPrompt.filter((agent) => agent.currentPrompt?.currentScopeKey).length;
+  const llmSelections = events.filter((entry) => entry.selectionSource === "llm").length;
+  const publishedEvents = events.filter((entry) => entry.eventType === "published").length;
+
+  subtitle.textContent = `Scoped rotation across ${formatNumber(scopedAgents)} agents, ${formatNumber(bucketCount)} buckets, and ${formatNumber(events.length)} recent visible events.`;
+  cards.innerHTML = [
+    card("Agents with state", formatNumber(agentsWithPrompt.length), `${formatNumber(scopedAgents)} with active scope`),
+    card("Scoped buckets", formatNumber(bucketCount), `${formatNumber(events.length)} recent visible events`),
+    card("LLM selections", formatNumber(llmSelections), `${formatNumber(publishedEvents)} published events`),
+    card(
+      "Latest event",
+      events[0]?.eventType ? escapeHtml(events[0].eventType) : "n/a",
+      events[0]?.createdAt ? formatTime(events[0].createdAt) : "No recent history"
+    ),
+    card(
+      "Latest scope",
+      escapeHtml(events[0]?.scopeKey || agentsWithPrompt[0]?.currentPrompt?.currentScopeKey || "n/a"),
+      escapeHtml(events[0]?.promptVariantLabel || events[0]?.promptVariantId || "No recent variant")
+    )
+  ].join("");
+
+  root.innerHTML = agentsWithPrompt
+    .map((agent) => {
+      const prompt = agent.currentPrompt;
+      const eventList = (prompt.recentHistory || [])
+        .slice(-5)
+        .reverse()
+        .map((entry) => {
+          const variant = entry.promptVariantLabel || entry.promptVariantId || "n/a";
+          return `
+            <div class="rotation-event">
+              <div>${escapeHtml(entry.eventType || "event")} · ${escapeHtml(entry.scopeKey || "unknown-scope")} · ${escapeHtml(variant)}</div>
+              <div class="content-meta">${escapeHtml(entry.selectionSource || "unknown source")} · ${escapeHtml(entry.status || "no status")} · ${escapeHtml(formatTime(entry.createdAt))}</div>
+            </div>
+          `;
+        })
+        .join("");
+      const pathList = [prompt.statePath, prompt.auditPath].filter(Boolean);
+      return `
+        <article class="rotation-agent-card">
+          <div class="rotation-agent-header">
+            <div>
+              ${agentNameMarkup(agent)}
+              <div class="agent-id">${escapeHtml(agent.agentId)}</div>
+            </div>
+            <div class="prompt-chips">
+              ${promptChip("scope", prompt.currentScopeKey)}
+              ${promptChip("source", prompt.lastSelectionSource)}
+            </div>
+          </div>
+          <div class="rotation-agent-grid">
+            <div>
+              <div class="agent-name">${escapeHtml(prompt.promptVariantLabel || prompt.promptVariantId || "n/a")}</div>
+              <div class="content-meta">${escapeHtml(prompt.lastSelectionRationale || "No rationale stored.")}</div>
+              <div class="content-meta">window ${formatNumber(prompt.actionsSinceRotation)} / ${formatNumber(prompt.rotateAfterActions || 0)} · last rotation ${escapeHtml(formatTime(prompt.lastRotationAt))}</div>
+            </div>
+            <div>
+              <div class="subtle">Buckets</div>
+              <div class="rotation-stack">${promptBucketSummary(prompt)}</div>
+            </div>
+            <div>
+              <div class="subtle">Recent events</div>
+              <div class="rotation-stack">${eventList || '<span class="subtle">No recent rotation events</span>'}</div>
+            </div>
+          </div>
+          <details>
+            <summary>Paths and full params</summary>
+            <div class="rotation-agent-grid rotation-agent-grid-tight">
+              <pre class="prompt-json">${escapeHtml(pathList.join("\n") || "No prompt rotation paths stored.")}</pre>
+              <pre class="prompt-json">${escapeHtml(JSON.stringify(prompt.promptParameters || {}, null, 2))}</pre>
+            </div>
+          </details>
+        </article>
+      `;
+    })
+    .join("");
+}
+
 function renderContent(agents, attribution) {
   const subtitle = document.getElementById("content-subtitle");
   const currentTable = document.getElementById("content-current-table");
   const recentTable = document.getElementById("content-recent-table");
-  const agentsWithPrompt = (agents || []).filter((agent) => agent.currentPrompt);
+  const agentsWithPrompt = collectAgentsWithPrompt(agents);
 
   if (!agentsWithPrompt.length) {
-    currentTable.innerHTML = `<tr><td colspan="5" class="subtle">No current prompt rotation state found.</td></tr>`;
+    currentTable.innerHTML = `<tr><td colspan="6" class="subtle">No current prompt rotation state found.</td></tr>`;
   } else {
     currentTable.innerHTML = agentsWithPrompt
       .map((agent) => {
         const prompt = agent.currentPrompt;
         const promptJson = JSON.stringify(prompt.promptParameters || {}, null, 2);
+        const debugPaths = [
+          prompt.statePath ? `state ${prompt.statePath}` : "",
+          prompt.auditPath ? `audit ${prompt.auditPath}` : ""
+        ]
+          .filter(Boolean)
+          .join("\n");
         return `
           <tr>
             <td>
@@ -268,6 +436,17 @@ function renderContent(agents, attribution) {
               <div class="content-meta">${escapeHtml(prompt.lastSelectionRationale || "No rationale stored.")}</div>
             </td>
             <td>
+              <div class="prompt-chips">
+                ${promptChip("scope", prompt.currentScopeKey)}
+                ${promptChip("source", prompt.lastSelectionSource)}
+              </div>
+              <div class="content-meta">selected ${escapeHtml(formatTime(prompt.lastSelectedAt))}</div>
+              <details>
+                <summary>Scoped buckets</summary>
+                <div class="rotation-stack">${promptBucketSummary(prompt)}</div>
+              </details>
+            </td>
+            <td>
               <div>${formatNumber(prompt.actionsSinceRotation)} / ${formatNumber(prompt.rotateAfterActions || 0)} actions</div>
               <div class="subtle">last action ${formatTime(prompt.lastActionAt)}</div>
             </td>
@@ -278,7 +457,18 @@ function renderContent(agents, attribution) {
                 <pre class="prompt-json">${escapeHtml(promptJson)}</pre>
               </details>
             </td>
-            <td>${formatTime(prompt.lastRotationAt)}</td>
+            <td>
+              <div>${formatTime(prompt.lastRotationAt)}</div>
+              <div class="content-meta">last selected ${formatTime(prompt.lastSelectedAt)}</div>
+              <details>
+                <summary>Recent rotation activity</summary>
+                <div class="rotation-stack">${promptRecentHistoryMarkup(prompt)}</div>
+              </details>
+              <details>
+                <summary>Paths</summary>
+                <pre class="prompt-json">${escapeHtml(debugPaths || "No prompt rotation paths stored.")}</pre>
+              </details>
+            </td>
           </tr>
         `;
       })
@@ -286,7 +476,7 @@ function renderContent(agents, attribution) {
   }
 
   const recentPublished = enrichRecentPublishedUrls(collectRecentPublished(agents), attribution);
-  subtitle.textContent = `Current prompt params plus ${formatNumber(recentPublished.length)} published posts, comments, and replies from agent runtime state.`;
+  subtitle.textContent = `Current scoped prompt rotation state plus ${formatNumber(recentPublished.length)} published posts, comments, and replies from agent runtime state.`;
   if (!recentPublished.length) {
     recentTable.innerHTML = `<tr><td colspan="5" class="subtle">No published posts, comments, or replies recorded in agent state yet.</td></tr>`;
     return;
@@ -549,6 +739,7 @@ async function refresh() {
   renderCoti(payload.coti);
   renderAttribution(payload.attribution, payload.config);
   renderContent(payload.agents, payload.attribution);
+  renderPromptRotation(payload.agents);
   renderManualBuilder(payload.config);
 }
 

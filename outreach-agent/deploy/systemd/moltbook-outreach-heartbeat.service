@@ -18,6 +18,8 @@ Environment=OUTREACH_AGENT_VENUE=moltbook
 Environment=MOLTBOOK_CREDENTIALS_PATH=__RUNTIME_DIR__/credentials.json
 Environment=MOLTBOOK_STATE_PATH=__RUNTIME_DIR__/state.json
 Environment=MOLTBOOK_HEARTBEAT_REPORT_PATH=__RUNTIME_DIR__/last-heartbeat.json
+Environment=OUTREACH_PROMPT_ROTATION_STATE_PATH=__RUNTIME_DIR__/prompt-rotation.json
+Environment=MOLTBOOK_LLM_DEBUG_DIR=__RUNTIME_DIR__/llm-debug
 EnvironmentFile=__ENV_FILE__
 ExecStartPre=/usr/bin/mkdir -p __RUNTIME_DIR__
 ExecStart=/usr/bin/env bash -lc 'exec 9>"__LOCK_FILE__"; if ! flock -n 9; then echo "Skipping heartbeat because another run is active."; exit 0; fi; exec node dist/src/index.js heartbeat'

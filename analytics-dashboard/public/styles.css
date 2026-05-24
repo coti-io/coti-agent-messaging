@@ -400,6 +400,76 @@ summary {
   white-space: pre-wrap;
 }
 
+.rotation-stack {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.rotation-line,
+.rotation-event {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(8, 17, 31, 0.42);
+  font-size: 12px;
+}
+
+.rotation-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rotation-agent-list {
+  display: grid;
+  gap: 16px;
+}
+
+#prompt-rotation-cards .card-value {
+  font-size: 20px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#prompt-rotation-cards .card-detail {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.rotation-agent-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(8, 17, 31, 0.32);
+}
+
+.rotation-agent-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.rotation-agent-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1fr;
+  gap: 14px;
+}
+
+.rotation-agent-grid-tight {
+  margin-top: 12px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.rotation-empty {
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+}
+
 @media (max-width: 900px) {
   .hero,
   .section-heading,
@@ -426,6 +496,17 @@ summary {
   .builder-wide,
   .builder-actions {
     grid-column: span 2;
+  }
+
+  .rotation-agent-header,
+  .rotation-agent-grid,
+  .rotation-agent-grid-tight {
+    display: block;
+  }
+
+  .rotation-agent-grid > * + *,
+  .rotation-agent-grid-tight > * + * {
+    margin-top: 12px;
   }
 }
 

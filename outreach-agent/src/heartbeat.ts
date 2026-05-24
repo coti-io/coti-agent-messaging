@@ -59,7 +59,10 @@ import {
 } from "./storage.js";
 import { saveOutreachRefToAttributionStore } from "./attribution-store.js";
 import type { OutreachRef } from "./outreach-attribution.js";
-import { recordPromptRotationAction } from "./prompt-rotation.js";
+import {
+  readPromptRotationDebugSnapshot,
+  recordPromptRotationAction
+} from "./prompt-rotation.js";
 import type { VenueOutcome } from "./venue.js";
 import { assertMoltbookVenueProvider, createVenueProvider } from "./venue-factory.js";
 export interface HeartbeatResult {
@@ -137,6 +140,53 @@ interface HeartbeatReport {
   }>;
   selectedWriteDecision?: GeneratedWriteDecision;
   engagementSummary?: EngagementSummary;
+  promptRotation?: {
+    statePath: string;
+    auditPath: string;
+    currentScopeKey?: string;
+    currentScope?: {
+      scopeKey: string;
+      currentPromptVariant?: string;
+      currentPromptLabel?: string;
+      actionsSinceRotation: number;
+      rotateAfterActions: number;
+      lastRotationAt?: string;
+      lastSelectionRationale?: string;
+      lastSelectionSource?: string;
+      lastSelectedAt?: string;
+      lastActionAt?: string;
+      lastPublishedAt?: string;
+    };
+    buckets: Array<{
+      scopeKey: string;
+      currentPromptVariant?: string;
+      currentPromptLabel?: string;
+      actionsSinceRotation: number;
+      rotateAfterActions: number;
+      lastRotationAt?: string;
+      lastSelectionRationale?: string;
+      lastSelectionSource?: string;
+      lastSelectedAt?: string;
+      lastActionAt?: string;
+      lastPublishedAt?: string;
+    }>;
+    recentHistory: Array<{
+      id: string;
+      scopeKey?: string;
+      status?: string;
+      eventType?: string;
+      promptVariantId?: string;
+      promptVariantLabel?: string;
+      selectionSource?: string;
+      reusedExisting?: boolean;
+      rotateAfterActions?: number;
+      actionsSinceRotation?: number;
+      selectionRationale?: string;
+      createdAt: string;
+      correlationId?: string;
+      debugInputPath?: string;
+    }>;
+  };
 }
 
 interface QueuedWriteJobMetadata {
@@ -373,6 +423,7 @@ export async function runHeartbeat(
     };
     state = await reconcilePendingWrites(
       venue,
+      config,
       me.agent?.name ?? home.your_account.name,
       state,
       report,
@@ -892,6 +943,29 @@ export async function runHeartbeat(
     throw error;
   } finally {
     finalizeHeartbeatAlerts(report, previousReport);
+    report.promptRotation = await readPromptRotationDebugSnapshot(config).then((snapshot) => ({
+      statePath: snapshot.statePath,
+      auditPath: snapshot.auditPath,
+      currentScopeKey: snapshot.currentScopeKey,
+      currentScope: snapshot.currentScope,
+      buckets: snapshot.buckets,
+      recentHistory: snapshot.recentHistory.map((entry) => ({
+        id: entry.id,
+        scopeKey: entry.scopeKey,
+        status: entry.status,
+        eventType: entry.eventType,
+        promptVariantId: entry.promptVariantId,
+        promptVariantLabel: entry.promptVariantLabel,
+        selectionSource: entry.selectionSource,
+        reusedExisting: entry.reusedExisting,
+        rotateAfterActions: entry.rotateAfterActions,
+        actionsSinceRotation: entry.actionsSinceRotation,
+        selectionRationale: entry.selectionRationale,
+        createdAt: entry.createdAt,
+        correlationId: entry.correlationId,
+        debugInputPath: entry.debugInputPath
+      }))
+    })).catch(() => undefined);
     report.finishedAt = new Date().toISOString();
     await saveHeartbeatReport(config.statePath, config.heartbeatReportPath, report);
   }
@@ -1120,7 +1194,9 @@ async function recordMoltbookPromptRotation(
   actionType: WriteCandidate["type"],
   pendingWrite: PendingWrite,
   decision: GeneratedWriteDecision,
-  status: "posted" | "commented" | "replied"
+  status: "posted" | "commented" | "replied" | "recovered" | "failed",
+  eventType: "published" | "recovered" | "failed",
+  createdAt = new Date().toISOString()
 ): Promise<void> {
   if (!pendingWrite.promptVariantId) {
     return;
@@ -1129,25 +1205,48 @@ async function recordMoltbookPromptRotation(
     config,
     selection: {
       variantId: pendingWrite.promptVariantId,
+      label: decision.promptVariantLabel,
       rationale: pendingWrite.promptVariantRationale ?? decision.promptVariantRationale ?? "",
       rotateAfterActions: decision.promptRotateAfterActions ?? 10,
-      reusedExisting: decision.promptRotationReusedExisting ?? true
+      reusedExisting: decision.promptRotationReusedExisting ?? true,
+      selectionSource:
+        decision.promptSelectionSource === "llm" || decision.promptSelectionSource === "deterministic_fallback"
+          ? decision.promptSelectionSource
+          : undefined,
+      selectedAt: createdAt,
+      selectionDebugPath: decision.promptSelectionDebugPath
     },
     entry: {
       id: `moltbook:${pendingWrite.id}:${status}`,
       venue: "moltbook",
       actionType,
-      createdAt: pendingWrite.createdAt,
+      scopeKey:
+        decision.promptRotationScopeKey === "moltbook:create_post" ||
+        decision.promptRotationScopeKey === "moltbook:comment_on_post" ||
+        decision.promptRotationScopeKey === "moltbook:reply_to_activity"
+          ? decision.promptRotationScopeKey
+          : undefined,
+      createdAt,
       status,
       promptProfileId: pendingWrite.promptProfileId,
       promptVariantId: pendingWrite.promptVariantId,
+      promptVariantLabel: decision.promptVariantLabel,
       promptParameters: pendingWrite.promptParameters,
       layout: pendingWrite.layout,
       messageStyle: pendingWrite.promptParameters?.messageStyle,
       technicalDepth: pendingWrite.promptParameters?.technicalDepth,
       tone: pendingWrite.promptParameters?.tone,
-      creativity: pendingWrite.promptParameters?.creativity
-    }
+      creativity: pendingWrite.promptParameters?.creativity,
+      selectionSource:
+        decision.promptSelectionSource === "llm" || decision.promptSelectionSource === "deterministic_fallback"
+          ? decision.promptSelectionSource
+          : undefined,
+      rotateAfterActions: decision.promptRotateAfterActions,
+      selectionRationale: pendingWrite.promptVariantRationale ?? decision.promptVariantRationale,
+      correlationId: pendingWrite.id,
+      debugInputPath: decision.promptSelectionDebugPath
+    },
+    eventType
   });
 }
 
@@ -1236,7 +1335,8 @@ async function executeDueActionJobs(
           writeMetadata.candidate.type,
           publishedWrite,
           writeMetadata.decision,
-          queuedWriteStatus(writeMetadata.candidate.type)
+          queuedWriteStatus(writeMetadata.candidate.type),
+          "published"
         );
         nextState = removeQueuedActionJob(
           removePendingWrite(recoverPendingWrite(nextState, publishedWrite), pendingWrite.id),
@@ -1248,6 +1348,14 @@ async function executeDueActionJobs(
         performed.push(writeMetadata.successMessage);
       } catch (error) {
         report.errors.push(toHeartbeatError(`publish:${writeMetadata.failureLabel}`, error));
+        await recordMoltbookPromptRotation(
+          config,
+          writeMetadata.candidate.type,
+          pendingWrite,
+          writeMetadata.decision,
+          "failed",
+          "failed"
+        ).catch(() => undefined);
         skipped.push(
           `skipped ${writeMetadata.failureLabel} because Moltbook publish failed: ${formatErrorMessage(error)}`
         );
@@ -1401,6 +1509,7 @@ function recoverPendingWrite(state: OutreachAgentState, pendingWrite: PendingWri
 
 async function reconcilePendingWrites(
   venue: MoltbookVenueProvider,
+  config: MoltbookRuntimeConfig,
   agentName: string | undefined,
   state: OutreachAgentState,
   report: HeartbeatReport,
@@ -1419,6 +1528,34 @@ async function reconcilePendingWrites(
     for (const pendingWrite of state.pendingWrites) {
       const recovered = await matchesPendingWrite(venue, profile, pendingWrite);
       if (recovered) {
+        if (pendingWrite.promptVariantId) {
+          await recordPromptRotationAction({
+            config,
+            eventType: "recovered",
+            entry: {
+              id: `moltbook:${pendingWrite.id}:recovered`,
+              venue: "moltbook",
+              actionType:
+                pendingWrite.type === "post"
+                  ? "create_post"
+                  : pendingWrite.type === "comment"
+                    ? "comment_on_post"
+                    : "reply_to_activity",
+              createdAt: new Date().toISOString(),
+              status: "recovered",
+              promptProfileId: pendingWrite.promptProfileId,
+              promptVariantId: pendingWrite.promptVariantId,
+              promptParameters: pendingWrite.promptParameters,
+              layout: pendingWrite.layout,
+              messageStyle: pendingWrite.promptParameters?.messageStyle,
+              technicalDepth: pendingWrite.promptParameters?.technicalDepth,
+              tone: pendingWrite.promptParameters?.tone,
+              creativity: pendingWrite.promptParameters?.creativity,
+              selectionRationale: pendingWrite.promptVariantRationale,
+              correlationId: pendingWrite.id
+            }
+          }).catch(() => undefined);
+        }
         nextState = removePendingWrite(recoverPendingWrite(nextState, pendingWrite), pendingWrite.id);
         report.reconciledPendingWrites.push({
           id: pendingWrite.id,

@@ -51,6 +51,7 @@ export interface GeneratedWriteDecision {
   fingerprint: string;
   promptProfileId?: string;
   promptVariantId?: string;
+  promptVariantLabel?: string;
   promptVariantRationale?: string;
   promptParameters?: PromptParameterSet;
   layout?: LayoutVariant;
@@ -59,6 +60,9 @@ export interface GeneratedWriteDecision {
   structuralFingerprint?: string;
   promptRotationReusedExisting?: boolean;
   promptRotateAfterActions?: number;
+  promptRotationScopeKey?: string;
+  promptSelectionSource?: string;
+  promptSelectionDebugPath?: string;
 }
 
 const MAX_POST_TITLE_CHARS = 110;
@@ -478,6 +482,7 @@ async function finalizeGeneratedDecision(input: {
     fingerprint: contentFingerprint(`${title ?? ""}\n${content}`),
     promptProfileId: input.resolvedProfile.id,
     promptVariantId: input.selectedVariant.variantId,
+    promptVariantLabel: input.selectedVariant.label,
     promptVariantRationale: input.selectedVariant.rationale,
     promptParameters: input.resolvedProfile.parameters,
     layout: input.resolvedProfile.parameters.layout,
@@ -485,7 +490,10 @@ async function finalizeGeneratedDecision(input: {
     outreachRef: input.ctaLink?.ref,
     structuralFingerprint: structuralFingerprint(`${title ?? ""}\n${content}`),
     promptRotationReusedExisting: input.selectedVariant.reusedExisting,
-    promptRotateAfterActions: input.selectedVariant.rotateAfterActions
+    promptRotateAfterActions: input.selectedVariant.rotateAfterActions,
+    promptRotationScopeKey: input.selectedVariant.scopeKey,
+    promptSelectionSource: input.selectedVariant.selectionSource,
+    promptSelectionDebugPath: input.selectedVariant.selectionDebugPath
   };
 }
 

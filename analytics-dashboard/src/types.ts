@@ -90,6 +90,8 @@ export interface AgentRecentPublished {
 
 export interface AgentCurrentPrompt {
   statePath?: string;
+  auditPath?: string;
+  currentScopeKey?: string;
   promptProfileId?: string;
   promptVariantId?: string;
   promptVariantLabel?: string;
@@ -108,7 +110,37 @@ export interface AgentCurrentPrompt {
   rotateAfterActions: number;
   lastRotationAt?: string;
   lastSelectionRationale?: string;
+  lastSelectionSource?: string;
+  lastSelectedAt?: string;
   lastActionAt?: string;
+  buckets?: Array<{
+    scopeKey: string;
+    promptVariantId?: string;
+    promptVariantLabel?: string;
+    actionsSinceRotation: number;
+    rotateAfterActions: number;
+    lastRotationAt?: string;
+    lastSelectionRationale?: string;
+    lastSelectionSource?: string;
+    lastSelectedAt?: string;
+    lastActionAt?: string;
+  }>;
+  recentHistory?: Array<{
+    id: string;
+    scopeKey?: string;
+    status?: string;
+    eventType?: string;
+    promptVariantId?: string;
+    promptVariantLabel?: string;
+    selectionSource?: string;
+    reusedExisting?: boolean;
+    rotateAfterActions?: number;
+    actionsSinceRotation?: number;
+    selectionRationale?: string;
+    createdAt: string;
+    correlationId?: string;
+    debugInputPath?: string;
+  }>;
 }
 
 export interface AnalyticsConfig {

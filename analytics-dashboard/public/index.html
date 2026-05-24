@@ -244,9 +244,10 @@
                   <tr>
                     <th>Agent</th>
                     <th>Current Variant</th>
+                    <th>Scope</th>
                     <th>Window</th>
                     <th>Params</th>
-                    <th>Last Rotation</th>
+                    <th>Rotation Debug</th>
                   </tr>
                 </thead>
                 <tbody id="content-current-table"></tbody>
@@ -266,6 +267,24 @@
                 <tbody id="content-recent-table"></tbody>
               </table>
             </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel" id="prompt-rotation-section">
+        <details class="collapsible" data-section="prompt-rotation" open>
+          <summary class="collapsible-summary">
+            <div class="section-heading">
+              <div>
+                <h2>Prompt Rotation</h2>
+                <p class="subtle" id="prompt-rotation-subtitle">Scoped rotation state, recent events, and live debug paths.</p>
+              </div>
+            </div>
+            <span class="collapsible-indicator" aria-hidden="true">▼</span>
+          </summary>
+          <div class="collapsible-body">
+            <div class="grid cards compact" id="prompt-rotation-cards"></div>
+            <div class="rotation-agent-list" id="prompt-rotation-agents"></div>
           </div>
         </details>
       </section>

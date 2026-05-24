@@ -453,9 +453,13 @@ export async function loadRuntimeConfig(
     promptProfileId,
     promptProfile,
     promptRotationStatePath:
-      getOptionalEnv("OUTREACH_PROMPT_ROTATION_STATE_PATH") ??
-      defaultPromptRotationStatePath(paths.packageRoot),
-    llmDebugDir: getOptionalEnv("MOLTBOOK_LLM_DEBUG_DIR") ?? defaultLlmDebugDir(paths.packageRoot),
+      resolveHomePath(
+        getOptionalEnv("OUTREACH_PROMPT_ROTATION_STATE_PATH") ??
+          defaultPromptRotationStatePath(paths.packageRoot)
+      ),
+    llmDebugDir: resolveHomePath(
+      getOptionalEnv("MOLTBOOK_LLM_DEBUG_DIR") ?? defaultLlmDebugDir(paths.packageRoot)
+    ),
     attributionCampaignId,
     attributionDbPath: getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH"),
     ctaBaseUrl:

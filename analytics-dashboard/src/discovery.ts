@@ -89,6 +89,11 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) ? value : undefined;
 }
 
+function promptRotationAuditPath(statePath: string): string {
+  const parsed = path.parse(statePath);
+  return path.join(parsed.dir, `${parsed.name}.audit.jsonl`);
+}
+
 function extractPromptParameterSummary(entry: Record<string, unknown> | undefined): {
   promptParameters: Record<string, unknown>;
   messageStyle?: string;
@@ -137,6 +142,7 @@ async function resolvePromptRotationStatePath(paths: AgentRuntimePaths, agentRoo
     }
   }
 
+  candidatePaths.add(path.join(paths.runtimeDir, "prompt-rotation.json"));
   candidatePaths.add(path.join(paths.agentDir, ".data", "prompt-rotation.json"));
   candidatePaths.add(path.join(path.dirname(paths.runtimeDir), "outreach-agent", ".data", "prompt-rotation.json"));
   candidatePaths.add(path.join(path.dirname(agentRoot), "repo", "outreach-agent", ".data", "prompt-rotation.json"));
@@ -164,12 +170,39 @@ async function readCurrentPrompt(
   }
 
   const state = asRecord(promptJson.value.state);
+  const bucketsRecord = asRecord(state?.buckets);
+  const bucketEntries = Object.entries(bucketsRecord ?? {})
+    .map(([scopeKey, bucketValue]) => {
+      const bucket = asRecord(bucketValue);
+      if (!bucket) {
+        return undefined;
+      }
+      return {
+        scopeKey,
+        promptVariantId: asOptionalString(bucket.currentPromptVariant),
+        promptVariantLabel: asOptionalString(bucket.currentPromptLabel),
+        actionsSinceRotation: asOptionalNumber(bucket.actionsSinceRotation) ?? 0,
+        rotateAfterActions: asOptionalNumber(bucket.rotateAfterActions) ?? 0,
+        lastRotationAt: asOptionalString(bucket.lastRotationAt),
+        lastSelectionRationale: asOptionalString(bucket.lastSelectionRationale),
+        lastSelectionSource: asOptionalString(bucket.lastSelectionSource),
+        lastSelectedAt: asOptionalString(bucket.lastSelectedAt),
+        lastActionAt: asOptionalString(bucket.lastActionAt)
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    .sort((left, right) => left.scopeKey.localeCompare(right.scopeKey));
   const history = Array.isArray(promptJson.value.history)
     ? promptJson.value.history.filter((entry): entry is Record<string, unknown> => isRecord(entry))
     : [];
+  const currentScopeKey = asOptionalString(state?.currentScopeKey);
   const currentVariantId = asOptionalString(state?.currentPromptVariant);
   const latestEntry =
-    [...history].reverse().find((entry) => asOptionalString(entry.promptVariantId) === currentVariantId) ??
+    [...history].reverse().find(
+      (entry) =>
+        (currentScopeKey ? asOptionalString(entry.scopeKey) === currentScopeKey : true) &&
+        asOptionalString(entry.promptVariantId) === currentVariantId
+    ) ??
     [...history].reverse().find((entry) => Boolean(asOptionalString(entry.promptVariantId)));
 
   if (!currentVariantId && !latestEntry && !state) {
@@ -179,6 +212,8 @@ async function readCurrentPrompt(
   const summary = extractPromptParameterSummary(latestEntry);
   return {
     statePath,
+    auditPath: promptRotationAuditPath(statePath),
+    currentScopeKey,
     promptProfileId: asOptionalString(latestEntry?.promptProfileId),
     promptVariantId: currentVariantId ?? asOptionalString(latestEntry?.promptVariantId),
     promptVariantLabel: asOptionalString(latestEntry?.promptVariantLabel),
@@ -197,7 +232,29 @@ async function readCurrentPrompt(
     rotateAfterActions: asOptionalNumber(state?.rotateAfterActions) ?? 0,
     lastRotationAt: asOptionalString(state?.lastRotationAt),
     lastSelectionRationale: asOptionalString(state?.lastSelectionRationale),
-    lastActionAt: asOptionalString(latestEntry?.createdAt)
+    lastSelectionSource: asOptionalString(state?.lastSelectionSource),
+    lastSelectedAt: asOptionalString(state?.lastSelectedAt),
+    lastActionAt: asOptionalString(state?.lastActionAt) ?? asOptionalString(latestEntry?.createdAt),
+    buckets: bucketEntries,
+    recentHistory: history
+      .slice(-10)
+      .map((entry) => ({
+        id: asOptionalString(entry.id) ?? "unknown",
+        scopeKey: asOptionalString(entry.scopeKey),
+        status: asOptionalString(entry.status),
+        eventType: asOptionalString(entry.eventType),
+        promptVariantId: asOptionalString(entry.promptVariantId),
+        promptVariantLabel: asOptionalString(entry.promptVariantLabel),
+        selectionSource: asOptionalString(entry.selectionSource),
+        reusedExisting:
+          typeof entry.reusedExisting === "boolean" ? entry.reusedExisting : undefined,
+        rotateAfterActions: asOptionalNumber(entry.rotateAfterActions),
+        actionsSinceRotation: asOptionalNumber(entry.actionsSinceRotation),
+        selectionRationale: asOptionalString(entry.selectionRationale),
+        createdAt: asOptionalString(entry.createdAt) ?? new Date(0).toISOString(),
+        correlationId: asOptionalString(entry.correlationId),
+        debugInputPath: asOptionalString(entry.debugInputPath)
+      }))
   };
 }
 

@@ -167,6 +167,15 @@ ${listen_directives}
         alias /var/www/${PUBLIC_HOST}${TRACKING_PATH}/index.html;
     }
 
+    location = ${TRACKING_PATH}/sdk {
+        return 302 ${TRACKING_PATH}/sdk/$is_args$args;
+    }
+
+    location = ${TRACKING_PATH}/sdk/ {
+        default_type text/html;
+        alias /var/www/${PUBLIC_HOST}${TRACKING_PATH}/sdk/index.html;
+    }
+
     $(write_analytics_location)
 
     location / {
@@ -309,12 +318,64 @@ write_tracking_page() {
         color: #dbe7ff;
         border: 1px solid #43537f;
       }
+      .quickstart {
+        margin-top: 24px;
+        padding: 18px;
+        border: 1px solid #263152;
+        border-radius: 12px;
+        background: #0d1430;
+      }
+      .quickstart p {
+        margin: 0 0 12px;
+        color: #dbe7ff;
+        font-weight: 600;
+      }
+      .quickstart pre {
+        margin: 0 0 12px;
+        padding: 14px;
+        overflow-x: auto;
+        border-radius: 10px;
+        background: #060b18;
+        border: 1px solid #263152;
+      }
+      .quickstart code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .copy-row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .copy-row button {
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-weight: 600;
+        cursor: pointer;
+        background: #69a4ff;
+        color: #08101f;
+      }
+      .copy-row button.copied {
+        background: #3dd68c;
+      }
       .meta {
         margin-top: 22px;
         padding-top: 20px;
         border-top: 1px solid #263152;
         font-size: 14px;
         color: #8fa2c7;
+      }
+      .dev-tools {
+        margin-top: 14px;
+        font-size: 13px;
+      }
+      .dev-tools a {
+        color: #9eb6e8;
       }
       code {
         color: #ffffff;
@@ -334,13 +395,23 @@ write_tracking_page() {
           <li>SDK and MCP integration path</li>
           <li>Starter grant API under <code>${PUBLIC_PREFIX}</code></li>
         </ul>
+        <div class="quickstart">
+          <p>Send your first private message in one command:</p>
+          <pre><code id="quickstart-cmd"></code></pre>
+          <div class="copy-row">
+            <button id="copy-cmd" type="button">Copy command</button>
+            <span id="copy-status"></span>
+          </div>
+        </div>
         <div class="actions">
-          <a class="button primary" href="${REPO_URL}">View SDK</a>
-          <a class="button secondary" href="${PUBLIC_PREFIX}/health">Grant health</a>
+          <a class="button primary" id="view-sdk-link" href="${REPO_URL}">View SDK</a>
         </div>
         <div class="meta">
           Tracking ref: <code id="ref-value">none</code>
           <div id="click-status"></div>
+          <div class="dev-tools">
+            Ops: <a href="${PUBLIC_PREFIX}/health">Grant health</a>
+          </div>
         </div>
       </section>
     </main>
@@ -348,6 +419,32 @@ write_tracking_page() {
       const params = new URLSearchParams(window.location.search);
       const ref = params.get("ref");
       const clickStatus = document.getElementById("click-status");
+      const defaultRecipient = "0x000000000000000000000000000000000000c0a1";
+      const baseCommand =
+        "npx -p @coti-io/coti-sdk-private-messaging coti-private-messaging-send --init --to " +
+        defaultRecipient +
+        ' --text "hello from coti"';
+      const quickstartCommand = ref ? baseCommand + " --ref " + ref : baseCommand;
+      document.getElementById("quickstart-cmd").textContent = quickstartCommand;
+
+      const viewSdkLink = document.getElementById("view-sdk-link");
+      if (ref) {
+        viewSdkLink.href = "${TRACKING_PATH}/sdk?ref=" + encodeURIComponent(ref);
+      }
+
+      const copyButton = document.getElementById("copy-cmd");
+      const copyStatus = document.getElementById("copy-status");
+      copyButton.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(quickstartCommand);
+          copyButton.classList.add("copied");
+          copyButton.textContent = "Copied";
+          copyStatus.textContent = "Run this in your terminal.";
+        } catch {
+          copyStatus.textContent = "Copy failed. Select the command manually.";
+        }
+      });
+
       if (ref) {
         document.getElementById("ref-value").textContent = ref;
         const metadata = {
@@ -374,6 +471,46 @@ write_tracking_page() {
         }).catch(() => {
           clickStatus.textContent = "";
         });
+      }
+    </script>
+  </body>
+</html>
+HTML
+}
+
+write_sdk_redirect_page() {
+  local target_dir="/var/www/${PUBLIC_HOST}${TRACKING_PATH}/sdk"
+  sudo -n mkdir -p "$target_dir"
+  sudo -n tee "$target_dir/index.html" >/dev/null <<HTML
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="refresh" content="0; url=${REPO_URL}" />
+    <title>Redirecting to COTI SDK</title>
+  </head>
+  <body>
+    <p>Redirecting to the SDK repository...</p>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const ref = params.get("ref");
+      if (ref) {
+        fetch("${PUBLIC_PREFIX}/attribution/event", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          keepalive: true,
+          body: JSON.stringify({
+            ref,
+            type: "click",
+            venue: "sdk_view",
+            metadata: { path: window.location.pathname }
+          })
+        }).finally(() => {
+          window.location.replace("${REPO_URL}");
+        });
+      } else {
+        window.location.replace("${REPO_URL}");
       }
     </script>
   </body>
@@ -441,6 +578,7 @@ install_packages
 upsert_env_var "$DEPLOY_PATH/.env" "STARTER_GRANT_SERVICE_TRUST_PROXY" "true"
 upsert_env_var "$DEPLOY_PATH/.env" "STARTER_GRANT_SERVICE_BIND_HOST" "127.0.0.1"
 write_tracking_page
+write_sdk_redirect_page
 write_analytics_auth_file
 write_nginx_config
 reload_nginx

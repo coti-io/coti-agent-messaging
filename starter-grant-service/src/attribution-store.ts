@@ -224,6 +224,39 @@ export class StarterGrantAttributionStore {
     }
   }
 
+  async upsertWalletAttribution(input: {
+    walletAddress: string;
+    refId: string;
+    claimedAt?: Date;
+  }): Promise<void> {
+    const db = await this.open();
+    try {
+      await db.transaction(async () => {
+        await upsertWalletAttribution(db, input);
+      });
+    } finally {
+      await db.close();
+    }
+  }
+
+  async lookupRefForWallet(walletAddress: string): Promise<string | undefined> {
+    const db = await this.open();
+    try {
+      const rows = await db.all<{ ref_id: string }>(
+        `
+          SELECT ref_id
+          FROM wallet_attribution
+          WHERE wallet_address = ?
+          LIMIT 1
+        `,
+        [walletAddress.toLowerCase()]
+      );
+      return rows[0]?.ref_id;
+    } finally {
+      await db.close();
+    }
+  }
+
   async summarize(input: { campaignId?: string } = {}): Promise<StarterGrantAttributionSummary> {
     const db = await this.open();
     try {
@@ -378,6 +411,16 @@ async function ensureAttributionSchema(db: SqliteDatabase): Promise<void> {
       ON attribution_events(ref_id, created_at);
     CREATE INDEX IF NOT EXISTS attribution_events_type_idx
       ON attribution_events(event_type, created_at);
+
+    CREATE TABLE IF NOT EXISTS wallet_attribution (
+      wallet_address TEXT PRIMARY KEY,
+      ref_id TEXT NOT NULL,
+      claimed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS wallet_attribution_ref_idx
+      ON wallet_attribution(ref_id, claimed_at);
   `);
   await ensureColumn(db, "outreach_refs", "remote_content_url", "TEXT");
   await ensureColumn(db, "outreach_refs", "attribution_mode", "TEXT");
@@ -473,6 +516,30 @@ async function ensureColumn(
     return;
   }
   await db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
+}
+
+async function upsertWalletAttribution(
+  db: SqliteDatabase,
+  input: {
+    walletAddress: string;
+    refId: string;
+    claimedAt?: Date;
+  }
+): Promise<void> {
+  const walletAddress = input.walletAddress.toLowerCase();
+  const refId = validateAttributionRefId(input.refId);
+  const claimedAt = (input.claimedAt ?? new Date()).toISOString();
+  await db.run(
+    `
+      INSERT INTO wallet_attribution(wallet_address, ref_id, claimed_at, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(wallet_address) DO UPDATE SET
+        ref_id = excluded.ref_id,
+        claimed_at = excluded.claimed_at,
+        updated_at = excluded.updated_at
+    `,
+    [walletAddress, refId, claimedAt, claimedAt]
+  );
 }
 
 async function recordAttributionEvent(

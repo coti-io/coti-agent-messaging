@@ -442,10 +442,158 @@ test("manual ref registration persists refs for later public click events", asyn
   }
 });
 
-test("public attribution events reject non-click traffic when auth is required", async () => {
+test("public attribution events allow sdk funnel events after grant claim indexes wallet", async () => {
+  const refId = "manual-twitter-ref";
+  const wallet = Wallet.createRandom();
+  const service = await startTestServer(
+    {
+      authToken: "secret-token",
+      attributionDbPath: path.join(os.tmpdir(), `starter-grant-public-event-${Date.now()}-${Math.random()}.sqlite`)
+    },
+    {
+      funder: {
+        async getFundingAvailability() {
+          return {
+            funderAddress: "0xfunder",
+            onChainBalanceWei: "1000",
+            reservedPendingAmountWei: "0",
+            availableBalanceWei: "1000",
+            estimatedGasCostWei: "1",
+            requiredBalanceWei: "26",
+            hasSufficientBalance: true
+          };
+        },
+        async createStarterGrantTransfer() {
+          return {
+            transactionHash: "0xgrant",
+            waitForConfirmation: async () => undefined
+          };
+        }
+      }
+    }
+  );
+
+  try {
+    const registerResponse = await fetch(`${service.baseUrl}/attribution/ref`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer secret-token"
+      },
+      body: JSON.stringify({
+        outreachRef: buildOutreachRef(refId)
+      })
+    });
+    assert.equal(registerResponse.status, 201);
+
+    const challengeResponse = await fetch(`${service.baseUrl}/challenge`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        walletAddress: wallet.address,
+        installId: "install-public-pm",
+        ref: refId
+      })
+    });
+    assert.equal(challengeResponse.status, 200);
+    const challenge = await challengeResponse.json();
+    const claimPayload = String(challenge.claimPayload);
+    const claimResponse = await fetch(`${service.baseUrl}/claim`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        challengeId: challenge.challengeId,
+        walletAddress: wallet.address,
+        installId: "install-public-pm",
+        challengeAnswer: solveChallengePrompt(String(challenge.prompt)),
+        claimPayload,
+        signature: await wallet.signMessage(claimPayload)
+      })
+    });
+    assert.equal(claimResponse.status, 200);
+
+    const skillResponse = await fetch(`${service.baseUrl}/attribution/event`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ref: refId,
+        type: "skill_usage",
+        skillId: "private-message-send",
+        walletAddress: wallet.address
+      })
+    });
+    assert.equal(skillResponse.status, 202);
+
+    const pmResponse = await fetch(`${service.baseUrl}/attribution/event`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ref: refId,
+        type: "private_message_received",
+        walletAddress: wallet.address,
+        metadata: {
+          transactionHash: "0xpm",
+          messageId: "1"
+        }
+      })
+    });
+    assert.equal(pmResponse.status, 202);
+  } finally {
+    await service.close();
+  }
+});
+
+test("public sdk attribution events reject wallets that have not claimed with the ref", async () => {
   const service = await startTestServer({
     authToken: "secret-token",
-    attributionDbPath: path.join(os.tmpdir(), `starter-grant-public-event-${Date.now()}-${Math.random()}.sqlite`)
+    attributionDbPath: path.join(
+      os.tmpdir(),
+      `starter-grant-public-event-reject-wallet-${Date.now()}-${Math.random()}.sqlite`
+    )
+  });
+
+  try {
+    const registerResponse = await fetch(`${service.baseUrl}/attribution/ref`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer secret-token"
+      },
+      body: JSON.stringify({
+        outreachRef: buildOutreachRef("manual-twitter-ref")
+      })
+    });
+    assert.equal(registerResponse.status, 201);
+
+    const response = await fetch(`${service.baseUrl}/attribution/event`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ref: "manual-twitter-ref",
+        type: "private_message_received",
+        walletAddress: "0x0000000000000000000000000000000000000001"
+      })
+    });
+    assert.equal(response.status, 403);
+  } finally {
+    await service.close();
+  }
+});
+
+test("public attribution events reject unsupported types when auth is required", async () => {
+  const service = await startTestServer({
+    authToken: "secret-token",
+    attributionDbPath: path.join(os.tmpdir(), `starter-grant-public-event-reject-${Date.now()}-${Math.random()}.sqlite`)
   });
 
   try {
@@ -456,8 +604,7 @@ test("public attribution events reject non-click traffic when auth is required",
       },
       body: JSON.stringify({
         ref: "manual-twitter-ref",
-        type: "skill_usage",
-        skillId: "private-message-send"
+        type: "grant_challenge"
       })
     });
     assert.equal(response.status, 401);

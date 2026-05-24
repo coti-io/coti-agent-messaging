@@ -380,8 +380,14 @@ export async function startStarterGrantService(
           return;
         }
 
+        const publicAttributionEventTypes = new Set([
+          "click",
+          "private_message_received",
+          "skill_usage"
+        ]);
+
         if (!isAuthorized) {
-          if (event.type !== "click") {
+          if (!publicAttributionEventTypes.has(event.type)) {
             writeJsonResponse(response, jsonResponse(401, { error: "Unauthorized starter grant request." }));
             return;
           }
@@ -392,6 +398,15 @@ export async function startStarterGrantService(
           if (!(await attributionStore.hasOutreachRef(refId))) {
             writeJsonResponse(response, jsonResponse(404, { error: "Unknown attribution ref." }));
             return;
+          }
+          try {
+            await assertPublicFunnelWalletAttribution(attributionStore, refId, event);
+          } catch (error) {
+            if (error instanceof HttpError) {
+              writeJsonResponse(response, jsonResponse(error.status, { error: error.message }));
+              return;
+            }
+            throw error;
           }
         } else {
           await persistOutreachRef(attributionStore, attribution.outreachRef, logger);
@@ -533,6 +548,16 @@ export async function startStarterGrantService(
             },
             logger
           );
+          if (claim.status === "claimed" && attributionStore) {
+            await attributionStore
+              .upsertWalletAttribution({
+                walletAddress: claim.walletAddress,
+                refId: claimRefId
+              })
+              .catch((error) => {
+                logger?.error?.("wallet attribution index update failed", error);
+              });
+          }
         }
         writeJsonResponse(
           response,
@@ -618,6 +643,33 @@ export async function startStarterGrantService(
         });
       })
   };
+}
+
+async function assertPublicFunnelWalletAttribution(
+  attributionStore: StarterGrantAttributionStore,
+  refId: string,
+  event: StarterGrantAttributionEventInput
+): Promise<void> {
+  if (event.type !== "private_message_received" && event.type !== "skill_usage") {
+    return;
+  }
+
+  const walletAddress = event.walletAddress?.trim();
+  if (!walletAddress) {
+    throw new HttpError(400, "walletAddress is required for SDK attribution events.");
+  }
+
+  const mappedRef = await attributionStore.lookupRefForWallet(walletAddress);
+  if (!mappedRef) {
+    throw new HttpError(
+      403,
+      "Wallet is not attributed to this outreach ref. Claim the starter grant with --ref first."
+    );
+  }
+
+  if (mappedRef !== refId) {
+    throw new HttpError(403, "Wallet is attributed to a different outreach ref.");
+  }
 }
 
 async function persistOutreachRef(

@@ -142,7 +142,24 @@ function resolveHomePath(relativePath: string): string {
     return path.join(homeDir, relativePath.slice(2));
   }
 
+  if (path.isAbsolute(relativePath)) {
+    return relativePath;
+  }
+
   return relativePath;
+}
+
+export function resolveRedditMemoryPath(rawPath?: string): string {
+  const agentRoot = getOutreachAgentRoot();
+  const configured = rawPath?.trim();
+  if (!configured) {
+    return path.join(agentRoot, ".data", "reddit-memory.json");
+  }
+  if (path.isAbsolute(configured)) {
+    return configured;
+  }
+  const normalized = configured.replace(/^outreach-agent[/\\]/, "").replace(/^\.\//, "");
+  return path.resolve(agentRoot, normalized);
 }
 
 function defaultRedditBrowserBridgeDir(packageRoot: string): string {
@@ -588,9 +605,7 @@ export function buildRedditOperatingAgentConfig(packageRoot: string): RedditOper
     maxJitterMinutes: parseNumber(process.env.OUTREACH_REDDIT_MAX_JITTER_MINUTES, 67),
     readController: parseRedditReadController(process.env.OUTREACH_REDDIT_READ_CONTROLLER),
     dryRunDefault: parseBoolean(process.env.OUTREACH_REDDIT_SESSION_DRY_RUN, true),
-    memoryPath: resolveHomePath(
-      process.env.OUTREACH_REDDIT_MEMORY_PATH ?? defaultRedditMemoryPath(packageRoot)
-    )
+    memoryPath: resolveRedditMemoryPath(process.env.OUTREACH_REDDIT_MEMORY_PATH)
   };
 }
 

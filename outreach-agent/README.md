@@ -267,7 +267,7 @@ OUTREACH_REDDIT_MAX_ACTIONS_PER_DAY=4
 OUTREACH_REDDIT_MIN_JITTER_MINUTES=18
 OUTREACH_REDDIT_MAX_JITTER_MINUTES=67
 OUTREACH_REDDIT_SESSION_DRY_RUN=true
-OUTREACH_REDDIT_MEMORY_PATH=./outreach-agent/.data/reddit-memory.json
+OUTREACH_REDDIT_MEMORY_PATH=.data/reddit-memory.json
 ```
 
 Browser worker setup:
@@ -284,7 +284,11 @@ OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=.browser/reddit-storage-state.json
 npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
 ```
 
-`reddit:login` opens a Playwright browser, lets you log in manually, checks `/api/me.json` to confirm the session is authenticated, and saves the Playwright storage state to the configured path. Copy that file to the server if you want the headless worker there to reuse the same session.
+`reddit:login` opens a visible Playwright browser, lets you log in manually, checks `/api/me.json` to confirm the session is authenticated, and saves the Playwright storage state to the configured path. Copy that file to the server if you want the browser worker there to reuse the same session.
+
+Reddit blocks headless browser automation ("network security"). Run the worker with a visible browser (`OUTREACH_REDDIT_BROWSER_HEADLESS=false`, or use `npm run outreach:reddit:browser-worker:local` from the repo root). On WSL, set `DISPLAY=:0` so the browser can open on your Windows desktop.
+
+Comment/reply publish uses `old.reddit.com` forms (reliable) and verifies the comment appears before reporting success.
 
 The worker uses that stored Playwright browser session. If Reddit redirects to login, shows a challenge, or changes the editor UI enough that submission cannot be completed, the worker fails loudly and writes a typed error response instead of trying to sneak around it.
 

@@ -66,7 +66,7 @@ function printUsage(): void {
   coti-outreach-agent reddit-scan [--input FILE] [--history FILE] [--rules FILE] [--output FILE]
   coti-outreach-agent reddit-evaluate --history FILE
   coti-outreach-agent reddit-publish --input FILE
-  coti-outreach-agent reddit-browser-login [--storage-state FILE] [--startup-url URL] [--headless]
+  coti-outreach-agent reddit-browser-login [--storage-state FILE] [--startup-url URL]
   coti-outreach-agent reddit-browser-worker
   coti-outreach-agent reddit-session [--dry-run | --live] [--once] [--max-actions 1] [--subreddits sales,SaaS]
   coti-outreach-agent attribution-summary [--db FILE | --refs FILE --events FILE]

@@ -78,6 +78,7 @@ interface RedditBrowserWorkerStatus {
 }
 
 const DEFAULT_BROWSER_BASE_URL = "https://www.reddit.com";
+const OLD_REDDIT_BASE_URL = "https://old.reddit.com";
 const COMMENT_URL_PATTERN = /\/comments\/([^/?#]+)(?:\/[^/?#]+)?(?:\/([^/?#]+))?/i;
 const LOGIN_URL_PATTERN = /\/login\b|\/register\b/i;
 const ANTIBOT_URL_PATTERN = /captcha|challenge|verify/i;
@@ -126,7 +127,7 @@ export function resolveRedditBrowserWorkerConfig(): RedditBrowserWorkerConfig {
     statusPath: path.join(bridgeDir, "status.json"),
     pollIntervalMs: parseNumber(process.env.OUTREACH_REDDIT_BROWSER_POLL_INTERVAL_MS, 500),
     requestTimeoutMs: parseNumber(process.env.OUTREACH_REDDIT_BROWSER_REQUEST_TIMEOUT_MS, 45_000),
-    headless: parseBoolean(process.env.OUTREACH_REDDIT_BROWSER_HEADLESS, true),
+    headless: parseBoolean(process.env.OUTREACH_REDDIT_BROWSER_HEADLESS, false),
     baseUrl: process.env.OUTREACH_REDDIT_BROWSER_BASE_URL ?? DEFAULT_BROWSER_BASE_URL,
     executablePath: getOptionalEnv("OUTREACH_REDDIT_BROWSER_EXECUTABLE_PATH"),
     channel: getOptionalEnv("OUTREACH_REDDIT_BROWSER_CHANNEL"),
@@ -465,33 +466,118 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
     if (request.action.type !== "comment_on_post" && request.action.type !== "reply_to_comment") {
       throw new RedditControllerConfigurationError("Expected comment/reply action.");
     }
-    const targetUrl = resolveRequestUrl(this.config.baseUrl, request, isReply);
-    await this.gotoAndGuard(page, targetUrl);
-    if (isReply) {
-      await this.maybeClickFirst(page, [
-        'button:has-text("Reply")',
-        '[data-testid="comment_reply_button"]'
-      ]);
-    } else {
-      await this.maybeClickFirst(page, [
-        'button:has-text("Add a comment")',
-        'button:has-text("Comment")'
-      ]);
+    const content = request.action.content ?? "";
+    if (!content.trim()) {
+      throw new RedditControllerConfigurationError("Reddit comment/reply requires action.content.");
     }
-    await this.fillRichTextEditor(page, request.action.content ?? "");
-    await this.clickEnabledButton(
-      page,
-      isReply
-        ? ['button:has-text("Reply")', 'button[type="submit"]:has-text("Reply")']
-        : ['button:has-text("Comment")', 'button[type="submit"]:has-text("Comment")'],
-      isReply
-        ? "Reddit browser worker could not find the submit Reply button."
-        : "Reddit browser worker could not find the submit Comment button."
-    );
-    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
+
+    try {
+      return await this.submitCommentViaOldReddit(page, request, isReply, content);
+    } catch (error) {
+      if (
+        error instanceof RedditLoginRequiredError ||
+        error instanceof RedditAntiBotChallengeError ||
+        error instanceof RedditControllerConfigurationError
+      ) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new RedditBrowserSubmitError(
+        `Reddit browser worker could not publish the comment via old.reddit.com: ${message}`,
+        error
+      );
+    }
+  }
+
+  private async submitCommentViaOldReddit(
+    page: Page,
+    request: RedditBrowserBridgeRequest,
+    isReply: boolean,
+    content: string
+  ): Promise<{
+    remoteContentId?: string;
+    remoteContentUrl: string;
+    raw: unknown;
+  }> {
+    const threadUrl = resolveOldRedditThreadUrl(request, isReply);
+    await this.gotoAndGuard(page, threadUrl);
+    await page.waitForLoadState("domcontentloaded");
+
+    if (isReply) {
+      await this.openOldRedditReplyForm(page, request);
+    }
+
+    const textarea = page.locator("form.usertext textarea[name='text']").first();
+    if (!(await textarea.isVisible({ timeout: 10_000 }).catch(() => false))) {
+      throw new RedditBrowserEditorError("old.reddit comment form was not available.");
+    }
+    await textarea.fill(content);
+    await page.locator("form.usertext button[type='submit']").first().click();
+    const permalink = await this.waitForOldRedditCommentPermalink(page, content);
     await this.guardPage(page);
     await this.persistStorageState();
-    return this.buildSubmitResult(page, request.action.type, request.action.content);
+    const remoteContentUrl = normalizeOldRedditPermalink(permalink, this.config.baseUrl);
+    return {
+      remoteContentId: extractRemoteContentId(remoteContentUrl, request.action.type as RedditPublishableActionType),
+      remoteContentUrl,
+      raw: {
+        publishSurface: "old.reddit",
+        pageUrl: page.url(),
+        permalink
+      }
+    };
+  }
+
+  private async openOldRedditReplyForm(page: Page, request: RedditBrowserBridgeRequest): Promise<void> {
+    if (request.action.type !== "reply_to_comment") {
+      return;
+    }
+    const commentId = request.action.candidateId;
+    const replyLink = page.locator(`form[id^="commentform"] a[data-event-action="comment"]`).filter({
+      has: page.locator(`input[name="parent"][value="t1_${commentId}"], input[name="parent"][value="${commentId}"]`)
+    });
+    if (await replyLink.count()) {
+      await replyLink.first().click();
+      return;
+    }
+    const fallback = page.locator(`a[data-event-action="comment"][href*="${commentId}"]`).first();
+    if (await fallback.isVisible().catch(() => false)) {
+      await fallback.click();
+      return;
+    }
+    throw new RedditBrowserEditorError(`old.reddit reply form for comment ${commentId} was not available.`);
+  }
+
+  private async waitForOldRedditCommentPermalink(page: Page, content: string): Promise<string> {
+    const snippet = commentVerificationSnippet(content);
+    const deadline = Date.now() + this.config.requestTimeoutMs;
+    while (Date.now() < deadline) {
+      const permalink = await page
+        .evaluate((needle) => {
+          const normalized = needle.toLowerCase();
+          const bodies = Array.from(document.querySelectorAll(".comment .usertext-body"));
+          for (const body of bodies) {
+            const text = body.textContent?.trim().toLowerCase() ?? "";
+            if (!text.includes(normalized)) {
+              continue;
+            }
+            const comment = body.closest(".comment");
+            const link = comment?.querySelector("a.bylink[href*='/comments/']") as HTMLAnchorElement | null;
+            if (link?.href) {
+              return link.href;
+            }
+          }
+          return undefined;
+        }, snippet)
+        .catch(() => undefined);
+      if (permalink) {
+        return permalink;
+      }
+      await page.waitForTimeout(1_000);
+    }
+    throw new RedditBrowserSubmitError(
+      "Reddit browser worker submitted the comment form, but the comment did not appear on the thread."
+    );
   }
 
   private async gotoAndGuard(page: Page, url: string): Promise<void> {
@@ -538,33 +624,52 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
 
   private async fillRichTextEditor(page: Page, value: string): Promise<void> {
     const selectors = [
+      "shreddit-composer [contenteditable='true']",
+      "comment-composer-host [contenteditable='true']",
+      '[data-testid="comment-composer"] [contenteditable="true"]',
+      '[aria-label*="comment" i][contenteditable="true"]',
       '[contenteditable="true"][role="textbox"]',
+      "faceplate-textarea-input textarea",
       '[contenteditable="true"]',
-      'textarea[placeholder*="comment"]',
-      'textarea[placeholder*="body"]',
-      'textarea'
+      'textarea[placeholder*="comment" i]',
+      'textarea[placeholder*="body" i]',
+      "textarea"
     ];
 
     for (const selector of selectors) {
       const locator = page.locator(selector).first();
       if (await locator.isVisible().catch(() => false)) {
+        await locator.scrollIntoViewIfNeeded().catch(() => undefined);
         await this.fillLocator(locator, value);
         return;
       }
     }
+
+    const roleTextbox = page.getByRole("textbox").first();
+    if (await roleTextbox.isVisible().catch(() => false)) {
+      await roleTextbox.scrollIntoViewIfNeeded().catch(() => undefined);
+      await this.fillLocator(roleTextbox, value);
+      return;
+    }
+
     throw new RedditBrowserEditorError();
   }
 
   private async fillLocator(locator: Locator, value: string): Promise<void> {
     try {
       await locator.fill(value);
-      return;
     } catch {
       await locator.click();
       await locator.press(`${process.platform === "darwin" ? "Meta" : "Control"}+A`).catch(() => undefined);
       await locator.press("Backspace").catch(() => undefined);
       await locator.type(value);
     }
+    await locator
+      .evaluate((element) => {
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+      })
+      .catch(() => undefined);
   }
 
   private async maybeClickFirst(page: Page, selectors: readonly string[]): Promise<boolean> {
@@ -584,7 +689,7 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
     missingMessage: string
   ): Promise<void> {
     for (const selector of selectors) {
-      const locator = page.locator(selector).first();
+      const locator = page.locator(selector).last();
       if (!(await locator.isVisible().catch(() => false))) {
         continue;
       }
@@ -604,7 +709,12 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
   ) {
     const currentUrl = page.url();
     const permalink = content ? await findPermalinkForContent(page, content) : undefined;
-    const remoteContentUrl = normalizeUrl(permalink ?? currentUrl, this.config.baseUrl);
+    if (!permalink) {
+      throw new RedditBrowserSubmitError(
+        "Reddit browser worker did not find the published post on the page after submit."
+      );
+    }
+    const remoteContentUrl = normalizeUrl(permalink, this.config.baseUrl);
     return {
       remoteContentId: extractRemoteContentId(remoteContentUrl, actionType),
       remoteContentUrl,
@@ -714,6 +824,47 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
   }
 }
 
+function commentVerificationSnippet(content: string): string {
+  const normalized = content.trim().replace(/\s+/g, " ");
+  if (normalized.length <= 80) {
+    return normalized;
+  }
+  return normalized.slice(0, 80);
+}
+
+function resolveOldRedditThreadUrl(request: RedditBrowserBridgeRequest, isReply: boolean): string {
+  if (request.action.type !== "comment_on_post" && request.action.type !== "reply_to_comment") {
+    throw new RedditControllerConfigurationError("Expected comment/reply action.");
+  }
+  if (isReply) {
+    return resolveRequestUrl(OLD_REDDIT_BASE_URL, request, true);
+  }
+  const surface = request.action.surface;
+  const postId = request.action.parentId;
+  if (!postId) {
+    throw new RedditControllerConfigurationError("Reddit comment_on_post requires action.parentId.");
+  }
+  if (surface) {
+    return new URL(
+      `/r/${encodeURIComponent(surface)}/comments/${encodeURIComponent(postId)}/`,
+      OLD_REDDIT_BASE_URL
+    ).toString();
+  }
+  return new URL(`/comments/${encodeURIComponent(postId)}/`, OLD_REDDIT_BASE_URL).toString();
+}
+
+function normalizeOldRedditPermalink(permalink: string, baseUrl: string): string {
+  try {
+    const url = new URL(permalink);
+    if (url.hostname === "old.reddit.com") {
+      url.hostname = new URL(baseUrl).hostname;
+    }
+    return url.toString();
+  } catch {
+    return normalizeUrl(permalink, baseUrl);
+  }
+}
+
 function resolveRequestUrl(baseUrl: string, request: RedditBrowserBridgeRequest, isReply: boolean): string {
   if (request.action.type !== "comment_on_post" && request.action.type !== "reply_to_comment") {
     throw new RedditControllerConfigurationError("Expected comment/reply action.");
@@ -728,7 +879,13 @@ function resolveRequestUrl(baseUrl: string, request: RedditBrowserBridgeRequest,
     return normalizeUrl(url, baseUrl);
   }
   if (request.action.type === "comment_on_post" && request.action.parentId) {
-    return new URL(`/comments/${request.action.parentId}`, baseUrl).toString();
+    if (request.action.surface) {
+      return new URL(
+        `/r/${encodeURIComponent(request.action.surface)}/comments/${encodeURIComponent(request.action.parentId)}/`,
+        baseUrl
+      ).toString();
+    }
+    return new URL(`/comments/${request.action.parentId}/`, baseUrl).toString();
   }
   if (request.action.type === "reply_to_comment" && request.action.parentId && request.action.candidateId) {
     return new URL(`/comments/${request.action.parentId}/_/${request.action.candidateId}`, baseUrl).toString();

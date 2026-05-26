@@ -391,6 +391,36 @@ export async function readAttributionSummaryFromStore(
   }
 }
 
+export async function readRefAttributionCounts(
+  databasePath: string,
+  refId: string
+): Promise<{
+  clicks: number;
+  grantClaimsSucceeded: number;
+  privateMessagesReceived: number;
+}> {
+  const db = await openAttributionDatabase(databasePath);
+  try {
+    const rows = await db.all<{ event_type: string; count: number }>(
+      `
+        SELECT event_type, COUNT(*) AS count
+        FROM attribution_events
+        WHERE ref_id = ?
+        GROUP BY event_type
+      `,
+      [refId]
+    );
+    const totals = new Map(rows.map((row) => [row.event_type, Number(row.count) || 0]));
+    return {
+      clicks: totals.get("click") ?? 0,
+      grantClaimsSucceeded: totals.get("grant_claim_succeeded") ?? 0,
+      privateMessagesReceived: totals.get("private_message_received") ?? 0
+    };
+  } finally {
+    await db.close();
+  }
+}
+
 async function openAttributionDatabase(databasePath: string): Promise<SqliteDatabase> {
   const db = await SqliteDatabase.open(databasePath);
   await ensureAttributionSchema(db);

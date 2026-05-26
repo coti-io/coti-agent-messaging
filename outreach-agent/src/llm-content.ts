@@ -659,6 +659,8 @@ function buildDraftSystemPrompt(
         "Make one sharp claim, support it with one concrete mechanic, then stop.",
         "Every top-level post must contain one concrete proof point: SDK, MCP, quickstart, contract address, transaction hash, COTIscan link, messageId, inbox/read-back, or a send/read smoke-test result.",
         "Do not write another abstract 'private bodies plus public routing' thesis unless it is anchored to an actual integration or dogfood artifact.",
+        "Do not use a Q:/A: FAQ layout or open with 'Most agent ...' if recent authored history already used that shape.",
+        "Rotate the angle: operator failure mode, wallet-bound inbox, starter-grant onboarding, MCP tool surface, or a concrete send/read artifact — not another routing-metadata sermon.",
         "If a draft starts getting long, cut examples, throat-clearing, and subordinate points instead of adding explanation.",
         "The post should feel like a technical operator talking, not a marketer."
       ].join(" ");
@@ -781,6 +783,13 @@ function validateDraft(
       "Generated post is missing a concrete proof point such as SDK, MCP, quickstart, contract address, tx hash, COTIscan link, messageId, inbox/read-back, or smoke-test result."
     );
   }
+
+  if (candidate.type === "create_post") {
+    const repetitivePattern = findOverusedPostPattern(`${title ?? ""}\n${content}`, state);
+    if (repetitivePattern) {
+      throw new Error(`Generated post repeats an overused outreach pattern: ${repetitivePattern}.`);
+    }
+  }
 }
 
 function findDuplicateDraftArtifact(
@@ -796,7 +805,7 @@ function findDuplicateDraftArtifact(
       const artifactText = `${artifact.title ?? ""}\n${artifact.content}`;
       return (
         artifact.structuralFingerprint === draftStructure ||
-        contentTokenSimilarity(draftText, artifactText) >= 0.72 ||
+        contentTokenSimilarity(draftText, artifactText) >= 0.62 ||
         (artifact.type === "post" && hasRepeatedPostTheme(draftText, artifactText))
       );
     });
@@ -865,7 +874,7 @@ function hasRepeatedPostTheme(draft: string, previous: string): boolean {
   }
 
   const overlap = draftThemes.filter((theme) => previousThemes.includes(theme));
-  return overlap.length >= 3 || (overlap.length >= 2 && contentTokenSimilarity(draft, previous) >= 0.25);
+  return overlap.length >= 2 || (overlap.length >= 1 && contentTokenSimilarity(draft, previous) >= 0.22);
 }
 
 function postThemeTags(value: string): string[] {
@@ -887,6 +896,63 @@ function postThemeTags(value: string): string[] {
     tags.push("proof");
   }
   return tags;
+}
+
+const OVERUSED_POST_PATTERNS: ReadonlyArray<{ id: string; test: (value: string) => boolean }> = [
+  {
+    id: "faq_layout",
+    test: (value) => /^\s*q:\s/im.test(value) || /\bq:\s.+\s+a:\s/i.test(value)
+  },
+  {
+    id: "most_agent_opening",
+    test: (value) => /^most agent\b/i.test(value.trim()) || /^most “agent\b/i.test(value.trim())
+  },
+  {
+    id: "routing_tradeoff_sermon",
+    test: (value) =>
+      /\b(?:queryable|public)\b.{0,24}\b(?:routing|metadata)\b/i.test(value) &&
+      /\b(?:encrypted|private)\b.{0,24}\b(?:body|content|payload)\b/i.test(value)
+  }
+];
+
+function recentPostTexts(state: OutreachAgentState): string[] {
+  const artifactTexts = state.recentGeneratedArtifacts
+    .filter((artifact) => artifact.type === "post")
+    .map((artifact) => `${artifact.title ?? ""}\n${artifact.content}`.trim());
+  const engagementTitles = state.engagementEvents
+    .filter((event) => event.type === "post")
+    .map((event) => event.targetSummary ?? "")
+    .filter(Boolean);
+  return [...artifactTexts, ...engagementTitles].slice(-6);
+}
+
+function findOverusedPostPattern(draft: string, state: OutreachAgentState): string | undefined {
+  const recent = recentPostTexts(state);
+  if (recent.length === 0) {
+    return undefined;
+  }
+
+  for (const pattern of OVERUSED_POST_PATTERNS) {
+    if (!pattern.test(draft)) {
+      continue;
+    }
+    if (recent.some((previous) => pattern.test(previous))) {
+      return pattern.id;
+    }
+  }
+
+  const draftThemes = postThemeTags(draft);
+  if (draftThemes.includes("encrypted-body") && draftThemes.includes("public-routing")) {
+    const repeatedThemeCount = recent.filter((previous) => {
+      const themes = postThemeTags(previous);
+      return themes.includes("encrypted-body") && themes.includes("public-routing");
+    }).length;
+    if (repeatedThemeCount >= 2) {
+      return "routing_privacy_thesis";
+    }
+  }
+
+  return undefined;
 }
 
 function normalizeDraftContent(candidate: WriteCandidate, content: string): string {
@@ -1079,40 +1145,75 @@ function trimSummary(summary: string, maxLines: number): string {
 }
 
 function buildRecentHistorySummary(state: OutreachAgentState): string {
-  const recent = state.recentGeneratedArtifacts.slice(-4);
+  const recent = [
+    ...state.recentGeneratedArtifacts,
+    ...state.engagementEvents
+      .filter((event) => event.type === "post")
+      .map((event) => ({
+        type: "post" as const,
+        title: event.targetSummary,
+        content: event.targetSummary ?? "",
+        promptProfileId: undefined,
+        promptVariantId: undefined,
+        messageStyle: undefined,
+        layout: undefined,
+        structuralFingerprint: undefined,
+        ctaRef: undefined,
+        targetSummary: event.targetSummary,
+        createdAt: event.createdAt
+      }))
+  ].slice(-6);
   if (recent.length === 0) {
     return "No recent authored history.";
   }
 
   return recent
-    .map((artifact) =>
-      JSON.stringify({
+    .map((artifact) => {
+      const record: Record<string, unknown> = {
         type: artifact.type,
         title: artifact.title,
         opening: extractOpening(artifact.content),
-        promptProfileId: artifact.promptProfileId,
-        promptVariantId: artifact.promptVariantId,
-        messageStyle: artifact.promptParameters?.messageStyle,
-        layout: artifact.layout,
-        structuralFingerprint: artifact.structuralFingerprint,
-        ctaRef: artifact.outreachRef?.id,
         targetSummary: artifact.targetSummary,
         createdAt: artifact.createdAt
-      })
-    )
+      };
+      if ("promptProfileId" in artifact && artifact.promptProfileId) {
+        record.promptProfileId = artifact.promptProfileId;
+      }
+      if ("promptVariantId" in artifact && artifact.promptVariantId) {
+        record.promptVariantId = artifact.promptVariantId;
+      }
+      if ("promptParameters" in artifact && artifact.promptParameters?.messageStyle) {
+        record.messageStyle = artifact.promptParameters.messageStyle;
+      }
+      if ("layout" in artifact && artifact.layout) {
+        record.layout = artifact.layout;
+      }
+      if ("structuralFingerprint" in artifact && artifact.structuralFingerprint) {
+        record.structuralFingerprint = artifact.structuralFingerprint;
+      }
+      if ("outreachRef" in artifact && artifact.outreachRef?.id) {
+        record.ctaRef = artifact.outreachRef.id;
+      }
+      return JSON.stringify(record);
+    })
     .join("\n");
 }
 
 function extractAvoidList(state: OutreachAgentState): string[] {
-  return state.recentGeneratedArtifacts
+  const fromArtifacts = state.recentGeneratedArtifacts
     .slice(-5)
     .flatMap((artifact) => {
       const opening = extractOpening(artifact.content);
       const notablePhrases = extractNotablePhrases(artifact.content);
-      return [opening, ...notablePhrases];
-    })
-    .filter(Boolean)
-    .slice(0, 12);
+      const title = artifact.title?.trim();
+      return [title, opening, ...notablePhrases].filter(Boolean) as string[];
+    });
+  const fromPosts = state.engagementEvents
+    .filter((event) => event.type === "post")
+    .slice(-5)
+    .map((event) => event.targetSummary?.trim())
+    .filter(Boolean) as string[];
+  return [...fromArtifacts, ...fromPosts].filter(Boolean).slice(0, 14);
 }
 
 function extractOpening(content: string): string {
@@ -1127,6 +1228,13 @@ function extractNotablePhrases(content: string): string[] {
     "integration surface",
     "instead of hand wavy",
     "the compounding part is the killer",
+    "queryable routing",
+    "encrypted payload",
+    "public routing",
+    "private bodies",
+    "most agent",
+    "wallet-bound",
+    "architecture diagram",
     "boring in the best sense",
     "something agents can actually ship",
     "what matters is"

@@ -82,6 +82,8 @@ export interface EngagementSummary {
   total: EngagementCounts;
 }
 
+export type OutboundPostPauseReason = "spam" | "failed_verification";
+
 export interface OutreachAgentState {
   agentId?: string;
   firstSeenAt?: string;
@@ -103,6 +105,9 @@ export interface OutreachAgentState {
   queuedActionJobs: ActionJob[];
   engagementEvents: EngagementEvent[];
   engagementTotals: EngagementCounts;
+  outboundPostPauseUntil?: string;
+  outboundPostPauseReason?: OutboundPostPauseReason;
+  moltbookProcessedModerationPostIds?: string[];
 }
 
 export type PrivateMessageEscalationReason =
@@ -119,7 +124,8 @@ export interface PrivateMessageEscalationAssessment {
   explanation: string;
 }
 
-export const MAX_OUTREACH_STATE_BYTES = 64 * 1024;
+export const MAX_OUTREACH_STATE_BYTES = 96 * 1024;
+const MIN_RECENT_GENERATED_ARTIFACTS = 8;
 const MAX_UPVOTED_POST_IDS = 250;
 const MAX_FOLLOWED_AGENT_NAMES = 100;
 const MAX_REPLIED_COMMENT_IDS = 500;
@@ -343,7 +349,8 @@ export function createInitialState(): OutreachAgentState {
     pendingWrites: [],
     queuedActionJobs: [],
     engagementEvents: [],
-    engagementTotals: createEmptyEngagementCounts()
+    engagementTotals: createEmptyEngagementCounts(),
+    moltbookProcessedModerationPostIds: []
   };
 }
 
@@ -478,7 +485,14 @@ function enforceStateSizeLimit(state: OutreachAgentState): OutreachAgentState {
 
   while (
     approximateStateSizeBytes(nextState) > MAX_OUTREACH_STATE_BYTES &&
-    nextState.recentGeneratedArtifacts.length > 0
+    nextState.engagementEvents.length > 80
+  ) {
+    nextState.engagementEvents = nextState.engagementEvents.slice(-80);
+  }
+
+  while (
+    approximateStateSizeBytes(nextState) > MAX_OUTREACH_STATE_BYTES &&
+    nextState.recentGeneratedArtifacts.length > MIN_RECENT_GENERATED_ARTIFACTS
   ) {
     nextState.recentGeneratedArtifacts = nextState.recentGeneratedArtifacts.slice(1);
   }
@@ -551,7 +565,11 @@ export function normalizeState(
     pendingWrites: state?.pendingWrites ?? initial.pendingWrites,
     queuedActionJobs: state?.queuedActionJobs ?? initial.queuedActionJobs,
     engagementEvents: state?.engagementEvents ?? initial.engagementEvents,
-    engagementTotals: normalizeEngagementCounts(state?.engagementTotals)
+    engagementTotals: normalizeEngagementCounts(state?.engagementTotals),
+    outboundPostPauseUntil: state?.outboundPostPauseUntil,
+    outboundPostPauseReason: state?.outboundPostPauseReason,
+    moltbookProcessedModerationPostIds:
+      state?.moltbookProcessedModerationPostIds ?? initial.moltbookProcessedModerationPostIds
   };
 
   const today = now.toISOString().slice(0, 10);
@@ -704,22 +722,35 @@ export interface DailyCommentBreakdown {
 
 export interface PostReadiness {
   allowed: boolean;
-  reason?: "daily_limit" | "cooldown";
+  reason?: "daily_limit" | "cooldown" | "moderation_pause";
   waitMs: number;
   cooldownMs: number;
   limitPerDay?: number;
   usedCount: number;
+  pauseReason?: OutboundPostPauseReason;
 }
 
 export const DEFAULT_OUTREACH_POLICY_CONFIG: MoltbookOutreachPolicyConfig = {
   commentLimitNewAgentPerDay: 20,
   commentLimitEstablishedPerDay: 50,
-  postLimitNewAgentPerDay: undefined,
-  postLimitEstablishedPerDay: undefined
+  postLimitNewAgentPerDay: 1,
+  postLimitEstablishedPerDay: 1
 };
 
 export function postCooldownMs(isNew: boolean): number {
-  return (isNew ? 120 : 30) * 60 * 1_000;
+  return (isNew ? 120 : 360) * 60 * 1_000;
+}
+
+export function postedWithinCooldown(
+  state: OutreachAgentState,
+  isNew: boolean,
+  now = new Date()
+): boolean {
+  const sinceLastPostHours = hoursSince(state.lastPostAt, now);
+  if (sinceLastPostHours === undefined) {
+    return false;
+  }
+  return sinceLastPostHours * 3_600_000 < postCooldownMs(isNew);
 }
 
 function msUntilNextUtcDay(now: Date): number {
@@ -795,19 +826,52 @@ export function getDailyCommentBreakdown(state: OutreachAgentState): DailyCommen
   };
 }
 
+export function isOutboundPostPaused(state: OutreachAgentState, now = new Date()): boolean {
+  if (!state.outboundPostPauseUntil) {
+    return false;
+  }
+  const pauseUntil = Date.parse(state.outboundPostPauseUntil);
+  return Number.isFinite(pauseUntil) && pauseUntil > now.getTime();
+}
+
+export function outboundPostPauseWaitMs(state: OutreachAgentState, now = new Date()): number {
+  if (!state.outboundPostPauseUntil) {
+    return 0;
+  }
+  const pauseUntil = Date.parse(state.outboundPostPauseUntil);
+  if (!Number.isFinite(pauseUntil)) {
+    return 0;
+  }
+  return Math.max(pauseUntil - now.getTime(), 0);
+}
+
 export function getPostReadiness(
   state: OutreachAgentState,
   isNew: boolean,
   policy?: Partial<MoltbookOutreachPolicyConfig>,
   now = new Date()
 ): PostReadiness {
+  const cooldownMs = postCooldownMs(isNew);
   const limitPerDay = postLimitPerDay(isNew, policy);
+
+  if (isOutboundPostPaused(state, now)) {
+    return {
+      allowed: false,
+      reason: "moderation_pause",
+      waitMs: outboundPostPauseWaitMs(state, now),
+      cooldownMs,
+      limitPerDay,
+      usedCount: state.dailyPostCount,
+      pauseReason: state.outboundPostPauseReason
+    };
+  }
+
   if (limitPerDay !== undefined && state.dailyPostCount >= limitPerDay) {
     return {
       allowed: false,
       reason: "daily_limit",
       waitMs: msUntilNextUtcDay(now),
-      cooldownMs: postCooldownMs(isNew),
+      cooldownMs,
       limitPerDay,
       usedCount: state.dailyPostCount
     };
@@ -818,13 +882,12 @@ export function getPostReadiness(
     return {
       allowed: true,
       waitMs: 0,
-      cooldownMs: postCooldownMs(isNew),
+      cooldownMs,
       limitPerDay,
       usedCount: state.dailyPostCount
     };
   }
 
-  const cooldownMs = postCooldownMs(isNew);
   const sinceLastPostMs = sinceLastPostHours * 3_600_000;
   if (sinceLastPostMs >= cooldownMs) {
     return {
@@ -1085,6 +1148,7 @@ export function planHeartbeatActions(input: {
       commentReadiness.reason === "daily_limit"
     ) &&
     canCreatePost(state, newAgent, input.policy, now) &&
+    !postedWithinCooldown(state, newAgent, now) &&
     !hasPendingPost &&
     !hasExternalNetworkOpportunity
   ) {

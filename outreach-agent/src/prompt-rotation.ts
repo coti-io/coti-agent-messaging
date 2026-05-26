@@ -40,6 +40,7 @@ export interface PromptRotationHistoryEntry {
   tone?: PromptParameterSet["tone"];
   creativity?: PromptParameterSet["creativity"];
   clickCount?: number;
+  grantClaimCount?: number;
   privateMessageCount?: number;
   selectionSource?: PromptRotationSelectionSource;
   reusedExisting?: boolean;
@@ -553,7 +554,7 @@ async function chooseNextVariant(input: {
         content: [
           "You choose the next safe content-writing prompt variant.",
           "Pick only from the provided variant ids.",
-          "Prefer variants that improved usefulness or avoided weak outcomes recently.",
+          "Prefer variants that drove grant claims and private messages, not just clicks.",
           "Reddit must stay non-promotional, no-link, no-CTA.",
           "Return strict JSON with keys: selectedVariantId, rationale."
         ].join(" ")
@@ -579,6 +580,7 @@ async function chooseNextVariant(input: {
               tone: entry.tone,
               creativity: entry.creativity,
               clickCount: entry.clickCount ?? 0,
+              grantClaimCount: entry.grantClaimCount ?? 0,
               privateMessageCount: entry.privateMessageCount ?? 0,
               createdAt: entry.createdAt
             })),
@@ -590,6 +592,7 @@ async function chooseNextVariant(input: {
                 messageStyle: group.messageStyle,
                 layout: group.layout,
                 clicks: group.clicks,
+                grantClaimsSucceeded: group.grantClaimsSucceeded,
                 privateMessagesReceived: group.privateMessagesReceived,
                 skillUsages: group.skillUsages
               })),
@@ -634,6 +637,23 @@ async function chooseNextVariant(input: {
   return fallbackVariantChoice(input.candidates, recentHistory);
 }
 
+export function scorePromptRotationHistoryEntry(
+  entry: Pick<
+    PromptRotationHistoryEntry,
+    "clickCount" | "grantClaimCount" | "privateMessageCount" | "status"
+  >
+): number {
+  return (
+    (entry.grantClaimCount ?? 0) * 5 +
+    (entry.privateMessageCount ?? 0) * 8 +
+    (entry.clickCount ?? 0) * 1 +
+    (entry.status === "posted" || entry.status === "replied" || entry.status === "commented" ? 1 : 0) -
+    (entry.status === "removed" || entry.status === "mod_warning" || entry.status === "spam_accusation"
+      ? 5
+      : 0)
+  );
+}
+
 function fallbackVariantChoice(
   candidates: readonly PromptVariantCandidate[],
   history: readonly PromptRotationHistoryEntry[]
@@ -643,11 +663,7 @@ function fallbackVariantChoice(
     if (!entry.promptVariantId) {
       continue;
     }
-    const score =
-      (entry.clickCount ?? 0) * 2 +
-      (entry.privateMessageCount ?? 0) * 3 +
-      (entry.status === "posted" || entry.status === "replied" || entry.status === "commented" ? 1 : 0) -
-      (entry.status === "removed" || entry.status === "mod_warning" || entry.status === "spam_accusation" ? 3 : 0);
+    const score = scorePromptRotationHistoryEntry(entry);
     variantScores.set(entry.promptVariantId, (variantScores.get(entry.promptVariantId) ?? 0) + score);
   }
   const selected =
@@ -683,6 +699,7 @@ function normalizeHistoryEntry(entry: Partial<PromptRotationHistoryEntry> | unde
     tone: entry?.tone,
     creativity: entry?.creativity,
     clickCount: entry?.clickCount,
+    grantClaimCount: entry?.grantClaimCount,
     privateMessageCount: entry?.privateMessageCount,
     selectionSource: entry?.selectionSource,
     reusedExisting: entry?.reusedExisting,

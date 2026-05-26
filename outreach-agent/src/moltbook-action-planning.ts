@@ -13,6 +13,7 @@ import {
   canCreatePost,
   isNewAgent,
   planHeartbeatActions,
+  postedWithinCooldown,
   type OutreachAgentState,
   type PlannedAction
 } from "./policy.js";
@@ -117,7 +118,12 @@ export function buildMoltbookActionCandidates(
   const newAgent = isNewAgent(sources.me.agent?.created_at, state, now);
   const hasPendingPost = state.pendingWrites.some((entry) => entry.type === "post");
   const hasCreatePostCandidate = candidates.some((candidate) => candidate.type === "create_post");
-  if (!hasCreatePostCandidate && !hasPendingPost && canCreatePost(state, newAgent, input.policy, now)) {
+  if (
+    !hasCreatePostCandidate &&
+    !hasPendingPost &&
+    canCreatePost(state, newAgent, input.policy, now) &&
+    !postedWithinCooldown(state, newAgent, now)
+  ) {
     const constraints =
       input.mode === "approved_autopost"
         ? []
@@ -134,7 +140,7 @@ export function buildMoltbookActionCandidates(
       venue: "moltbook",
       type: "create_post",
       source: "cold_start",
-      score: 32,
+      score: 12,
       needsContent: true,
       reason: "Cold-start posting remains a legal fallback when no better thread deserves the write slot.",
       constraints,

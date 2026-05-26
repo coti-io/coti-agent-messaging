@@ -57,7 +57,8 @@ import {
   saveHeartbeatRunToStorage,
   saveStateToStorage
 } from "./storage.js";
-import { saveOutreachRefToAttributionStore } from "./attribution-store.js";
+import { saveOutreachRefToAttributionStore, readRefAttributionCounts } from "./attribution-store.js";
+import { syncMoltbookAccountHealth } from "./moltbook-account-health.js";
 import type { OutreachRef } from "./outreach-attribution.js";
 import {
   readPromptRotationDebugSnapshot,
@@ -372,6 +373,13 @@ function describePostBlockReason(
     return `post cooldown blocked create_post after ${readiness.usedCount}${readiness.limitPerDay !== undefined ? `/${readiness.limitPerDay}` : ""} posts today for about ${waitMinutes} more minute${waitMinutes === 1 ? "" : "s"}.`;
   }
 
+  if (readiness.reason === "moderation_pause") {
+    const waitHours = Math.max(1, Math.ceil(readiness.waitMs / 3_600_000));
+    const pauseLabel =
+      readiness.pauseReason === "spam" ? "spam moderation" : "failed verification";
+    return `${pauseLabel} blocked create_post for about ${waitHours} more hour${waitHours === 1 ? "" : "s"}.`;
+  }
+
   return undefined;
 }
 
@@ -421,10 +429,36 @@ export async function runHeartbeat(
       });
       state = await saveState(config.statePath, state, runId);
     };
+    const agentName = me.agent?.name ?? home.your_account.name;
+    const accountHealth = await syncMoltbookAccountHealth({
+      state,
+      agentName,
+      config,
+      getAgentProfile: (name) => venue.getAgentProfile(name),
+      getPost: async (postId) => {
+        try {
+          const response = await venue.getPost(postId);
+          return response.post;
+        } catch {
+          return undefined;
+        }
+      },
+      now: new Date(startedAt)
+    });
+    state = accountHealth.state;
+    report.alerts.push(
+      ...accountHealth.alerts.map((message) => ({
+        severity: "warning" as const,
+        message
+      }))
+    );
+    if (accountHealth.changed) {
+      await persistState(state);
+    }
     state = await reconcilePendingWrites(
       venue,
       config,
-      me.agent?.name ?? home.your_account.name,
+      agentName,
       state,
       report,
       persistState
@@ -1201,6 +1235,12 @@ async function recordMoltbookPromptRotation(
   if (!pendingWrite.promptVariantId) {
     return;
   }
+  const refAttribution =
+    pendingWrite.outreachRef?.id && config.attributionDbPath
+      ? await readRefAttributionCounts(config.attributionDbPath, pendingWrite.outreachRef.id).catch(
+          () => undefined
+        )
+      : undefined;
   await recordPromptRotationAction({
     config,
     selection: {
@@ -1237,6 +1277,9 @@ async function recordMoltbookPromptRotation(
       technicalDepth: pendingWrite.promptParameters?.technicalDepth,
       tone: pendingWrite.promptParameters?.tone,
       creativity: pendingWrite.promptParameters?.creativity,
+      clickCount: refAttribution?.clicks,
+      grantClaimCount: refAttribution?.grantClaimsSucceeded,
+      privateMessageCount: refAttribution?.privateMessagesReceived,
       selectionSource:
         decision.promptSelectionSource === "llm" || decision.promptSelectionSource === "deterministic_fallback"
           ? decision.promptSelectionSource

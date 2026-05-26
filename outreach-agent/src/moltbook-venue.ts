@@ -140,6 +140,10 @@ export class MoltbookVenueProvider implements VenueProvider {
     return this.api.getAgentProfile(agentName);
   }
 
+  async getPost(postId: string): Promise<{ success?: boolean; post?: MoltbookPost }> {
+    return this.api.getPost(postId);
+  }
+
   search(input: { q: string; type: "posts" | "comments" | "all"; limit: number }): Promise<MoltbookSearchResponse> {
     return this.api.search(input);
   }

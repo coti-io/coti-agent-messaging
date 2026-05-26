@@ -834,6 +834,10 @@ test("heartbeat records failed upvotes without failing the run", async () => {
       return jsonResponse({ success: true });
     }
 
+    if (url.pathname === "/api/v1/agents/profile" && method === "GET") {
+      return emptyAgentProfileResponse();
+    }
+
     throw new Error(`Unhandled fetch: ${method} ${url.pathname}`);
   };
 
@@ -1345,6 +1349,15 @@ function jsonResponse(payload: unknown): Response {
   });
 }
 
+function emptyAgentProfileResponse(agentName = "OutreachBot"): Response {
+  return jsonResponse({
+    success: true,
+    agent: { name: agentName },
+    recentPosts: [],
+    recentComments: []
+  });
+}
+
 test("heartbeat reconciles pending writes from remote profile and avoids duplicate replies", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-heartbeat-reconcile-"));
   const packageRoot = path.resolve(import.meta.dirname, "..", "..");
@@ -1480,7 +1493,7 @@ test("heartbeat reconciles pending writes from remote profile and avoids duplica
 
   try {
     const result = await runHeartbeat(config);
-    assert.equal(profileCalls, 1);
+    assert.equal(profileCalls, 2);
     assert.equal(createdCommentCalls, 0);
     assert.match(result.summary, /Skipped|no unanswered comment/i);
 

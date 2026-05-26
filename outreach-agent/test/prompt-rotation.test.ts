@@ -9,6 +9,7 @@ import {
   chooseRotationWindow,
   loadPromptRotationStore,
   recordPromptRotationAction,
+  scorePromptRotationHistoryEntry,
   selectPromptVariant
 } from "../src/prompt-rotation.js";
 
@@ -142,4 +143,21 @@ test("prompt rotation records cross-venue prompt metadata", async () => {
   assert.equal(store.history[0]?.venue, "moltbook");
   assert.equal(store.history[0]?.promptVariantId, "operator-problem-solution");
   assert.equal(store.state.actionsSinceRotation, 1);
+});
+
+test("prompt rotation scores grant claims and private messages above clicks", () => {
+  const clickHeavy = scorePromptRotationHistoryEntry({
+    clickCount: 10,
+    grantClaimCount: 0,
+    privateMessageCount: 0,
+    status: "posted"
+  });
+  const conversionHeavy = scorePromptRotationHistoryEntry({
+    clickCount: 1,
+    grantClaimCount: 2,
+    privateMessageCount: 1,
+    status: "posted"
+  });
+
+  assert.ok(conversionHeavy > clickHeavy);
 });

@@ -27,6 +27,7 @@ export interface MoltbookPost {
   upvotes?: number;
   comment_count?: number;
   verification_status?: string;
+  is_spam?: boolean;
   verification?: MoltbookVerification;
 }
 
@@ -791,6 +792,12 @@ export class MoltbookApiClient {
     return this.request<MoltbookFeedResponse>({
       path: "/feed",
       query
+    });
+  }
+
+  async getPost(postId: string): Promise<{ success?: boolean; post?: MoltbookPost }> {
+    return this.request<{ success?: boolean; post?: MoltbookPost }>({
+      path: `/posts/${postId}`
     });
   }
 

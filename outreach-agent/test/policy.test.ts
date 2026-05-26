@@ -703,3 +703,16 @@ test("chooseReplyTarget returns nothing when only low-signal comments remain", (
   assert.equal(target, undefined);
 });
 
+test("getPostReadiness blocks create_post during moderation pause", () => {
+  const now = new Date("2026-05-19T12:00:00.000Z");
+  const state = createInitialState();
+  state.outboundPostPauseUntil = "2026-05-20T12:00:00.000Z";
+  state.outboundPostPauseReason = "spam";
+
+  const readiness = getPostReadiness(state, false, undefined, now);
+  assert.equal(readiness.allowed, false);
+  assert.equal(readiness.reason, "moderation_pause");
+  assert.equal(readiness.pauseReason, "spam");
+  assert.equal(canCreatePost(state, false, undefined, now), false);
+});
+

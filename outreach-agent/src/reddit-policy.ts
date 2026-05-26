@@ -161,9 +161,15 @@ export function jitterDelayMs(config: RedditPlannerConfig, rng: () => number): n
 }
 
 function scoreCandidate(item: RedditReviewItem, config: RedditPlannerConfig): number {
+  const ownThreadBoost =
+    item.source.onOwnThread && item.source.kind === "comment"
+      ? 120
+      : item.source.onOwnThread
+        ? 40
+        : 0;
   const commentBoost = config.preferComments && item.source.kind === "comment" ? 20 : 0;
   const activityBoost = Math.min(15, item.source.commentCount ?? 0);
-  return commentBoost + activityBoost + item.relevanceScore * 3 - item.riskScore;
+  return ownThreadBoost + commentBoost + activityBoost + item.relevanceScore * 3 - item.riskScore;
 }
 
 function alreadyTouched(item: RedditReviewItem, history: readonly RedditOutboundMemoryEntry[]): boolean {

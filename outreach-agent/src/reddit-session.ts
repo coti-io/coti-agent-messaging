@@ -2,7 +2,7 @@ import { getOutreachAgentConfig, getRedditControllerConfig, getRedditOperatingAg
 import { createActionJob, type ActionJob } from "./action-planning.js";
 import { draftRedditResponse } from "./reddit-drafting.js";
 import { recordPromptRotationAction, selectPromptVariant } from "./prompt-rotation.js";
-import { ingestRedditState } from "./reddit-ingestion.js";
+import { ingestRedditState, parseRedditThreadUrl } from "./reddit-ingestion.js";
 import { enqueueActionJobs, removeActionJob, summarizeActionJobs } from "./job-queue.js";
 import { appendRedditMemory, loadRedditMemory, saveRedditMemory, type RedditMemoryStore } from "./reddit-memory.js";
 import {
@@ -30,6 +30,9 @@ export interface RedditSessionReport {
   ingestion: {
     snapshotCount: number;
     sourceItemCount: number;
+    ownThreadTargets: number;
+    ownThreadSnapshots: number;
+    discoveryThreadSnapshots: number;
     skipped: string[];
   };
   actionCandidates: Array<{
@@ -93,7 +96,7 @@ export async function runRedditSession(input: {
       dryRun,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
-      ingestion: { snapshotCount: 0, sourceItemCount: 0, skipped: [] },
+      ingestion: emptyIngestionSummary(),
       actionCandidates: [],
       selectedActionBundle: chooseRedditActionBundle([], maxActions),
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
@@ -113,7 +116,7 @@ export async function runRedditSession(input: {
         dryRun,
         readSource: operating.readController,
         memoryPath: operating.memoryPath,
-        ingestion: { snapshotCount: 0, sourceItemCount: 0, skipped: [] },
+        ingestion: emptyIngestionSummary(),
         actionCandidates: [],
         selectedActionBundle: chooseRedditActionBundle([], maxActions),
         queuedActionJobs: summarizeQueuedRedditJobs(executed.store),
@@ -137,9 +140,13 @@ export async function runRedditSession(input: {
         : operating.targetSubreddits.length > 0
           ? operating.targetSubreddits
           : undefined,
-    queries: operating.searchQueries.length > 0 ? operating.searchQueries : undefined,
     history: memory.history,
-    source: operating.readController
+    source: operating.readController,
+    limitPerSubreddit: operating.ingestionListLimit,
+    maxOwnThreadReads: operating.ingestionMaxOwnThreadReads,
+    maxDiscoveryThreadReads: operating.ingestionMaxDiscoveryThreadReads,
+    maxSearchesPerSubreddit: operating.ingestionMaxSearchesPerSubreddit,
+    ownThreadCommentLimit: operating.ingestionOwnThreadCommentLimit
   });
   const decision = planRedditAction({
     items: ingestion.sourceItems,
@@ -162,11 +169,7 @@ export async function runRedditSession(input: {
       dryRun,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
-      ingestion: {
-        snapshotCount: ingestion.snapshots.length,
-        sourceItemCount: ingestion.sourceItems.length,
-        skipped: ingestion.skipped
-      },
+      ingestion: summarizeIngestion(ingestion),
       actionCandidates: summarizeActionCandidates(actionCandidates),
       selectedActionBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
@@ -185,11 +188,7 @@ export async function runRedditSession(input: {
       dryRun,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
-      ingestion: {
-        snapshotCount: ingestion.snapshots.length,
-        sourceItemCount: ingestion.sourceItems.length,
-        skipped: ingestion.skipped
-      },
+      ingestion: summarizeIngestion(ingestion),
       actionCandidates: summarizeActionCandidates(actionCandidates),
       selectedActionBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
@@ -211,11 +210,7 @@ export async function runRedditSession(input: {
       dryRun,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
-      ingestion: {
-        snapshotCount: ingestion.snapshots.length,
-        sourceItemCount: ingestion.sourceItems.length,
-        skipped: ingestion.skipped
-      },
+      ingestion: summarizeIngestion(ingestion),
       actionCandidates: summarizeActionCandidates(actionCandidates),
       selectedActionBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
@@ -307,7 +302,8 @@ export async function runRedditSession(input: {
     decisionReason: plannedAction.reason,
     relevanceScore: plannedAction.item.relevanceScore,
     riskScore: plannedAction.item.riskScore,
-    remoteContentUrl: outcome?.remoteContentUrl
+    remoteContentUrl: outcome?.remoteContentUrl,
+    threadPostId: resolveThreadPostId(plannedAction, outcome?.remoteContentUrl)
   };
   if (dryRun) {
     await appendRedditMemory(operating.memoryPath, recorded);
@@ -318,11 +314,7 @@ export async function runRedditSession(input: {
     dryRun,
     readSource: operating.readController,
     memoryPath: operating.memoryPath,
-    ingestion: {
-      snapshotCount: ingestion.snapshots.length,
-      sourceItemCount: ingestion.sourceItems.length,
-      skipped: ingestion.skipped
-    },
+    ingestion: summarizeIngestion(ingestion),
     actionCandidates: summarizeActionCandidates(actionCandidates),
     selectedActionBundle,
     queuedActionJobs: dryRun ? summarizeQueuedRedditJobs(memory) : summarizeQueuedRedditJobs({ ...memory, queuedJobs: nextQueuedJobs }),
@@ -334,6 +326,45 @@ export async function runRedditSession(input: {
     outcome,
     recorded: dryRun ? recorded : undefined
   };
+}
+
+function summarizeIngestion(ingestion: RedditIngestionResult): RedditSessionReport["ingestion"] {
+  return {
+    snapshotCount: ingestion.snapshots.length,
+    sourceItemCount: ingestion.sourceItems.length,
+    ownThreadTargets: ingestion.ownThreadTargets,
+    ownThreadSnapshots: ingestion.ownThreadSnapshots,
+    discoveryThreadSnapshots: ingestion.discoveryThreadSnapshots,
+    skipped: ingestion.skipped
+  };
+}
+
+function emptyIngestionSummary(): RedditSessionReport["ingestion"] {
+  return {
+    snapshotCount: 0,
+    sourceItemCount: 0,
+    ownThreadTargets: 0,
+    ownThreadSnapshots: 0,
+    discoveryThreadSnapshots: 0,
+    skipped: []
+  };
+}
+
+function resolveThreadPostId(
+  planned: NonNullable<ReturnType<typeof planRedditAction>["action"]>,
+  remoteContentUrl?: string
+): string | undefined {
+  const fromUrl = remoteContentUrl ? parseRedditThreadUrl(remoteContentUrl)?.postId : undefined;
+  if (fromUrl) {
+    return fromUrl;
+  }
+  if (planned.item.source.kind === "post") {
+    return planned.item.source.id;
+  }
+  const fromPermalink = planned.item.source.permalink
+    ? parseRedditThreadUrl(planned.item.source.permalink)?.postId
+    : undefined;
+  return fromPermalink;
 }
 
 function summarizeActionCandidates(
@@ -452,7 +483,8 @@ async function executeQueuedRedditJob(
     decisionReason: metadata.plannedAction.reason,
     relevanceScore: metadata.plannedAction.item.relevanceScore,
     riskScore: metadata.plannedAction.item.riskScore,
-    remoteContentUrl: outcome.remoteContentUrl
+    remoteContentUrl: outcome.remoteContentUrl,
+    threadPostId: resolveThreadPostId(metadata.plannedAction, outcome.remoteContentUrl)
   };
   const nextStore: RedditMemoryStore = {
     ...store,

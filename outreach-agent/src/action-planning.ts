@@ -11,6 +11,7 @@ export type ActionCandidateType =
 
 export type ActionCandidateSource =
   | "activity_reply"
+  | "own_thread"
   | "hot_thread"
   | "following_feed"
   | "explore_feed"

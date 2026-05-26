@@ -71,6 +71,11 @@ export interface RedditControllerConfig {
 export interface RedditOperatingAgentConfig {
   targetSubreddits: string[];
   searchQueries: string[];
+  ingestionListLimit: number;
+  ingestionMaxOwnThreadReads: number;
+  ingestionMaxDiscoveryThreadReads: number;
+  ingestionOwnThreadCommentLimit: number;
+  ingestionMaxSearchesPerSubreddit: number;
   maxActionsPerSession: number;
   maxActionsPerDay: number;
   minJitterMinutes: number;
@@ -114,9 +119,17 @@ export interface MoltbookRuntimeConfig extends RuntimePaths {
   };
 }
 
-function getPackageRoot(): string {
+function getOutreachAgentRoot(): string {
   const currentFile = fileURLToPath(import.meta.url);
-  return path.resolve(path.dirname(currentFile), "..", "..");
+  const srcDir = path.dirname(currentFile);
+  if (path.basename(path.dirname(srcDir)) === "dist") {
+    return path.resolve(srcDir, "..", "..");
+  }
+  return path.resolve(srcDir, "..");
+}
+
+function getPackageRoot(): string {
+  return getOutreachAgentRoot();
 }
 
 function resolveHomePath(relativePath: string): string {
@@ -138,6 +151,19 @@ function defaultRedditBrowserBridgeDir(packageRoot: string): string {
 
 function defaultRedditMemoryPath(packageRoot: string): string {
   return path.join(packageRoot, ".data", "reddit-memory.json");
+}
+
+export function resolveRedditBrowserStorageStatePath(rawPath?: string): string {
+  const agentRoot = getOutreachAgentRoot();
+  const configured = rawPath?.trim();
+  if (!configured) {
+    return path.join(agentRoot, ".browser", "reddit-storage-state.json");
+  }
+  if (path.isAbsolute(configured)) {
+    return configured;
+  }
+  const normalized = configured.replace(/^outreach-agent[/\\]/, "");
+  return path.resolve(agentRoot, normalized);
 }
 
 function defaultPromptRotationStatePath(packageRoot: string): string {
@@ -542,6 +568,20 @@ export function buildRedditOperatingAgentConfig(packageRoot: string): RedditOper
   return {
     targetSubreddits: parseCsv(process.env.OUTREACH_REDDIT_TARGET_SUBREDDITS),
     searchQueries: parseCsv(process.env.OUTREACH_REDDIT_SEARCH_QUERIES),
+    ingestionListLimit: parseNumber(process.env.OUTREACH_REDDIT_INGESTION_LIST_LIMIT, 5),
+    ingestionMaxOwnThreadReads: parseNumber(process.env.OUTREACH_REDDIT_INGESTION_MAX_OWN_THREAD_READS, 25),
+    ingestionMaxDiscoveryThreadReads: parseNumber(
+      process.env.OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS,
+      0
+    ),
+    ingestionOwnThreadCommentLimit: parseNumber(
+      process.env.OUTREACH_REDDIT_INGESTION_OWN_THREAD_COMMENT_LIMIT,
+      100
+    ),
+    ingestionMaxSearchesPerSubreddit: parseNumber(
+      process.env.OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT,
+      0
+    ),
     maxActionsPerSession: parseNumber(process.env.OUTREACH_REDDIT_MAX_ACTIONS_PER_SESSION, 1),
     maxActionsPerDay: parseNumber(process.env.OUTREACH_REDDIT_MAX_ACTIONS_PER_DAY, 4),
     minJitterMinutes: parseNumber(process.env.OUTREACH_REDDIT_MIN_JITTER_MINUTES, 18),

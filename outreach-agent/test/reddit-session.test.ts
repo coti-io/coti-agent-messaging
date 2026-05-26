@@ -42,6 +42,11 @@ function createConfig(memoryPath: string): MoltbookRuntimeConfig {
     redditOperating: {
       targetSubreddits: ["sales"],
       searchQueries: ["CRM messy data"],
+      ingestionListLimit: 5,
+      ingestionMaxOwnThreadReads: 25,
+      ingestionMaxDiscoveryThreadReads: 0,
+      ingestionOwnThreadCommentLimit: 100,
+      ingestionMaxSearchesPerSubreddit: 0,
       maxActionsPerSession: 1,
       maxActionsPerDay: 4,
       minJitterMinutes: 10,
@@ -57,6 +62,9 @@ const ingestion: RedditIngestionResult = {
   capturedAt: "2026-05-19T09:00:00.000Z",
   snapshots: [],
   skipped: [],
+  ownThreadTargets: 0,
+  ownThreadSnapshots: 0,
+  discoveryThreadSnapshots: 0,
   sourceItems: [
     {
       id: "comment-1",
@@ -229,6 +237,11 @@ test("reddit session enforces the daily live action cap", async () => {
   config.redditOperating = {
     targetSubreddits: [...config.redditOperating!.targetSubreddits],
     searchQueries: [...config.redditOperating!.searchQueries],
+    ingestionListLimit: config.redditOperating!.ingestionListLimit,
+    ingestionMaxOwnThreadReads: config.redditOperating!.ingestionMaxOwnThreadReads,
+    ingestionMaxDiscoveryThreadReads: config.redditOperating!.ingestionMaxDiscoveryThreadReads,
+    ingestionOwnThreadCommentLimit: config.redditOperating!.ingestionOwnThreadCommentLimit,
+    ingestionMaxSearchesPerSubreddit: config.redditOperating!.ingestionMaxSearchesPerSubreddit,
     maxActionsPerSession: config.redditOperating!.maxActionsPerSession,
     maxActionsPerDay: 1,
     minJitterMinutes: config.redditOperating!.minJitterMinutes,

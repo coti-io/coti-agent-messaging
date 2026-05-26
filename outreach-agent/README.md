@@ -275,12 +275,12 @@ Browser worker setup:
 ```bash
 npm install -w @coti-agent-messaging/outreach-agent
 npx playwright install chromium
-OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./outreach-agent/.browser/reddit-storage-state.json
+OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=.browser/reddit-storage-state.json
 npm run reddit:login -w @coti-agent-messaging/outreach-agent
 OUTREACH_AGENT_VENUE=reddit
 OUTREACH_AGENT_MODE=approved_autopost
 OUTREACH_REDDIT_CONTROLLER=browser
-OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./outreach-agent/.browser/reddit-storage-state.json
+OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=.browser/reddit-storage-state.json
 npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
 ```
 
@@ -294,7 +294,7 @@ Recommended split for real use:
 
 ```bash
 npm run reddit:browser:install:deps -w @coti-agent-messaging/outreach-agent
-OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=./outreach-agent/.browser/reddit-storage-state.json \
+OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=.browser/reddit-storage-state.json \
 npm run reddit:login -w @coti-agent-messaging/outreach-agent
 ```
 

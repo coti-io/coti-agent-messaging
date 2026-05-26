@@ -22,6 +22,7 @@ import {
   type RedditSearchResult,
   type RedditThreadState
 } from "./reddit-controller.js";
+import { resolveRedditBrowserStorageStatePath } from "./config.js";
 import { parseRedditListing, type RedditSourceItem } from "./reddit-outreach.js";
 
 export interface RedditBrowserWorkerConfig {
@@ -95,12 +96,6 @@ function defaultBridgeDir(): string {
   return path.join(packageRoot, ".bridge", "reddit-browser");
 }
 
-function defaultStorageStatePath(): string {
-  const currentFile = fileURLToPath(import.meta.url);
-  const packageRoot = path.resolve(path.dirname(currentFile), "..", "..");
-  return path.join(packageRoot, ".browser", "reddit-storage-state.json");
-}
-
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) {
     return fallback;
@@ -138,8 +133,9 @@ export function resolveRedditBrowserWorkerConfig(): RedditBrowserWorkerConfig {
     slowMoMs: Number.isFinite(Number(process.env.OUTREACH_REDDIT_BROWSER_SLOWMO_MS))
       ? Number(process.env.OUTREACH_REDDIT_BROWSER_SLOWMO_MS)
       : undefined,
-    storageStatePath:
-      getOptionalEnv("OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH") ?? defaultStorageStatePath(),
+    storageStatePath: resolveRedditBrowserStorageStatePath(
+      getOptionalEnv("OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH")
+    ),
     startupUrl: process.env.OUTREACH_REDDIT_BROWSER_STARTUP_URL ?? DEFAULT_BROWSER_BASE_URL
   };
 }

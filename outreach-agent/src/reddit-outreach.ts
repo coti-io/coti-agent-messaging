@@ -8,6 +8,7 @@ import {
   type PromptProfile
 } from "./prompt-profile.js";
 import type { AttributionMode } from "./outreach-attribution.js";
+import type { RedditCommentState, RedditThreadState } from "./reddit-controller.js";
 import {
   assessPrivateMessageEscalation,
   type PrivateMessageEscalationAssessment,
@@ -60,6 +61,8 @@ export interface RedditSourceItem {
   score?: number;
   commentCount?: number;
   parentTitle?: string;
+  /** Thread where we already posted or commented (from memory). */
+  onOwnThread?: boolean;
 }
 
 export interface RedditOutboundMemoryEntry {
@@ -69,6 +72,9 @@ export interface RedditOutboundMemoryEntry {
   content: string;
   createdAt: string;
   targetId?: string;
+  /** Root post id for this participation (used to re-ingest replies). */
+  threadPostId?: string;
+  remoteContentUrl?: string;
   targetSummary?: string;
   nextEligibleAt?: string;
   status?:
@@ -817,6 +823,21 @@ export class RedditReadOnlyClient {
     return parseRedditListing(await this.fetchJson(url));
   }
 
+  async getThreadState(
+    subreddit: string,
+    postId: string,
+    commentLimit = 100
+  ): Promise<RedditThreadState | undefined> {
+    const url = new URL(
+      `/r/${encodeURIComponent(subreddit)}/comments/${encodeURIComponent(postId)}.json`,
+      this.baseUrl
+    );
+    url.searchParams.set("limit", String(commentLimit));
+    url.searchParams.set("depth", "8");
+    url.searchParams.set("sort", "new");
+    return parseRedditThreadJsonListing(await this.fetchJson(url), this.baseUrl);
+  }
+
   private async fetchJson(url: URL): Promise<unknown> {
     const response = await this.fetchImpl(url, {
       method: "GET",
@@ -868,6 +889,65 @@ export function parseRedditListing(input: unknown): RedditSourceItem[] {
   }
 
   return parseFlexibleSource(input, "post");
+}
+
+export function parseRedditThreadJsonListing(
+  input: unknown,
+  baseUrl = "https://www.reddit.com"
+): RedditThreadState | undefined {
+  if (!Array.isArray(input) || input.length === 0) {
+    return undefined;
+  }
+  const postItems = parseRedditListing(input[0]);
+  const post = postItems.find((item) => item.kind === "post");
+  if (!post) {
+    return undefined;
+  }
+  const comments = Array.isArray(input[1]) ? parseRedditCommentListingJson(input[1]) : [];
+  return {
+    id: post.id,
+    subreddit: post.subreddit,
+    title: post.title,
+    body: post.body,
+    author: post.author,
+    permalink: post.permalink,
+    url: post.url,
+    score: post.score,
+    commentCount: post.commentCount,
+    createdUtc: post.createdUtc,
+    comments
+  };
+}
+
+function parseRedditCommentListingJson(input: unknown): RedditCommentState[] {
+  if (!isRecord(input) || !isRecord(input.data) || !Array.isArray(input.data.children)) {
+    return [];
+  }
+  return input.data.children.flatMap((child) => parseRedditCommentNodeJson(child, 0));
+}
+
+function parseRedditCommentNodeJson(input: unknown, depth: number): RedditCommentState[] {
+  if (!isRecord(input) || input.kind !== "t1" || !isRecord(input.data)) {
+    return [];
+  }
+  const data = input.data;
+  const replies =
+    isRecord(data.replies) && isRecord(data.replies.data) && Array.isArray(data.replies.data.children)
+      ? data.replies.data.children.flatMap((child) => parseRedditCommentNodeJson(child, depth + 1))
+      : [];
+  return [
+    {
+      id: stringValue(data.id) ?? stringValue(data.name) ?? `comment-depth-${depth}`,
+      body: stringValue(data.body) ?? "",
+      author: stringValue(data.author),
+      permalink: stringValue(data.permalink),
+      score: numberValue(data.score),
+      createdUtc: numberValue(data.created_utc),
+      parentId: stringValue(data.parent_id),
+      depth,
+      replies
+    }
+  ].filter((comment) => comment.body.length > 0);
 }
 
 function parseFlexibleSource(input: unknown, fallbackKind: RedditSourceItem["kind"]): RedditSourceItem[] {

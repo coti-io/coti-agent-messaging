@@ -34,7 +34,7 @@
     "outreach:reddit:browser:install": "npm run reddit:browser:install -w @coti-agent-messaging/outreach-agent",
     "outreach:reddit:browser:install:deps": "npm run reddit:browser:install:deps -w @coti-agent-messaging/outreach-agent",
     "outreach:reddit:login": "npm run reddit:login -w @coti-agent-messaging/outreach-agent",
-    "outreach:reddit:login:local": "npm run reddit:login:local -w @coti-agent-messaging/outreach-agent",
+    "outreach:reddit:login:local": "OUTREACH_REDDIT_BROWSER_LOGIN_HEADLESS=false npm run reddit:login -w @coti-agent-messaging/outreach-agent",
     "outreach:reddit:browser-worker": "npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent",
     "outreach:reddit:browser-worker:local": "npm run reddit:browser-worker:local -w @coti-agent-messaging/outreach-agent",
     "outreach:reddit:session:dry-run": "npm run reddit:session:dry-run -w @coti-agent-messaging/outreach-agent",

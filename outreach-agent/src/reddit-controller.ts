@@ -85,6 +85,8 @@ export interface RedditConversationSnapshot {
   thread: RedditThreadState;
   source: "browser" | "api" | "input";
   capturedAt: string;
+  /** Thread where we have prior outbound participation. */
+  ownThread?: boolean;
 }
 
 export type RedditBrowserReadAction =

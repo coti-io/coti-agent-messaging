@@ -57,6 +57,9 @@ export function plannedRedditActionFromCandidate(
 
 function inferRedditCandidateSource(planned: RedditPlannedAction): ActionCandidateSource {
   const source = planned.item.source;
+  if (source.onOwnThread) {
+    return source.kind === "comment" ? "own_thread" : "activity_reply";
+  }
   if (source.kind === "comment") {
     return (source.commentCount ?? 0) >= 10 || (source.score ?? 0) >= 8 ? "hot_thread" : "explore_feed";
   }

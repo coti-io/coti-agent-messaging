@@ -168,7 +168,7 @@ ${listen_directives}
     }
 
     location = ${TRACKING_PATH}/sdk {
-        return 302 ${TRACKING_PATH}/sdk/$is_args$args;
+        return 302 ${TRACKING_PATH}/sdk/\$is_args\$args;
     }
 
     location = ${TRACKING_PATH}/sdk/ {

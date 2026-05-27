@@ -12,6 +12,7 @@ import {
   type RedditThreadState
 } from "./reddit-controller.js";
 import {
+  getDefaultRedditDiscoverySubredditNames,
   RedditReadOnlyClient,
   redditMemoryEntryConsumesTarget,
   redditMemoryEntryCountsTowardPublishedLimits,
@@ -19,12 +20,8 @@ import {
   type RedditSourceItem
 } from "./reddit-outreach.js";
 
-export const DEFAULT_REDDIT_OPERATING_SUBREDDITS = [
-  "sales",
-  "SaaS",
-  "CustomerSuccess",
-  "DigitalMarketing"
-] as const;
+/** @deprecated Use getDefaultRedditDiscoverySubredditNames() */
+export const DEFAULT_REDDIT_OPERATING_SUBREDDITS = getDefaultRedditDiscoverySubredditNames();
 
 /** Default subreddit searches when OUTREACH_REDDIT_SEARCH_QUERIES is unset. */
 export const DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES = [
@@ -44,7 +41,7 @@ export const DEFAULT_REDDIT_INGESTION_LIST_LIMIT = 5;
 /** Threads to fully re-read where we already participated (priority). */
 export const DEFAULT_REDDIT_INGESTION_MAX_OWN_THREAD_READS = 25;
 /** Cold threads from hot feeds per session (0 turns discovery off). */
-export const DEFAULT_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS = 2;
+export const DEFAULT_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS = 4;
 /** Subreddit searches per session; 0 keeps browsing to hot listings only. */
 export const DEFAULT_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT = 1;
 export const DEFAULT_REDDIT_INGESTION_OWN_THREAD_COMMENT_LIMIT = 100;
@@ -61,6 +58,9 @@ export interface RedditOwnThreadTarget {
   lastTouchedAt: string;
 }
 
+export type DiscoveryListingSort = "hot" | "new" | "rising";
+export type DiscoveryPickStrategy = "stochastic" | "top_score";
+
 export interface RedditIngestionInput {
   config: MoltbookRuntimeConfig;
   subreddits?: readonly string[];
@@ -74,6 +74,30 @@ export interface RedditIngestionInput {
   threadCommentLimit?: number;
   ownThreadCommentLimit?: number;
   source?: "browser" | "api" | "auto";
+  /** Optional seed for deterministic tests; omit for per-run randomness. */
+  discoverySeed?: number;
+  discoveryPickStrategy?: DiscoveryPickStrategy;
+}
+
+export interface PickThreadReadCandidatesOptions {
+  excludePostIds?: ReadonlySet<string>;
+  strategy?: DiscoveryPickStrategy;
+  random?: () => number;
+}
+
+export interface RedditIngestionListingSortRecord {
+  subreddit: string;
+  sort: DiscoveryListingSort;
+}
+
+export interface RedditIngestionDiagnostics {
+  subreddits: string[];
+  discoverySearchQueries: string[];
+  discoveryListingSorts: RedditIngestionListingSortRecord[];
+  excludedThreadPostIds: string[];
+  discoveryPickStrategy: DiscoveryPickStrategy;
+  browserHeadless: boolean;
+  readViaBrowser: boolean;
 }
 
 export interface RedditIngestionResult {
@@ -84,6 +108,7 @@ export interface RedditIngestionResult {
   ownThreadTargets: number;
   ownThreadSnapshots: number;
   discoveryThreadSnapshots: number;
+  diagnostics: RedditIngestionDiagnostics;
 }
 
 export async function ingestRedditState(input: RedditIngestionInput): Promise<RedditIngestionResult> {
@@ -99,13 +124,59 @@ export async function ingestRedditState(input: RedditIngestionInput): Promise<Re
   const skipped: string[] = [];
   const ownThreadTargets = collectOwnThreadTargets(history);
 
-  const snapshots =
-    source === "browser" || (source === "auto" && getRedditControllerConfig(input.config).controller === "browser")
-      ? await ingestViaBrowser(input.config, subreddits, queries, limits, ownThreadTargets, skipped)
-      : await ingestViaApi(input.config, subreddits, queries, limits, ownThreadTargets, skipped);
+  const discoveryRng = createDiscoveryRng(input.discoverySeed);
+  const discoveryExcludePostIds = collectDiscoveryExcludePostIds(history);
+  const discoveryPickStrategy = input.discoveryPickStrategy ?? "stochastic";
+  const diagnostics: RedditIngestionDiagnostics = {
+    subreddits: [...subreddits],
+    discoverySearchQueries: [],
+    discoveryListingSorts: [],
+    excludedThreadPostIds: [...discoveryExcludePostIds],
+    discoveryPickStrategy,
+    browserHeadless: isRedditBrowserHeadless(),
+    readViaBrowser: false
+  };
+
+  const usedBrowser =
+    source === "browser" ||
+    (source === "auto" && getRedditControllerConfig(input.config).controller === "browser");
+  diagnostics.readViaBrowser = usedBrowser;
+  const discoveryOptions: DiscoveryIngestionOptions = {
+    random: discoveryRng,
+    excludePostIds: discoveryExcludePostIds,
+    pickStrategy: discoveryPickStrategy,
+    diagnostics
+  };
+  const snapshots = usedBrowser
+      ? await ingestViaBrowser(
+          input.config,
+          subreddits,
+          queries,
+          limits,
+          ownThreadTargets,
+          skipped,
+          discoveryOptions
+        )
+      : await ingestViaApi(
+          input.config,
+          subreddits,
+          queries,
+          limits,
+          ownThreadTargets,
+          skipped,
+          discoveryOptions
+        );
 
   const deduped = dedupeSnapshots(snapshots);
   const agent = getOutreachAgentConfig(input.config);
+  const discoveryThreadSnapshots = deduped.filter((snapshot) => !snapshot.ownThread).length;
+  appendHeadlessDiscoveryWarning(skipped, {
+    usedBrowser,
+    headless: isRedditBrowserHeadless(),
+    maxDiscoveryThreadReads: limits.maxDiscoveryThreadReads,
+    subredditCount: subreddits.length,
+    discoveryThreadSnapshots
+  });
   return {
     capturedAt,
     snapshots: deduped,
@@ -113,15 +184,52 @@ export async function ingestRedditState(input: RedditIngestionInput): Promise<Re
     skipped,
     ownThreadTargets: ownThreadTargets.length,
     ownThreadSnapshots: deduped.filter((snapshot) => snapshot.ownThread).length,
-    discoveryThreadSnapshots: deduped.filter((snapshot) => !snapshot.ownThread).length
+    discoveryThreadSnapshots,
+    diagnostics
   };
 }
 
 function defaultSubreddits(config: MoltbookRuntimeConfig): string[] {
   const agent = getOutreachAgentConfig(config);
-  return agent.allowedSurfaces.length > 0
-    ? agent.allowedSurfaces
-    : [...DEFAULT_REDDIT_OPERATING_SUBREDDITS];
+  if (agent.allowedSurfaces.length > 0) {
+    return agent.allowedSurfaces;
+  }
+  const operating = getRedditOperatingAgentConfig(config);
+  return operating.targetSubreddits.length > 0
+    ? operating.targetSubreddits
+    : getDefaultRedditDiscoverySubredditNames();
+}
+
+function isRedditBrowserHeadless(): boolean {
+  const value = process.env.OUTREACH_REDDIT_BROWSER_HEADLESS;
+  if (!value) {
+    return false;
+  }
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+function appendHeadlessDiscoveryWarning(
+  skipped: string[],
+  input: {
+    usedBrowser: boolean;
+    headless: boolean;
+    maxDiscoveryThreadReads: number;
+    subredditCount: number;
+    discoveryThreadSnapshots: number;
+  }
+): void {
+  if (
+    !input.headless ||
+    !input.usedBrowser ||
+    input.maxDiscoveryThreadReads <= 0 ||
+    input.subredditCount <= 0 ||
+    input.discoveryThreadSnapshots > 0
+  ) {
+    return;
+  }
+  skipped.push(
+    "discovery_warning: headless browser returned zero discovery snapshots; Reddit often blocks headless — run a headed worker (npm run reddit:browser-worker)"
+  );
 }
 
 interface RedditIngestionLimits {
@@ -225,7 +333,7 @@ export function collectOwnThreadTargets(
   const byKey = new Map<string, RedditOwnThreadTarget>();
 
   for (const entry of history) {
-    if (!redditMemoryEntryCountsTowardPublishedLimits(entry)) {
+    if (!qualifiesForOwnThreadParticipation(entry)) {
       continue;
     }
 
@@ -270,13 +378,116 @@ function registerOwnThreadTarget(
   }
 }
 
+export function createDiscoveryRng(seed?: number): () => number {
+  if (seed === undefined) {
+    return Math.random;
+  }
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+}
+
+export function shuffleWithRng<T>(items: readonly T[], random: () => number = Math.random): T[] {
+  const copy = [...items];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    const current = copy[index];
+    copy[index] = copy[swapIndex]!;
+    copy[swapIndex] = current!;
+  }
+  return copy;
+}
+
+export function selectDiscoverySearchQueries(
+  queries: readonly string[],
+  count: number,
+  random: () => number = Math.random
+): string[] {
+  if (count <= 0 || queries.length === 0) {
+    return [];
+  }
+  return shuffleWithRng(queries, random).slice(0, Math.min(count, queries.length));
+}
+
+const DISCOVERY_LISTING_SORTS: readonly DiscoveryListingSort[] = ["hot", "new", "rising"];
+
+export function selectDiscoveryListingSort(random: () => number = Math.random): DiscoveryListingSort {
+  const roll = random();
+  if (roll < 0.4) {
+    return DISCOVERY_LISTING_SORTS[0]!;
+  }
+  if (roll < 0.75) {
+    return DISCOVERY_LISTING_SORTS[1]!;
+  }
+  return DISCOVERY_LISTING_SORTS[2]!;
+}
+
+/** Threads to skip when picking new posts from hot/search (not own-thread re-reads). */
+export function collectDiscoveryExcludePostIds(
+  history: readonly RedditOutboundMemoryEntry[]
+): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of history) {
+    if (!qualifiesForOwnThreadParticipation(entry)) {
+      continue;
+    }
+    if (entry.threadPostId) {
+      ids.add(entry.threadPostId);
+    }
+    if (entry.kind === "post" && entry.targetId) {
+      ids.add(entry.targetId);
+    }
+  }
+  return ids;
+}
+
+/** Any thread we drafted on or posted in should be re-read for follow-up comments. */
+export function qualifiesForOwnThreadParticipation(entry: RedditOutboundMemoryEntry): boolean {
+  if (entry.status === "posted") {
+    return true;
+  }
+  if (entry.status === "drafted" && (entry.kind === "comment" || entry.kind === "reply")) {
+    return true;
+  }
+  return redditMemoryEntryCountsTowardPublishedLimits(entry);
+}
+
 export function pickThreadReadCandidates(
   results: readonly RedditSearchResult[],
-  maxThreadReads: number
+  maxThreadReads: number,
+  options: PickThreadReadCandidatesOptions = {}
 ): RedditSearchResult[] {
-  return dedupeSearchResults(results)
-    .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
-    .slice(0, Math.max(0, maxThreadReads));
+  const cap = Math.max(0, maxThreadReads);
+  if (cap === 0) {
+    return [];
+  }
+
+  const exclude = options.excludePostIds ?? new Set<string>();
+  const ranked = dedupeSearchResults(results)
+    .filter((item) => !exclude.has(item.id))
+    .sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
+
+  if (ranked.length <= cap) {
+    return ranked;
+  }
+
+  const strategy = options.strategy ?? "stochastic";
+  if (strategy === "top_score") {
+    return ranked.slice(0, cap);
+  }
+
+  const random = options.random ?? Math.random;
+  const poolSize = Math.min(ranked.length, Math.max(cap * 4, 12));
+  return weightedSampleWithoutReplacement(ranked.slice(0, poolSize), cap, random);
+}
+
+interface DiscoveryIngestionOptions {
+  random: () => number;
+  excludePostIds: ReadonlySet<string>;
+  pickStrategy: DiscoveryPickStrategy;
+  diagnostics: RedditIngestionDiagnostics;
 }
 
 async function ingestViaBrowser(
@@ -285,7 +496,8 @@ async function ingestViaBrowser(
   queries: readonly string[],
   limits: RedditIngestionLimits,
   ownThreadTargets: readonly RedditOwnThreadTarget[],
-  skipped: string[]
+  skipped: string[],
+  discovery: DiscoveryIngestionOptions
 ): Promise<RedditConversationSnapshot[]> {
   const agent = getOutreachAgentConfig(config);
   const controller = new RedditBrowserController(config);
@@ -323,22 +535,27 @@ async function ingestViaBrowser(
 
   const results: RedditSearchResult[] = [];
   const searchQueries =
-    limits.maxSearchesPerSubreddit > 0 ? queries.slice(0, limits.maxSearchesPerSubreddit) : [];
+    limits.maxSearchesPerSubreddit > 0
+      ? selectDiscoverySearchQueries(queries, limits.maxSearchesPerSubreddit, discovery.random)
+      : [];
+  discovery.diagnostics.discoverySearchQueries = [...searchQueries];
 
-  for (const subreddit of subreddits) {
+  for (const subreddit of shuffleWithRng(subreddits, discovery.random)) {
+    const listingSort = selectDiscoveryListingSort(discovery.random);
+    discovery.diagnostics.discoveryListingSorts.push({ subreddit, sort: listingSort });
     try {
-      const hotListed = await controller.readAction({
-        id: `list:${subreddit}:hot`,
+      const listed = await controller.readAction({
+        id: `list:${subreddit}:${listingSort}`,
         type: "list_subreddit_posts",
         subreddit,
-        sort: "hot",
+        sort: listingSort,
         limit: limits.listLimit
       }, context);
-      if (hotListed.type === "list_subreddit_posts") {
-        results.push(...hotListed.items);
+      if (listed.type === "list_subreddit_posts") {
+        results.push(...listed.items);
       }
     } catch (error) {
-      skipped.push(`browser list r/${subreddit} hot: ${formatError(error)}`);
+      skipped.push(`browser list r/${subreddit} ${listingSort}: ${formatError(error)}`);
     }
 
     for (const query of searchQueries) {
@@ -361,7 +578,11 @@ async function ingestViaBrowser(
     }
   }
 
-  for (const result of pickThreadReadCandidates(results, limits.maxDiscoveryThreadReads)) {
+  for (const result of pickThreadReadCandidates(results, limits.maxDiscoveryThreadReads, {
+    excludePostIds: discovery.excludePostIds,
+    strategy: discovery.pickStrategy,
+    random: discovery.random
+  })) {
     const key = `${result.subreddit}:${result.id}`;
     if (readPostIds.has(key)) {
       continue;
@@ -427,7 +648,8 @@ async function ingestViaApi(
   queries: readonly string[],
   limits: RedditIngestionLimits,
   ownThreadTargets: readonly RedditOwnThreadTarget[],
-  skipped: string[]
+  skipped: string[],
+  discovery: DiscoveryIngestionOptions
 ): Promise<RedditConversationSnapshot[]> {
   const api = getRedditControllerConfig(config).api;
   if (!api.accessToken || !api.userAgent) {
@@ -467,9 +689,13 @@ async function ingestViaApi(
 
   const items: RedditSourceItem[] = [];
   const searchQueries =
-    limits.maxSearchesPerSubreddit > 0 ? queries.slice(0, limits.maxSearchesPerSubreddit) : [];
+    limits.maxSearchesPerSubreddit > 0
+      ? selectDiscoverySearchQueries(queries, limits.maxSearchesPerSubreddit, discovery.random)
+      : [];
+  discovery.diagnostics.discoverySearchQueries = [...searchQueries];
 
-  for (const subreddit of subreddits) {
+  for (const subreddit of shuffleWithRng(subreddits, discovery.random)) {
+    discovery.diagnostics.discoveryListingSorts.push({ subreddit, sort: "hot" });
     try {
       items.push(...await client.getHotPosts(subreddit, limits.listLimit));
     } catch (error) {
@@ -484,10 +710,25 @@ async function ingestViaApi(
     }
   }
 
-  const rankedPosts = dedupeSourceItems(items)
-    .filter((item) => item.kind === "post")
-    .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
-    .slice(0, limits.maxDiscoveryThreadReads);
+  const postItems = dedupeSourceItems(items).filter((item) => item.kind === "post");
+  const picked = pickThreadReadCandidates(
+    postItems.map((item) => ({
+      id: item.id,
+      subreddit: item.subreddit,
+      title: item.title,
+      score: item.score,
+      url: item.url,
+      permalink: item.permalink
+    })),
+    limits.maxDiscoveryThreadReads,
+    {
+      excludePostIds: discovery.excludePostIds,
+      strategy: discovery.pickStrategy,
+      random: discovery.random
+    }
+  );
+  const pickedKeys = new Set(picked.map((result) => `${result.subreddit}:${result.id}`));
+  const rankedPosts = postItems.filter((item) => pickedKeys.has(`${item.subreddit}:${item.id}`));
 
   for (const item of rankedPosts) {
     if (ownThreadTargets.some((target) => target.postId === item.id)) {
@@ -529,6 +770,7 @@ export function snapshotsToSourceItems(
     const thread = snapshot.thread;
     const onOwnThread = snapshot.ownThread === true || ownThreadPostIds.has(thread.id);
     const minCommentBody = onOwnThread ? MIN_COMMENT_BODY_OWN_THREAD : MIN_COMMENT_BODY_DISCOVERY;
+    const commentById = indexCommentsById(thread.comments);
 
     for (const comment of flattenComments(thread.comments)) {
       if (alreadyTouched.has(comment.id)) {
@@ -553,7 +795,9 @@ export function snapshotsToSourceItems(
         score: comment.score,
         commentCount: thread.commentCount,
         onOwnThread,
-        threadPostId: thread.id
+        threadPostId: thread.id,
+        parentId: normalizeRedditParentId(comment.parentId),
+        replyToOurComment: isDirectReplyToOurComment(comment, commentById, ownAuthors)
       });
     }
 
@@ -584,6 +828,40 @@ function isOwnAuthoredComment(author: string | undefined, ownAuthors: ReadonlySe
   }
   const normalized = author.replace(/^u\//i, "").toLowerCase();
   return ownAuthors.has(normalized);
+}
+
+function indexCommentsById(
+  comments: readonly RedditThreadState["comments"][number][]
+): Map<string, RedditThreadState["comments"][number]> {
+  const byId = new Map<string, RedditThreadState["comments"][number]>();
+  for (const comment of flattenComments(comments)) {
+    byId.set(comment.id, comment);
+    const normalizedId = normalizeRedditParentId(comment.id);
+    if (normalizedId && normalizedId !== comment.id) {
+      byId.set(normalizedId, comment);
+    }
+  }
+  return byId;
+}
+
+function normalizeRedditParentId(parentId: string | undefined): string | undefined {
+  if (!parentId) {
+    return undefined;
+  }
+  return parentId.replace(/^t[0-9]_/, "");
+}
+
+function isDirectReplyToOurComment(
+  comment: RedditThreadState["comments"][number],
+  commentById: ReadonlyMap<string, RedditThreadState["comments"][number]>,
+  ownAuthors: ReadonlySet<string>
+): boolean {
+  const parentKey = normalizeRedditParentId(comment.parentId);
+  if (!parentKey) {
+    return false;
+  }
+  const parent = commentById.get(parentKey);
+  return parent ? isOwnAuthoredComment(parent.author, ownAuthors) : false;
 }
 
 function flattenComments(comments: readonly RedditThreadState["comments"][number][]): RedditThreadState["comments"] {
@@ -651,4 +929,28 @@ function dedupeSnapshots(snapshots: readonly RedditConversationSnapshot[]): Redd
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function weightedSampleWithoutReplacement<T extends { score?: number }>(
+  pool: readonly T[],
+  count: number,
+  random: () => number
+): T[] {
+  const remaining = [...pool];
+  const picked: T[] = [];
+  while (picked.length < count && remaining.length > 0) {
+    const weights = remaining.map((item) => Math.max(1, item.score ?? 1));
+    const totalWeight = weights.reduce((left, right) => left + right, 0);
+    let roll = random() * totalWeight;
+    let chosenIndex = remaining.length - 1;
+    for (let index = 0; index < remaining.length; index += 1) {
+      roll -= weights[index]!;
+      if (roll <= 0) {
+        chosenIndex = index;
+        break;
+      }
+    }
+    picked.push(remaining.splice(chosenIndex, 1)[0]!);
+  }
+  return picked;
 }

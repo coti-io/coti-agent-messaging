@@ -65,10 +65,16 @@ export interface RedditSourceItem {
   onOwnThread?: boolean;
   /** Root post id for comments and posts on a thread. */
   threadPostId?: string;
+  /** Parent comment id when kind is comment. */
+  parentId?: string;
+  /** True when this comment is a direct reply to one of our comments. */
+  replyToOurComment?: boolean;
 }
 
 export interface RedditOutboundMemoryEntry {
   id: string;
+  /** Matches review item id (`post:sub:id` / `comment:sub:id`) when recorded from a session. */
+  decisionId?: string;
   subreddit: string;
   kind: "post" | "comment" | "reply";
   content: string;
@@ -360,6 +366,15 @@ export const DEFAULT_REDDIT_TARGETING: RedditOutreachTargeting = {
     }
   ]
 };
+
+/** Primary agent-messaging subs used when OUTREACH_REDDIT_TARGET_SUBREDDITS is unset. */
+export function getDefaultRedditDiscoverySubredditNames(
+  targeting: RedditOutreachTargeting = DEFAULT_REDDIT_TARGETING
+): string[] {
+  return targeting.targetSubreddits
+    .filter((entry) => entry.priority === "primary")
+    .map((entry) => entry.name);
+}
 
 export const DEFAULT_REDDIT_RULES_REGISTRY: RedditRulesRegistry = {
   generatedAt: "2026-05-07T00:00:00.000Z",
@@ -760,10 +775,12 @@ function buildGates(
       reason: "Skip hostile, bait, rant, or accusation-heavy threads."
     },
     {
-      id: "draft_exists",
+      id: "safe_draft_generated",
       passed: Boolean(draft),
       severity: "block",
-      reason: draft ? "A non-promotional explanatory draft was generated." : "No safe draft generated."
+      reason: draft
+        ? "Safe explanatory draft generated."
+        : "No safe explanatory draft could be generated."
     }
   ];
 

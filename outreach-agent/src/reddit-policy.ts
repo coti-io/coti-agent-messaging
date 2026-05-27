@@ -6,7 +6,8 @@ import {
   type RedditOutreachTargeting,
   type RedditReviewItem,
   type RedditRulesRegistry,
-  type RedditSourceItem
+  type RedditSourceItem,
+  resolveSourceThreadPostId
 } from "./reddit-outreach.js";
 
 export interface RedditPlannerConfig {
@@ -113,7 +114,11 @@ export function planRedditAction(input: {
     duplicateCheckPolicy: input.duplicateCheckPolicy ?? "block_posted_only",
     now
   });
+  const history = input.history ?? [];
   const skipped = [
+    ...queue.items
+      .filter((item) => item.action === "answer_publicly" && item.draft && alreadyTouched(item, history))
+      .map((item) => `${item.id}: skipped prior draft or post in memory`),
     ...queue.ignored.map((item) => `${item.id}: blocked by ${blockedGateIds(item).join(",")}`),
     ...queue.items
       .filter((item) => item.action !== "answer_publicly")
@@ -122,7 +127,7 @@ export function planRedditAction(input: {
   const ranked = queue.items
     .filter((item) => item.action === "answer_publicly")
     .filter((item) => item.draft)
-    .filter((item) => !alreadyTouched(item, input.history ?? []))
+    .filter((item) => !alreadyTouched(item, history))
     .map((item) => {
       const type = item.source.kind === "comment" ? "reply_to_comment" as const : "comment_on_post" as const;
       const score = scoreCandidate(item, config);
@@ -131,7 +136,13 @@ export function planRedditAction(input: {
         type,
         item,
         score,
-        reason: `${type === "reply_to_comment" ? "reply-worthy comment" : "thread comment"}; ${item.whyRelevant}`
+        reason: [
+          type === "reply_to_comment" ? "reply-worthy comment" : "thread comment",
+          item.source.replyToOurComment ? "direct reply to our comment" : undefined,
+          item.whyRelevant
+        ]
+          .filter(Boolean)
+          .join("; ")
       };
     })
     .sort((left, right) => right.score - left.score);
@@ -163,29 +174,62 @@ export function jitterDelayMs(config: RedditPlannerConfig, rng: () => number): n
   return Math.floor(min + (max - min) * Math.min(0.999, Math.max(0, rng())));
 }
 
-function scoreCandidate(item: RedditReviewItem, config: RedditPlannerConfig): number {
+export function scoreRedditReviewItem(item: RedditReviewItem, config: RedditPlannerConfig): number {
   const ownThreadBoost =
     item.source.onOwnThread && item.source.kind === "comment"
       ? 120
       : item.source.onOwnThread
         ? 40
         : 0;
+  const directReplyBoost = item.source.replyToOurComment ? 80 : 0;
   const commentBoost = config.preferComments && item.source.kind === "comment" ? 20 : 0;
   const activityBoost = Math.min(15, item.source.commentCount ?? 0);
-  return ownThreadBoost + commentBoost + activityBoost + item.relevanceScore * 3 - item.riskScore;
+  return (
+    ownThreadBoost + directReplyBoost + commentBoost + activityBoost + item.relevanceScore * 3 - item.riskScore
+  );
+}
+
+function scoreCandidate(item: RedditReviewItem, config: RedditPlannerConfig): number {
+  return scoreRedditReviewItem(item, config);
 }
 
 function alreadyTouched(item: RedditReviewItem, history: readonly RedditOutboundMemoryEntry[]): boolean {
-  return history.some((entry) => {
-    if (!redditMemoryEntryConsumesTarget(entry)) {
-      return false;
-    }
-    return (
-      entry.targetId === item.source.id ||
-      entry.id === item.source.id ||
-      (entry.targetSummary && item.source.body && entry.targetSummary.includes(item.source.body.slice(0, 80)))
-    );
-  });
+  return history.some((entry) => memoryEntryTouchesReviewItem(entry, item));
+}
+
+/** Treat dry-run drafts like posted targets so repeat sessions do not re-pick the same thread. */
+export function memoryEntryTouchesReviewItem(
+  entry: RedditOutboundMemoryEntry,
+  item: RedditReviewItem
+): boolean {
+  if (entry.decisionId === item.id) {
+    return true;
+  }
+  if (entry.targetId && entry.targetId === item.source.id) {
+    return true;
+  }
+  const threadPostId = resolveSourceThreadPostId(item.source);
+  if (
+    threadPostId &&
+    entry.threadPostId === threadPostId &&
+    item.source.kind === "post" &&
+    entry.firstReply &&
+    (entry.status === "drafted" || redditMemoryEntryConsumesTarget(entry))
+  ) {
+    return true;
+  }
+  if (!redditMemoryEntryConsumesTarget(entry)) {
+    return false;
+  }
+  return (
+    entry.targetId === item.source.id ||
+    entry.id === item.source.id ||
+    Boolean(
+      entry.targetSummary &&
+        item.source.body &&
+        entry.targetSummary.includes(item.source.body.slice(0, 80))
+    )
+  );
 }
 
 function blockedGateIds(item: RedditReviewItem): string[] {

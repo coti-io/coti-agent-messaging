@@ -4,9 +4,12 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_REDDIT_PLANNER_CONFIG,
   jitterDelayMs,
-  planRedditAction
+  planRedditAction,
+  scoreRedditReviewItem
 } from "../src/reddit-policy.js";
+import type { RedditReviewItem } from "../src/reddit-outreach.js";
 import { validateRedditDraft } from "../src/reddit-drafting.js";
+import { resolvePromptProfile } from "../src/prompt-profile.js";
 import type { RedditOutboundMemoryEntry, RedditSourceItem } from "../src/reddit-outreach.js";
 
 const now = new Date("2026-05-19T09:00:00.000Z");
@@ -41,6 +44,46 @@ test("reddit planner ranks comment replies above post comments", () => {
   const plan = planRedditAction({ items, now, rng: () => 0 });
   assert.equal(plan.action?.type, "reply_to_comment");
   assert.equal(plan.action?.item.source.id, "comment-1");
+});
+
+test("reddit planner skips posts with a prior dry-run draft on the same thread", () => {
+  const history: RedditOutboundMemoryEntry[] = [
+    {
+      id: "draft:post-1:1",
+      decisionId: "post:LocalLLaMA:post-1",
+      subreddit: "LocalLLaMA",
+      kind: "comment",
+      content: "Prior dry-run draft on this thread.",
+      createdAt: now.toISOString(),
+      targetId: "post-1",
+      threadPostId: "post-1",
+      status: "drafted",
+      firstReply: true
+    }
+  ];
+  const items: RedditSourceItem[] = [
+    {
+      id: "post-1",
+      kind: "post",
+      subreddit: "LocalLLaMA",
+      title: "Agent inbox routing",
+      body: "How do you route agent messages between tools without losing context?",
+      createdUtc: now.getTime() / 1000,
+      commentCount: 12
+    },
+    {
+      id: "post-2",
+      kind: "post",
+      subreddit: "LocalLLaMA",
+      title: "MCP tool auth",
+      body: "What patterns work for MCP auth between agents?",
+      createdUtc: now.getTime() / 1000,
+      commentCount: 8
+    }
+  ];
+
+  const plan = planRedditAction({ items, history, now, rng: () => 0 });
+  assert.notEqual(plan.action?.item.source.id, "post-1");
 });
 
 test("reddit planner skips hostile and already-touched targets", () => {
@@ -118,12 +161,74 @@ test("reddit draft validator blocks links, CTAs, and product names", () => {
 });
 
 test("reddit draft validator allows hook-then-substance but blocks standalone fluff", () => {
+  const hookProfile = resolvePromptProfile({
+    venue: "reddit",
+    actionType: "comment_on_post",
+    parameterOverrides: { layout: "short_hook_then_detail" }
+  });
   assert.doesNotThrow(() =>
     validateRedditDraft(
       "The part that usually breaks is ownership. If two teams can edit the same CRM fields without a clear owner, automation just spreads bad data faster. Lock ownership first, then add audits around every automated write.",
       [],
-      "short_hook_then_detail"
+      hookProfile
     )
   );
-  assert.throws(() => validateRedditDraft("Good point.", [], "short_hook_then_detail"), /fluff|substance/i);
+  assert.throws(() => validateRedditDraft("Good point.", [], hookProfile), /fluff|substance/i);
+});
+
+test("direct reply to our comment scores higher than generic own-thread comment", () => {
+  const reviewBase: Omit<RedditReviewItem, "id" | "source"> = {
+    action: "answer_publicly",
+    status: "needs_human_review",
+    relevanceScore: 5,
+    riskScore: 0,
+    draft: "Useful operational answer with enough substance to pass gates.",
+    explicitProductInterest: false,
+    privateMessageAssessment: {
+      shouldEscalate: false,
+      requiresPublicReplyFirst: false,
+      explanation: "No private-message escalation needed."
+    },
+    publicValueDeliveredFirst: true,
+    whyRelevant: "agent messaging thread",
+    gates: [],
+    approvalRequired: true,
+    approvalChecklist: []
+  };
+  const genericOwnThread: RedditReviewItem = {
+    id: "comment-generic",
+    ...reviewBase,
+    source: {
+      id: "comment-generic",
+      kind: "comment",
+      subreddit: "AI_Agents",
+      title: "Agent messaging",
+      body: "Anyone else struggling with agent inbox routing between tools?",
+      onOwnThread: true,
+      threadPostId: "post-1"
+    }
+  };
+  const directReply: RedditReviewItem = {
+    ...genericOwnThread,
+    id: "comment-direct",
+    source: {
+      ...genericOwnThread.source,
+      id: "comment-direct",
+      replyToOurComment: true
+    }
+  };
+
+  assert.ok(
+    scoreRedditReviewItem(directReply, DEFAULT_REDDIT_PLANNER_CONFIG) >
+      scoreRedditReviewItem(genericOwnThread, DEFAULT_REDDIT_PLANNER_CONFIG)
+  );
+});
+
+test("reddit draft validator enforces brief response length", () => {
+  const briefProfile = resolvePromptProfile({
+    venue: "reddit",
+    actionType: "comment_on_post"
+  });
+  const longDraft = `${"This is a useful operational point. ".repeat(40)}`.trim();
+  assert.throws(() => validateRedditDraft(longDraft, [], briefProfile), /length limit/i);
 });

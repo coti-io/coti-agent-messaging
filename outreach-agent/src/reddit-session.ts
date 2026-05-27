@@ -15,21 +15,23 @@ import {
   chooseRedditActionBundle,
   plannedRedditActionFromCandidate
 } from "./reddit-action-planning.js";
+import { planRedditAction } from "./reddit-policy.js";
 import {
-  DEFAULT_REDDIT_OPERATING_RULES,
-  DEFAULT_REDDIT_OPERATING_TARGETING,
-  planRedditAction
-} from "./reddit-policy.js";
+  DEFAULT_REDDIT_RULES_REGISTRY,
+  DEFAULT_REDDIT_TARGETING,
+  type RedditDuplicateCheckPolicy
+} from "./reddit-outreach.js";
 import { redditMemoryEntryCountsTowardPublishedLimits } from "./reddit-outreach.js";
 import type { RedditDecisionMemoryEntry } from "./reddit-memory.js";
 import { createVenueProvider } from "./venue-factory.js";
 import type { VenueAction, VenueOutcome } from "./venue.js";
 import type { MoltbookRuntimeConfig } from "./config.js";
-import type { RedditIngestionResult } from "./reddit-ingestion.js";
+import type { RedditIngestionDiagnostics, RedditIngestionResult } from "./reddit-ingestion.js";
 
 export interface RedditSessionReport {
   generatedAt: string;
   dryRun: boolean;
+  duplicateCheckPolicy: RedditDuplicateCheckPolicy;
   readSource: "browser" | "api" | "auto";
   memoryPath: string;
   ingestion: {
@@ -39,6 +41,11 @@ export interface RedditSessionReport {
     ownThreadSnapshots: number;
     discoveryThreadSnapshots: number;
     skipped: string[];
+    diagnostics: RedditIngestionDiagnostics;
+  };
+  planner: {
+    skipped: string[];
+    blockedGateSample: Array<{ id: string; gates: string[] }>;
   };
   actionCandidates: Array<{
     id: string;
@@ -81,6 +88,7 @@ export async function runRedditSession(input: {
   once?: boolean;
   fetchImpl?: typeof fetch;
   ingestion?: RedditIngestionResult;
+  discoverySeed?: number;
   publishAction?: (action: VenueAction) => Promise<VenueOutcome>;
 } = {}): Promise<RedditSessionReport> {
   const config = input.config ?? await loadRuntimeConfig({ requireVenue: true });
@@ -90,6 +98,7 @@ export async function runRedditSession(input: {
   }
   const operating = getRedditOperatingAgentConfig(config);
   const dryRun = input.dryRun ?? operating.dryRunDefault;
+  const duplicateCheckPolicy = resolveRedditSessionDuplicateCheckPolicy(dryRun);
   const maxActions = input.maxActions ?? operating.maxActionsPerSession;
   const memory = await loadRedditMemory(operating.memoryPath);
   const now = new Date();
@@ -99,12 +108,14 @@ export async function runRedditSession(input: {
     return {
       generatedAt: now.toISOString(),
       dryRun,
+      duplicateCheckPolicy,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
       ingestion: emptyIngestionSummary(),
       actionCandidates: [],
       selectedActionBundle: chooseRedditActionBundle([], maxActions),
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
+      planner: summarizePlanner(decision),
       decision
     };
   }
@@ -119,6 +130,7 @@ export async function runRedditSession(input: {
       return {
         generatedAt: now.toISOString(),
         dryRun,
+        duplicateCheckPolicy,
         readSource: operating.readController,
         memoryPath: operating.memoryPath,
         ingestion: emptyIngestionSummary(),
@@ -131,6 +143,9 @@ export async function runRedditSession(input: {
           skipped: ["Executed one queued Reddit action instead of planning a new one."],
           candidates: []
         },
+        planner: summarizePlanner({
+          skipped: ["Executed one queued Reddit action instead of planning a new one."]
+        }),
         outcome: executed.outcome,
         recorded: executed.recorded
       };
@@ -151,14 +166,15 @@ export async function runRedditSession(input: {
     maxOwnThreadReads: operating.ingestionMaxOwnThreadReads,
     maxDiscoveryThreadReads: operating.ingestionMaxDiscoveryThreadReads,
     maxSearchesPerSubreddit: operating.ingestionMaxSearchesPerSubreddit,
-    ownThreadCommentLimit: operating.ingestionOwnThreadCommentLimit
+    ownThreadCommentLimit: operating.ingestionOwnThreadCommentLimit,
+    discoverySeed: input.discoverySeed ?? parseDiscoverySeedFromEnv()
   });
   const decision = planRedditAction({
     items: ingestion.sourceItems,
     history: memory.history,
-    targeting: DEFAULT_REDDIT_OPERATING_TARGETING,
-    registry: DEFAULT_REDDIT_OPERATING_RULES,
-    duplicateCheckPolicy: dryRun ? "block_all_outbound" : "block_posted_only",
+    targeting: DEFAULT_REDDIT_TARGETING,
+    registry: DEFAULT_REDDIT_RULES_REGISTRY,
+    duplicateCheckPolicy,
     config: {
       maxActionsPerSession: maxActions,
       minDelayMinutes: operating.minJitterMinutes,
@@ -166,64 +182,75 @@ export async function runRedditSession(input: {
     }
   });
   const actionCandidates = buildRedditActionCandidates(decision);
-  const selectedActionBundle = chooseRedditActionBundle(actionCandidates, maxActions);
+  const emptyBundle = chooseRedditActionBundle([], maxActions);
 
   const dailyLimitReason = findDailyActionLimitReason(memory.history, operating.maxActionsPerDay, now);
   if (dailyLimitReason) {
+    const limitedDecision = {
+      ...decision,
+      action: undefined,
+      skipped: [dailyLimitReason, ...decision.skipped]
+    };
     return {
       generatedAt: now.toISOString(),
       dryRun,
+      duplicateCheckPolicy,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
       ingestion: summarizeIngestion(ingestion),
       actionCandidates: summarizeActionCandidates(actionCandidates),
-      selectedActionBundle,
+      selectedActionBundle: emptyBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
-      decision: {
-        ...decision,
-        action: undefined,
-        skipped: [dailyLimitReason, ...decision.skipped]
-      }
+      planner: summarizePlanner(limitedDecision),
+      decision: limitedDecision
     };
   }
 
-  const cooldownReason = findSessionCooldownReason(memory.history, now);
+  const cooldownReason = dryRun ? undefined : findSessionCooldownReason(memory.history, now);
   if (cooldownReason) {
+    const cooledDecision = {
+      ...decision,
+      action: undefined,
+      skipped: [cooldownReason, ...decision.skipped]
+    };
     return {
       generatedAt: now.toISOString(),
       dryRun,
+      duplicateCheckPolicy,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
       ingestion: summarizeIngestion(ingestion),
       actionCandidates: summarizeActionCandidates(actionCandidates),
-      selectedActionBundle,
+      selectedActionBundle: emptyBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
-      decision: {
-        ...decision,
-        action: undefined,
-        skipped: [cooldownReason, ...decision.skipped]
-      }
+      planner: summarizePlanner(cooledDecision),
+      decision: cooledDecision
     };
   }
+
+  const selectedActionBundle = chooseRedditActionBundle(actionCandidates, maxActions);
 
   const selectedAction = selectedActionBundle.selectedWriteCandidateId
     ? actionCandidates.find((candidate) => candidate.id === selectedActionBundle.selectedWriteCandidateId)
     : undefined;
   const plannedAction = selectedAction ? plannedRedditActionFromCandidate(selectedAction) : undefined;
   if (!plannedAction || maxActions < 1) {
+    const emptyDecision = {
+      ...decision,
+      action: undefined
+    };
     return {
       generatedAt: now.toISOString(),
       dryRun,
+      duplicateCheckPolicy,
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
       ingestion: summarizeIngestion(ingestion),
       actionCandidates: summarizeActionCandidates(actionCandidates),
       selectedActionBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
-      decision: {
-        ...decision,
-        action: undefined
-      }
+      planner: summarizePlanner(emptyDecision),
+      decision: emptyDecision
     };
   }
 
@@ -236,7 +263,7 @@ export async function runRedditSession(input: {
   const draft = await draftRedditResponse({
     config,
     item: plannedAction.item,
-    targeting: DEFAULT_REDDIT_OPERATING_TARGETING,
+    targeting: DEFAULT_REDDIT_TARGETING,
     actionType: plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
     recentContent: memory.history.slice(-20).map((entry) => entry.content),
     promptVariantId: selectedVariant.variantId,
@@ -291,7 +318,7 @@ export async function runRedditSession(input: {
         : "commented",
     content: draft.content,
     createdAt: now.toISOString(),
-    targetId: dryRun ? undefined : plannedAction.item.source.id,
+    targetId: plannedAction.item.source.id,
     targetTitle: resolveRedditTargetTitle(plannedAction.item.source),
     targetUrl: resolveRedditTargetUrl(plannedAction.item.source),
     targetSummary: plannedAction.item.source.body ?? plannedAction.item.source.title,
@@ -320,12 +347,14 @@ export async function runRedditSession(input: {
   return {
     generatedAt: now.toISOString(),
     dryRun,
+    duplicateCheckPolicy,
     readSource: operating.readController,
     memoryPath: operating.memoryPath,
     ingestion: summarizeIngestion(ingestion),
     actionCandidates: summarizeActionCandidates(actionCandidates),
     selectedActionBundle,
     queuedActionJobs: dryRun ? summarizeQueuedRedditJobs(memory) : summarizeQueuedRedditJobs({ ...memory, queuedJobs: nextQueuedJobs }),
+    planner: summarizePlanner(decision),
     decision: {
       ...decision,
       action: plannedAction
@@ -336,6 +365,17 @@ export async function runRedditSession(input: {
   };
 }
 
+function resolveRedditSessionDuplicateCheckPolicy(dryRun: boolean): RedditDuplicateCheckPolicy {
+  if (!dryRun) {
+    return "block_posted_only";
+  }
+  const configured = process.env.OUTREACH_REDDIT_DRY_RUN_DUPLICATE_POLICY?.trim();
+  if (configured === "block_all_outbound" || configured === "block_posted_only") {
+    return configured;
+  }
+  return "block_posted_only";
+}
+
 function summarizeIngestion(ingestion: RedditIngestionResult): RedditSessionReport["ingestion"] {
   return {
     snapshotCount: ingestion.snapshots.length,
@@ -343,7 +383,8 @@ function summarizeIngestion(ingestion: RedditIngestionResult): RedditSessionRepo
     ownThreadTargets: ingestion.ownThreadTargets,
     ownThreadSnapshots: ingestion.ownThreadSnapshots,
     discoveryThreadSnapshots: ingestion.discoveryThreadSnapshots,
-    skipped: ingestion.skipped
+    skipped: ingestion.skipped,
+    diagnostics: ingestion.diagnostics
   };
 }
 
@@ -354,7 +395,43 @@ function emptyIngestionSummary(): RedditSessionReport["ingestion"] {
     ownThreadTargets: 0,
     ownThreadSnapshots: 0,
     discoveryThreadSnapshots: 0,
-    skipped: []
+    skipped: [],
+    diagnostics: {
+      subreddits: [],
+      discoverySearchQueries: [],
+      discoveryListingSorts: [],
+      excludedThreadPostIds: [],
+      discoveryPickStrategy: "stochastic",
+      browserHeadless: false,
+      readViaBrowser: false
+    }
+  };
+}
+
+function summarizePlanner(decision: {
+  skipped: string[];
+  candidates?: Array<{ id: string }>;
+}): RedditSessionReport["planner"] {
+  const blockedGateSample = decision.skipped
+    .filter((entry) => entry.includes("blocked by"))
+    .slice(0, 12)
+    .map((entry) => {
+      const separator = ": blocked by ";
+      const separatorIndex = entry.indexOf(separator);
+      if (separatorIndex === -1) {
+        return { id: entry, gates: [] as string[] };
+      }
+      const id = entry.slice(0, separatorIndex);
+      const gates = entry
+        .slice(separatorIndex + separator.length)
+        .split(",")
+        .map((gate) => gate.trim())
+        .filter(Boolean);
+      return { id, gates };
+    });
+  return {
+    skipped: decision.skipped,
+    blockedGateSample
   };
 }
 
@@ -627,6 +704,15 @@ function findSessionCooldownReason(
 
 function structuralFingerprint(content: string): string {
   return (content.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []).slice(0, 20).join("-");
+}
+
+function parseDiscoverySeedFromEnv(): number | undefined {
+  const raw = process.env.OUTREACH_REDDIT_DISCOVERY_SEED?.trim();
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function getArg(flag: string): string | undefined {

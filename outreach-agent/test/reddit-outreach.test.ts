@@ -61,7 +61,8 @@ test("review queue generates only non-promotional explanatory first replies", ()
     queue.items[0]?.gates.some((gate) => gate.id === "human_review_required" && !gate.passed),
     true
   );
-  assert.equal(queue.items[0]?.promptParameters?.layout, "question_answer");
+  assert.equal(queue.items[0]?.promptParameters?.layout, "short_hook_then_detail");
+  assert.equal(queue.items[0]?.promptParameters?.responseLength, "brief");
   assert.equal(queue.items[0]?.explicitProductInterest, false);
   assert.equal(queue.items[0]?.privateMessageAssessment.shouldEscalate, false);
   assert.equal(queue.items[0]?.publicValueDeliveredFirst, false);

@@ -39,11 +39,16 @@ test("prompt rotation reuses the active variant until the window is reached", as
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "prompt-rotation-"));
   const promptRotationStatePath = path.join(tempDir, "prompt-rotation.json");
   const config = createConfig(promptRotationStatePath);
+  const previousLlmKey = process.env.MOLTBOOK_LLM_API_KEY;
+  const previousOpenRouterKey = process.env.OPENROUTER_API_KEY;
+  delete process.env.MOLTBOOK_LLM_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
 
   const first = await selectPromptVariant({
     config,
     venue: "reddit",
-    actionType: "reply_to_activity"
+    actionType: "reply_to_activity",
+    rng: () => 0
   });
   await recordPromptRotationAction({
     config,
@@ -57,7 +62,7 @@ test("prompt rotation reuses the active variant until the window is reached", as
       id: "reddit:1",
       venue: "reddit",
       actionType: "reply_to_activity",
-      createdAt: "2026-05-19T09:00:00.000Z",
+      createdAt: new Date().toISOString(),
       status: "replied",
       promptVariantId: first.variantId,
       promptParameters: first.parameterOverrides
@@ -67,11 +72,57 @@ test("prompt rotation reuses the active variant until the window is reached", as
   const second = await selectPromptVariant({
     config,
     venue: "reddit",
-    actionType: "reply_to_activity"
+    actionType: "reply_to_activity",
+    rng: () => 0
   });
 
-  assert.equal(second.variantId, first.variantId);
-  assert.equal(second.reusedExisting, true);
+  try {
+    assert.equal(second.variantId, first.variantId);
+    assert.equal(second.reusedExisting, true);
+  } finally {
+    if (previousLlmKey === undefined) {
+      delete process.env.MOLTBOOK_LLM_API_KEY;
+    } else {
+      process.env.MOLTBOOK_LLM_API_KEY = previousLlmKey;
+    }
+    if (previousOpenRouterKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = previousOpenRouterKey;
+    }
+  }
+});
+
+test("prompt rotation fallback prefers first reddit peer variant on empty history", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "prompt-rotation-reddit-empty-"));
+  const config = createConfig(path.join(tempDir, "prompt-rotation.json"));
+  const previousLlmKey = process.env.MOLTBOOK_LLM_API_KEY;
+  const previousOpenRouterKey = process.env.OPENROUTER_API_KEY;
+  delete process.env.MOLTBOOK_LLM_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+
+  try {
+    const selected = await selectPromptVariant({
+      config,
+      venue: "reddit",
+      actionType: "comment_on_post",
+      rng: () => 0
+    });
+
+    assert.equal(selected.variantId, "reddit-brief-peer");
+    assert.equal(selected.reusedExisting, false);
+  } finally {
+    if (previousLlmKey === undefined) {
+      delete process.env.MOLTBOOK_LLM_API_KEY;
+    } else {
+      process.env.MOLTBOOK_LLM_API_KEY = previousLlmKey;
+    }
+    if (previousOpenRouterKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = previousOpenRouterKey;
+    }
+  }
 });
 
 test("prompt rotation does not advance state until a successful action is recorded", async () => {
@@ -86,7 +137,7 @@ test("prompt rotation does not advance state until a successful action is record
     rng: () => 0
   });
   const storeBeforeRecord = await loadPromptRotationStore(promptRotationStatePath);
-  assert.equal(storeBeforeRecord.state.currentPromptVariant, undefined);
+  assert.equal(storeBeforeRecord.state.actionsSinceRotation, 0);
 
   await recordPromptRotationAction({
     config,

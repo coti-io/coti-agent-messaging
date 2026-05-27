@@ -1,10 +1,12 @@
 import { buildMainLlmProvider, type MoltbookRuntimeConfig } from "./config.js";
 import {
   filterPromptParameterOverrides,
+  maxCharsForResponseLength,
   promptProfileToPromptText,
   resolvePromptProfile,
   validateDraftAgainstPromptProfile,
-  type PromptParameterSet
+  type PromptParameterSet,
+  type ResolvedPromptProfile
 } from "./prompt-profile.js";
 import type { RedditReviewItem, RedditOutreachTargeting } from "./reddit-outreach.js";
 
@@ -43,55 +45,62 @@ export async function draftRedditResponse(input: RedditDraftInput): Promise<{
   layout: PromptParameterSet["layout"];
 }> {
   const llmProvider = buildMainLlmProvider(input.config, input.fetchImpl);
+  const actionType = input.actionType ?? "reply_to_activity";
+  const variantOverrides = input.promptParameterOverrides;
   const resolvedProfile = resolvePromptProfile({
     venue: "reddit",
-    actionType: input.actionType ?? "reply_to_activity",
+    actionType,
     profile: input.config.promptProfile,
     profileId: input.config.promptProfileId,
     parameterOverrides: filterPromptParameterOverrides(
       input.config.promptProfile,
       "reddit",
-      input.actionType ?? "reply_to_activity",
-      input.promptParameterOverrides
+      actionType,
+      variantOverrides
     )
   });
-  const fallback = input.item.draft ?? deterministicDraft(input.item);
-  const content = llmProvider
-    ? (await llmProvider.createJsonCompletion<RedditDraftResponse>([
-        {
-          role: "system",
-          content: [
-            "You write Reddit comments as a practical operator, not a marketer.",
-            "Zero direct marketing. No product name. No company name. No links. No CTA. No DM request.",
-            "Be useful first. Answer the concrete day-to-day operational pain.",
-            "A short opener is allowed only when it is immediately followed by concrete substance in the same reply.",
-            "Never write standalone fluff like 'great point' or 'interesting take' by itself.",
-            "Prefer concise, natural prose over polished slogan copy.",
-            promptProfileToPromptText(resolvedProfile),
-            "Return strict JSON with keys: content, rationale."
-          ].join(" ")
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            subreddit: input.item.source.subreddit,
-            title: input.item.source.title,
-            body: input.item.source.body,
-            parentTitle: input.item.source.parentTitle,
-            whyRelevant: input.item.whyRelevant,
-            recentContent: input.recentContent ?? [],
-            forbiddenProductAliases: input.targeting.productAliases
-          }, null, 2)
-        }
-      ])).content?.trim() || fallback
-    : fallback;
-
-  validateRedditDraft(
-    content,
-    input.targeting.productAliases,
-    resolvedProfile.parameters.layout,
-    input.actionType ?? "reply_to_activity"
+  const maxChars = maxCharsForResponseLength(resolvedProfile.parameters.responseLength, "reddit");
+  const fallback = trimDraftToLength(
+    input.item.draft ?? deterministicDraft(input.item, resolvedProfile),
+    resolvedProfile
   );
+  let content = fallback;
+  if (llmProvider) {
+    const firstDraft = await requestRedditLlmDraft({
+      llmProvider,
+      draftInput: input,
+      resolvedProfile,
+      maxChars,
+      strictLength: false
+    });
+    content = firstDraft?.trim() || fallback;
+    try {
+      validateRedditDraft(content, input.targeting.productAliases, resolvedProfile);
+    } catch (error) {
+      if (!isRedditDraftLengthError(error)) {
+        throw error;
+      }
+      const retryDraft = await requestRedditLlmDraft({
+        llmProvider,
+        draftInput: input,
+        resolvedProfile,
+        maxChars,
+        strictLength: true
+      });
+      content = retryDraft?.trim() || fallback;
+      try {
+        validateRedditDraft(content, input.targeting.productAliases, resolvedProfile);
+      } catch (retryError) {
+        if (!isRedditDraftLengthError(retryError)) {
+          throw retryError;
+        }
+        content = fallback;
+        validateRedditDraft(content, input.targeting.productAliases, resolvedProfile);
+      }
+    }
+  } else {
+    validateRedditDraft(content, input.targeting.productAliases, resolvedProfile);
+  }
   return {
     content,
     rationale: llmProvider ? "LLM drafted a zero-marketing Reddit response." : "Used deterministic zero-marketing fallback draft.",
@@ -104,14 +113,19 @@ export async function draftRedditResponse(input: RedditDraftInput): Promise<{
 export function validateRedditDraft(
   content: string,
   productAliases: readonly string[] = [],
-  layout?: PromptParameterSet["layout"],
-  actionType: "comment_on_post" | "reply_to_activity" = "reply_to_activity"
-): void {
-  const profile = resolvePromptProfile({
+  profile: ResolvedPromptProfile = resolvePromptProfile({
     venue: "reddit",
-    actionType
-  });
+    actionType: "reply_to_activity"
+  })
+): void {
   validateDraftAgainstPromptProfile(profile, content);
+  const maxChars = maxCharsForResponseLength(profile.parameters.responseLength, "reddit");
+  if (content.length > maxChars) {
+    throw new Error(
+      `Reddit draft exceeds ${profile.parameters.responseLength} length limit (${content.length}/${maxChars} chars).`
+    );
+  }
+  const layout = profile.parameters.layout;
   if (FORBIDDEN_MARKETING_PATTERNS.some((pattern) => pattern.test(content))) {
     throw new Error("Reddit draft contains forbidden marketing, link, CTA, or DM language.");
   }
@@ -127,34 +141,131 @@ export function validateRedditDraft(
   }
 }
 
-function deterministicDraft(item: RedditReviewItem): string {
+async function requestRedditLlmDraft(params: {
+  llmProvider: NonNullable<ReturnType<typeof buildMainLlmProvider>>;
+  draftInput: RedditDraftInput;
+  resolvedProfile: ResolvedPromptProfile;
+  maxChars: number;
+  strictLength: boolean;
+}): Promise<string | undefined> {
+  const lengthInstruction = params.strictLength
+    ? `Your previous draft was too long. Rewrite shorter: stay under ${params.maxChars} characters with no filler.`
+    : `Hard cap: keep content under ${params.maxChars} characters.`;
+  const response = await params.llmProvider.createJsonCompletion<RedditDraftResponse>([
+    {
+      role: "system",
+      content: [
+        "You write Reddit comments as a practical operator, not a marketer.",
+        "Zero direct marketing. No product name. No company name. No links. No CTA. No DM request.",
+        "Be useful first. Answer the concrete day-to-day operational pain.",
+        "A short opener is allowed only when it is immediately followed by concrete substance in the same reply.",
+        "Never write standalone fluff like 'great point' or 'interesting take' by itself.",
+        "Prefer concise, natural peer tone over polished essay copy or consultant cadence.",
+        params.resolvedProfile.parameters.humor === "none"
+          ? "Do not force humor."
+          : "Humor is allowed only when it sharpens the point; never at the OP's expense.",
+        lengthInstruction,
+        promptProfileToPromptText(params.resolvedProfile),
+        "Return strict JSON with keys: content, rationale."
+      ].join(" ")
+    },
+    {
+      role: "user",
+      content: JSON.stringify(
+        {
+          subreddit: params.draftInput.item.source.subreddit,
+          title: params.draftInput.item.source.title,
+          body: params.draftInput.item.source.body,
+          parentTitle: params.draftInput.item.source.parentTitle,
+          whyRelevant: params.draftInput.item.whyRelevant,
+          recentContent: params.draftInput.recentContent ?? [],
+          forbiddenProductAliases: params.draftInput.targeting.productAliases
+        },
+        null,
+        2
+      )
+    }
+  ]);
+  return response.content?.trim();
+}
+
+function isRedditDraftLengthError(error: unknown): boolean {
+  return error instanceof Error && /length limit|exceeds .* chars/i.test(error.message);
+}
+
+function deterministicDraft(item: RedditReviewItem, profile: ResolvedPromptProfile): string {
   const text = [item.source.parentTitle, item.source.title, item.source.body].filter(Boolean).join(" ").toLowerCase();
   if (/\bcrm\b|\bduplicate|data quality|handoff/.test(text)) {
-    return [
-      "I would start by treating this as a data ownership problem, not an automation problem.",
-      "Pick one source of truth, define who is allowed to change each field, and log every automated write somewhere a human can audit.",
-      "Most CRM cleanup loops fail because nobody can tell whether the automation made the record better or just moved the mess around."
-    ].join(" ");
+    return trimDraftToLength(
+      formatDeterministicSentences(
+        [
+          "I would start by treating this as a data ownership problem, not an automation problem.",
+          "Pick one source of truth, define who can change each field, and log every automated write somewhere a human can audit.",
+          "Most CRM cleanup loops fail because nobody can tell whether the automation made the record better or just moved the mess around."
+        ],
+        profile.parameters.layout
+      ),
+      profile
+    );
   }
   if (/\bworkflow|manual|spreadsheet|ops?\b/.test(text)) {
-    return [
-      "The useful first step is mapping the handoff, not replacing the whole workflow.",
-      "Find the point where people copy data between tools, write down what can go wrong there, then automate only the boring validation and routing pieces.",
-      "That keeps failures visible instead of turning the process into a black box."
-    ].join(" ");
+    return trimDraftToLength(
+      formatDeterministicSentences(
+        [
+          "The useful first step is mapping the handoff, not replacing the whole workflow.",
+          "Find where people copy data between tools, then automate only the boring validation and routing pieces.",
+          "That keeps failures visible instead of turning the process into a black box."
+        ],
+        profile.parameters.layout
+      ),
+      profile
+    );
   }
   if (/\bautomation\b|\bfailing|incident|debug/.test(text)) {
-    return [
-      "Automation needs a boring fallback path or it eventually becomes another incident source.",
-      "I would log the input, the decision, the write it attempted, and the reason it skipped or failed.",
-      "That makes the system debuggable when the happy path breaks."
-    ].join(" ");
+    return trimDraftToLength(
+      formatDeterministicSentences(
+        [
+          "Automation needs a boring fallback path or it eventually becomes another incident source.",
+          "Log the input, the decision, the write it attempted, and why it skipped or failed.",
+          "That makes the system debuggable when the happy path breaks."
+        ],
+        profile.parameters.layout
+      ),
+      profile
+    );
   }
-  return [
+  const sentences = [
     "The pattern I have seen work is to keep the process small enough that someone can still reason about it.",
     "Define the trigger, the data it is allowed to touch, the failure mode, and who gets notified.",
     "Once that is clear, the tooling choice matters a lot less."
-  ].join(" ");
+  ];
+  return trimDraftToLength(formatDeterministicSentences(sentences, profile.parameters.layout), profile);
+}
+
+function formatDeterministicSentences(sentences: string[], layout: PromptParameterSet["layout"]): string {
+  if (layout === "question_answer") {
+    return [`Short answer: ${sentences[0]}`, sentences[1]].join(" ");
+  }
+  if (layout === "problem_solution") {
+    return [`Problem: ${sentences[0]}`, `Fix: ${sentences[1]}`].join(" ");
+  }
+  if (layout === "short_hook_then_detail") {
+    return ["Fair point.", sentences[0], sentences[1]].filter(Boolean).join(" ");
+  }
+  return sentences.slice(0, 2).join(" ");
+}
+
+function trimDraftToLength(content: string, profile: ResolvedPromptProfile): string {
+  const maxChars = maxCharsForResponseLength(profile.parameters.responseLength, "reddit");
+  if (content.length <= maxChars) {
+    return content;
+  }
+  const trimmed = content.slice(0, maxChars - 1).trimEnd();
+  const lastSentenceEnd = Math.max(trimmed.lastIndexOf("."), trimmed.lastIndexOf("!"), trimmed.lastIndexOf("?"));
+  if (lastSentenceEnd > maxChars * 0.55) {
+    return trimmed.slice(0, lastSentenceEnd + 1);
+  }
+  return `${trimmed}…`;
 }
 
 function looksLikeStandaloneFluff(content: string): boolean {

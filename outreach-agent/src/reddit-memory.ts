@@ -59,6 +59,24 @@ export async function saveRedditMemory(filePath: string, store: RedditMemoryStor
   await rename(tempPath, filePath);
 }
 
+/** Drop ephemeral dry-run rows; posted/removed/etc. history is kept. */
+export function withoutDraftedMemoryEntries(
+  history: readonly RedditDecisionMemoryEntry[]
+): RedditDecisionMemoryEntry[] {
+  return history.filter((entry) => entry.status !== "drafted");
+}
+
+export async function pruneDraftedRedditMemory(filePath: string): Promise<RedditMemoryStore> {
+  const store = await loadRedditMemory(filePath);
+  const history = withoutDraftedMemoryEntries(store.history);
+  if (history.length === store.history.length) {
+    return store;
+  }
+  const next = { ...store, history };
+  await saveRedditMemory(filePath, next);
+  return next;
+}
+
 export async function appendRedditMemory(
   filePath: string,
   entry: RedditDecisionMemoryEntry

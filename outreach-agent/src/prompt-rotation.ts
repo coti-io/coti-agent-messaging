@@ -566,7 +566,8 @@ async function chooseNextVariant(input: {
           "You choose the next safe content-writing prompt variant.",
           "Pick only from the provided variant ids.",
           "Prefer variants that drove grant claims and private messages, not just clicks.",
-          "Reddit must stay non-promotional, no-link, no-CTA.",
+          "Reddit must stay non-promotional, no-link, no-CTA, and prefer brief peer-style replies over long essays.",
+          "For Reddit, mix in reddit-wry-peer or reddit-playful-peer sometimes when the thread tone allows light humor.",
           "Return strict JSON with keys: selectedVariantId, rationale."
         ].join(" ")
       },
@@ -677,11 +678,17 @@ function fallbackVariantChoice(
     const score = scorePromptRotationHistoryEntry(entry);
     variantScores.set(entry.promptVariantId, (variantScores.get(entry.promptVariantId) ?? 0) + score);
   }
-  const selected =
-    [...candidates].sort((left, right) => {
-      const delta = (variantScores.get(right.id) ?? 0) - (variantScores.get(left.id) ?? 0);
-      return delta !== 0 ? delta : left.id.localeCompare(right.id);
-    })[0] ?? candidates[0];
+  let bestIndex = 0;
+  let bestScore = variantScores.get(candidates[0]?.id ?? "") ?? 0;
+  for (let index = 1; index < candidates.length; index += 1) {
+    const candidate = candidates[index]!;
+    const score = variantScores.get(candidate.id) ?? 0;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+  const selected = candidates[bestIndex] ?? candidates[0];
   return {
     ...selected,
     rationale: `Used deterministic fallback based on recent prompt outcomes and safe defaults; chose ${selected.id}.`,

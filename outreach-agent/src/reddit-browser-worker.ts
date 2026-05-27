@@ -141,6 +141,115 @@ export function resolveRedditBrowserWorkerConfig(): RedditBrowserWorkerConfig {
   };
 }
 
+function workerLockPath(bridgeDir: string): string {
+  return path.join(bridgeDir, "worker.lock");
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function acquireWorkerLock(lockPath: string): Promise<void> {
+  try {
+    const existing = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: number };
+    if (existing.pid && isProcessAlive(existing.pid) && existing.pid !== process.pid) {
+      throw new Error(
+        `Reddit browser worker already running (pid ${existing.pid}). Stop it with: npm run reddit:browser-worker:stop`
+      );
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("already running")) {
+      throw error;
+    }
+  }
+
+  await writeJsonAtomic(lockPath, {
+    pid: process.pid,
+    startedAt: new Date().toISOString()
+  });
+}
+
+async function releaseWorkerLock(lockPath: string): Promise<void> {
+  try {
+    const existing = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: number };
+    if (existing.pid === process.pid) {
+      await unlink(lockPath);
+    }
+  } catch {
+    // Ignore missing or unreadable lock files.
+  }
+}
+
+export async function stopRedditBrowserWorkers(
+  configInput: Partial<RedditBrowserWorkerConfig> = {}
+): Promise<{ stoppedPids: number[]; killedPlaywrightChrome: boolean }> {
+  const config = { ...resolveRedditBrowserWorkerConfig(), ...configInput };
+  const stoppedPids = new Set<number>();
+  const lockPath = workerLockPath(config.bridgeDir);
+
+  for (const pidSource of [lockPath, config.statusPath]) {
+    try {
+      const raw = JSON.parse(await readFile(pidSource, "utf8")) as { pid?: number };
+      if (raw.pid && isProcessAlive(raw.pid)) {
+        process.kill(raw.pid, "SIGTERM");
+        stoppedPids.add(raw.pid);
+      }
+    } catch {
+      // Ignore missing status/lock files.
+    }
+  }
+
+  try {
+    const { execSync } = await import("node:child_process");
+    const output = execSync('pgrep -f "index.js reddit-browser-worker" || true', {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    for (const line of output.split("\n")) {
+      const pid = Number(line.trim());
+      if (pid && pid !== process.pid && isProcessAlive(pid)) {
+        process.kill(pid, "SIGTERM");
+        stoppedPids.add(pid);
+      }
+    }
+  } catch {
+    // pgrep is best-effort.
+  }
+
+  await sleep(400);
+
+  let killedPlaywrightChrome = false;
+  try {
+    const { execSync } = await import("node:child_process");
+    execSync('pkill -f "Google Chrome for Testing" >/dev/null 2>&1 || true', {
+      shell: "/bin/bash"
+    });
+    killedPlaywrightChrome = true;
+  } catch {
+    // pkill is best-effort.
+  }
+
+  await releaseWorkerLock(lockPath);
+  await writeStatus(config.statusPath, {
+    phase: "stopped",
+    pid: process.pid,
+    bridgeDir: config.bridgeDir
+  }).catch(() => undefined);
+
+  return {
+    stoppedPids: [...stoppedPids],
+    killedPlaywrightChrome
+  };
+}
+
 export async function startRedditBrowserWorker(
   configInput: Partial<RedditBrowserWorkerConfig> = {},
   automationInput?: RedditBrowserAutomation
@@ -150,8 +259,10 @@ export async function startRedditBrowserWorker(
   let closed = false;
   let loopPromise: Promise<void> | undefined;
   let lastIdleWriteAt = 0;
+  const lockPath = workerLockPath(config.bridgeDir);
 
   await mkdir(config.requestsDir, { recursive: true });
+  await acquireWorkerLock(lockPath);
   await mkdir(config.processingDir, { recursive: true });
   await mkdir(config.responsesDir, { recursive: true });
   await restoreProcessingFiles(config);
@@ -237,6 +348,7 @@ export async function startRedditBrowserWorker(
       closed = true;
       await loopPromise;
       await automation.close();
+      await releaseWorkerLock(lockPath);
       await writeStatus(config.statusPath, {
         phase: "stopped",
         pid: process.pid,
@@ -330,6 +442,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isBrokenPlaywrightBrowserError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /has been closed|Target page, context or browser has been closed|browser has been closed/i.test(
+    message
+  );
+}
+
 class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
   private browser?: Browser;
   private context?: BrowserContext;
@@ -343,30 +462,37 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
     result?: RedditBrowserReadResult;
     raw?: unknown;
   }> {
-    const page = await this.getPage();
-    switch (request.action.type) {
-      case "search_subreddit":
-        return {
-          result: await this.searchSubreddit(page, request)
-        };
-      case "list_subreddit_posts":
-        return {
-          result: await this.listSubredditPosts(page, request)
-        };
-      case "read_thread":
-        return {
-          result: await this.readThread(page, request)
-        };
-      case "create_post":
-        return this.submitCreatePost(page, request);
-      case "comment_on_post":
-        return this.submitComment(page, request, false);
-      case "reply_to_comment":
-        return this.submitComment(page, request, true);
-      default:
-        throw new RedditControllerConfigurationError(
-          "Reddit browser worker cannot fulfill the requested action type."
-        );
+    try {
+      const page = await this.getPage();
+      switch (request.action.type) {
+        case "search_subreddit":
+          return {
+            result: await this.searchSubreddit(page, request)
+          };
+        case "list_subreddit_posts":
+          return {
+            result: await this.listSubredditPosts(page, request)
+          };
+        case "read_thread":
+          return {
+            result: await this.readThread(page, request)
+          };
+        case "create_post":
+          return this.submitCreatePost(page, request);
+        case "comment_on_post":
+          return this.submitComment(page, request, false);
+        case "reply_to_comment":
+          return this.submitComment(page, request, true);
+        default:
+          throw new RedditControllerConfigurationError(
+            "Reddit browser worker cannot fulfill the requested action type."
+          );
+      }
+    } catch (error) {
+      if (isBrokenPlaywrightBrowserError(error)) {
+        await this.close();
+      }
+      throw error;
     }
   }
 
@@ -999,11 +1125,17 @@ async function extractThreadState(page: Page, baseUrl: string, limit: number): P
           element.getAttribute("author") ??
           element.querySelector('[data-testid="comment_author_link"], a[href^="/user/"], a[href*="/user/"]')?.textContent?.trim() ??
           undefined;
+        const parentId =
+          element.getAttribute("parentid") ??
+          element.getAttribute("parent-id") ??
+          element.getAttribute("parent_id") ??
+          undefined;
         return {
           id: element.id || element.getAttribute("thingid") || link?.href?.split("/").filter(Boolean).at(-1) || `comment-${index}`,
           body: text.slice(0, 2000),
           author,
           permalink: link ? new URL(link.href).pathname : undefined,
+          parentId,
           depth: Number(element.getAttribute("depth") ?? "0") || 0
         };
       })
@@ -1031,6 +1163,7 @@ async function extractThreadState(page: Page, baseUrl: string, limit: number): P
       body: comment.body,
       author: comment.author,
       permalink: comment.permalink,
+      parentId: comment.parentId,
       depth: comment.depth,
       replies: []
     }))
@@ -1170,6 +1303,21 @@ function numberValue(input: unknown): number | undefined {
   return typeof input === "number" && Number.isFinite(input) ? input : undefined;
 }
 
+export async function runRedditBrowserWorkerStopCli(): Promise<void> {
+  const result = await stopRedditBrowserWorkers();
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        stoppedPids: result.stoppedPids,
+        killedPlaywrightChrome: result.killedPlaywrightChrome
+      },
+      null,
+      2
+    )
+  );
+}
+
 export async function runRedditBrowserWorkerCli(): Promise<void> {
   const handle = await startRedditBrowserWorker();
   let shuttingDown = false;
@@ -1196,6 +1344,12 @@ export async function runRedditBrowserWorkerCli(): Promise<void> {
   process.once("SIGHUP", () => {
     void shutdown("SIGHUP");
   });
+
+  if (handle.config.headless) {
+    console.warn(
+      "OUTREACH_REDDIT_BROWSER_HEADLESS=true: Reddit often returns empty listings in headless mode. Use a visible browser for discovery unless you know your environment works headless."
+    );
+  }
 
   console.log(
     JSON.stringify(

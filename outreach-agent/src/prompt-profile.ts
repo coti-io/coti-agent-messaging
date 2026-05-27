@@ -10,6 +10,8 @@ export type PromptIntent =
 export type PromotionLevel = "none" | "soft" | "direct";
 export type AggressionLevel = "low" | "medium" | "high";
 export type CreativityLevel = "conservative" | "balanced" | "experimental";
+export type ResponseLength = "brief" | "standard" | "detailed";
+export type HumorLevel = "none" | "light" | "playful";
 export type TechnicalDepth = "simple" | "practical" | "deep";
 export type PromptTone = "technical_realist" | "contrarian" | "operator" | "founder" | "researcher";
 export type CtaStyle = "none" | "question" | "soft_next_step" | "direct_next_step";
@@ -37,6 +39,8 @@ export interface PromptParameterSet {
   promotionLevel: PromotionLevel;
   aggression: AggressionLevel;
   creativity: CreativityLevel;
+  responseLength: ResponseLength;
+  humor: HumorLevel;
   technicalDepth: TechnicalDepth;
   tone: PromptTone;
   ctaStyle: CtaStyle;
@@ -106,6 +110,8 @@ export const DEFAULT_PROMPT_PARAMETERS: PromptParameterSet = {
   promotionLevel: "soft",
   aggression: "medium",
   creativity: "balanced",
+  responseLength: "standard",
+  humor: "none",
   technicalDepth: "practical",
   tone: "technical_realist",
   ctaStyle: "soft_next_step",
@@ -116,9 +122,17 @@ export const DEFAULT_PROMPT_PARAMETERS: PromptParameterSet = {
   layout: "regular_paragraph"
 };
 
+const VARIANT_OVERRIDE_LOCKED_KEYS: Array<keyof PromptParameterSet> = [
+  "promotionLevel",
+  "ctaStyle",
+  "productSpecificity",
+  "rewardEmphasis"
+];
+
 export const DEFAULT_PROMPT_PROFILE: PromptProfile = {
   id: "default-technical-soft-cta",
   description: "Conservative technical outreach with optional CTA support.",
+  allowVariantOverrides: true,
   parameters: DEFAULT_PROMPT_PARAMETERS,
   cta: {
     requirement: "optional",
@@ -127,10 +141,11 @@ export const DEFAULT_PROMPT_PROFILE: PromptProfile = {
   venueOverrides: {
     reddit: {
       intent: "educate",
-      technicalDepth: "practical",
+      responseLength: "brief",
+      technicalDepth: "simple",
       tone: "operator",
-      messageStyle: "informative",
-      layout: "question_answer",
+      messageStyle: "curious",
+      layout: "short_hook_then_detail",
       ctaStyle: "none",
       promotionLevel: "none",
       productSpecificity: "generic_category",
@@ -148,8 +163,9 @@ export const DEFAULT_PROMPT_PROFILE: PromptProfile = {
     },
     comment_on_post: {
       intent: "educate",
-      layout: "question_answer",
-      messageStyle: "informative"
+      responseLength: "brief",
+      layout: "short_hook_then_detail",
+      messageStyle: "curious"
     }
   }
 };
@@ -231,6 +247,11 @@ export function resolvePromptProfile(input: ResolvePromptProfileInput): Resolved
 
   if (mergedParameters.aggression === "high") {
     warnings.push("High aggression means sharper framing only; harassment and pressure language stay blocked.");
+  }
+
+  if (mergedParameters.humor === "playful" && mergedParameters.aggression !== "low") {
+    warnings.push("Playful humor is softened when aggression is not low.");
+    mergedParameters.aggression = "low";
   }
 
   return {
@@ -317,6 +338,10 @@ export function promptProfileToPromptText(profile: ResolvedPromptProfile): strin
     `Promotion level: ${profile.parameters.promotionLevel}`,
     `Aggression: ${profile.parameters.aggression}`,
     `Creativity: ${profile.parameters.creativity}`,
+    `Response length: ${profile.parameters.responseLength}`,
+    responseLengthInstruction(profile.parameters.responseLength, profile.venue),
+    `Humor: ${profile.parameters.humor}`,
+    humorInstruction(profile.parameters.humor, profile.venue),
     `Technical depth: ${profile.parameters.technicalDepth}`,
     `Tone: ${profile.parameters.tone}`,
     `CTA style: ${profile.parameters.ctaStyle}`,
@@ -333,7 +358,50 @@ export function buildSafePromptVariantCandidates(input: {
   venue: OutreachVenue;
   actionType: OutreachActionType;
 }): PromptVariantCandidate[] {
+  const redditBriefPeer: PromptVariantCandidate = {
+    id: "reddit-brief-peer",
+    label: "short peer reply",
+    parameters: {
+      messageStyle: "curious",
+      layout: "short_hook_then_detail",
+      tone: "operator",
+      technicalDepth: "simple",
+      responseLength: "brief",
+      humor: "none",
+      creativity: "conservative"
+    }
+  };
+  const redditWryPeer: PromptVariantCandidate = {
+    id: "reddit-wry-peer",
+    label: "brief reply with dry wit",
+    parameters: {
+      messageStyle: "curious",
+      layout: "short_hook_then_detail",
+      tone: "operator",
+      technicalDepth: "simple",
+      responseLength: "brief",
+      humor: "light",
+      creativity: "balanced"
+    }
+  };
+  const redditPlayfulPeer: PromptVariantCandidate = {
+    id: "reddit-playful-peer",
+    label: "brief reply with light humor",
+    parameters: {
+      messageStyle: "curious",
+      layout: "short_hook_then_detail",
+      tone: "founder",
+      technicalDepth: "simple",
+      responseLength: "brief",
+      humor: "playful",
+      aggression: "low",
+      creativity: "balanced"
+    }
+  };
   const baseCandidates: PromptVariantCandidate[] = [
+    ...(input.venue === "reddit"
+      ? [redditBriefPeer, redditWryPeer, redditPlayfulPeer]
+      : []),
     {
       id: "operator-qa-practical",
       label: "direct operator answer",
@@ -364,6 +432,7 @@ export function buildSafePromptVariantCandidates(input: {
         layout: "regular_paragraph",
         tone: "contrarian",
         technicalDepth: "practical",
+        responseLength: "standard",
         creativity: "balanced"
       }
     },
@@ -402,6 +471,19 @@ export function buildSafePromptVariantCandidates(input: {
     if (messageStyle === "aggressive" || messageStyle === "promotional") {
       return false;
     }
+    if (input.venue === "reddit" && candidate.parameters.technicalDepth === "deep") {
+      return false;
+    }
+    if (input.venue === "reddit" && candidate.parameters.responseLength === "detailed") {
+      return false;
+    }
+    if (
+      input.venue === "reddit" &&
+      candidate.parameters.humor === "playful" &&
+      candidate.parameters.aggression === "high"
+    ) {
+      return false;
+    }
     if (candidate.parameters.layout && disallowedLayouts.has(candidate.parameters.layout)) {
       return false;
     }
@@ -421,11 +503,15 @@ export function filterPromptParameterOverrides(
   if (!profile || !overrides) {
     return overrides;
   }
-  const lockedKeys = new Set<keyof PromptParameterSet>([
-    ...(profile.allowVariantOverrides ? [] : Object.keys(profile.parameters)),
-    ...Object.keys(profile.venueOverrides?.[venue] ?? {}).filter((key) => key !== "cta"),
-    ...Object.keys(profile.actionOverrides?.[actionType] ?? {}).filter((key) => key !== "cta")
-  ] as Array<keyof PromptParameterSet>);
+  const lockedKeys = new Set<keyof PromptParameterSet>(
+    profile.allowVariantOverrides
+      ? VARIANT_OVERRIDE_LOCKED_KEYS
+      : ([
+          ...Object.keys(profile.parameters),
+          ...Object.keys(profile.venueOverrides?.[venue] ?? {}).filter((key) => key !== "cta"),
+          ...Object.keys(profile.actionOverrides?.[actionType] ?? {}).filter((key) => key !== "cta")
+        ] as Array<keyof PromptParameterSet>)
+  );
   const filteredEntries = Object.entries(overrides).filter(([key]) => !lockedKeys.has(key as keyof PromptParameterSet));
   return filteredEntries.length > 0
     ? Object.fromEntries(filteredEntries) as Partial<PromptParameterSet>
@@ -471,11 +557,68 @@ export function layoutInstruction(layout: LayoutVariant): string {
     case "structured_bullets":
       return "Layout instruction: use short structured bullets when the venue supports them.";
     case "short_hook_then_detail":
-      return "Layout instruction: open with a short hook, then one practical detail.";
+      return "Layout instruction: open with one short hook sentence, then 1-2 concrete sentences; do not stack multiple mini-essays.";
     case "question_answer":
-      return "Layout instruction: frame the answer as a direct question-and-answer response.";
+      return "Layout instruction: answer the main question directly; do not march through every sub-question unless the reply stays brief.";
     case "problem_solution":
       return "Layout instruction: state the problem, then the practical solution.";
+  }
+}
+
+export function humorInstruction(humor: HumorLevel, venue: OutreachVenue = "moltbook"): string {
+  const redditGuard =
+    venue === "reddit"
+      ? " Never roast the OP, punch down, or turn the thread into a bit."
+      : "";
+  switch (humor) {
+    case "none":
+      return "Humor instruction: stay straight; no jokes, sarcasm, or meme voice.";
+    case "light":
+      return `Humor instruction: at most one dry, understated line; wit must support the useful point.${redditGuard}`;
+    case "playful":
+      return `Humor instruction: light irony or a quick absurdist aside is ok if it stays kind and substantive; no standup, memes, or cruelty.${redditGuard}`;
+  }
+}
+
+export function responseLengthInstruction(
+  responseLength: ResponseLength,
+  venue: OutreachVenue = "moltbook"
+): string {
+  const redditPeerTone =
+    venue === "reddit"
+      ? " Sound like a peer in the thread, not a consultant deck or blog post."
+      : "";
+  switch (responseLength) {
+    case "brief":
+      return `Length instruction: keep the whole reply to 2-4 sentences and under ${venue === "reddit" ? 420 : 500} characters.${redditPeerTone} Pick one useful angle; skip exhaustive coverage.`;
+    case "standard":
+      return `Length instruction: stay compact; aim for under ${venue === "reddit" ? 650 : 700} characters.${redditPeerTone}`;
+    case "detailed":
+      return `Length instruction: still avoid essay mode; cap at about ${venue === "reddit" ? 850 : 900} characters and keep paragraphs short.${redditPeerTone}`;
+  }
+}
+
+export function maxCharsForResponseLength(
+  responseLength: ResponseLength,
+  venue: OutreachVenue = "moltbook"
+): number {
+  if (venue === "reddit") {
+    switch (responseLength) {
+      case "brief":
+        return 420;
+      case "standard":
+        return 650;
+      case "detailed":
+        return 850;
+    }
+  }
+  switch (responseLength) {
+    case "brief":
+      return 500;
+    case "standard":
+      return 700;
+    case "detailed":
+      return 900;
   }
 }
 

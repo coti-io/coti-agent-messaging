@@ -24,6 +24,7 @@ import {
   DEFAULT_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT,
   DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES
 } from "./reddit-ingestion.js";
+import { getDefaultRedditDiscoverySubredditNames } from "./reddit-outreach.js";
 import type { OutreachAgentConfig, OutreachAgentMode, OutreachVenueId } from "./venue.js";
 
 export interface MoltbookStoredCredentials {
@@ -239,6 +240,15 @@ function parseNumber(value: string | undefined, fallback: number): number {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNonNegativeNumber(value: string | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function parseOptionalNumber(value: string | undefined): number | undefined {
@@ -628,11 +638,18 @@ export function resolveRedditSearchQueries(raw?: string): string[] {
 }
 
 export function buildRedditOperatingAgentConfig(packageRoot: string): RedditOperatingAgentConfig {
+  const configuredSubreddits = parseCsv(process.env.OUTREACH_REDDIT_TARGET_SUBREDDITS);
   return {
-    targetSubreddits: parseCsv(process.env.OUTREACH_REDDIT_TARGET_SUBREDDITS),
+    targetSubreddits:
+      configuredSubreddits.length > 0
+        ? configuredSubreddits
+        : getDefaultRedditDiscoverySubredditNames(),
     searchQueries: resolveRedditSearchQueries(process.env.OUTREACH_REDDIT_SEARCH_QUERIES),
     ingestionListLimit: parseNumber(process.env.OUTREACH_REDDIT_INGESTION_LIST_LIMIT, 5),
-    ingestionMaxOwnThreadReads: parseNumber(process.env.OUTREACH_REDDIT_INGESTION_MAX_OWN_THREAD_READS, 25),
+    ingestionMaxOwnThreadReads: parseNonNegativeNumber(
+      process.env.OUTREACH_REDDIT_INGESTION_MAX_OWN_THREAD_READS,
+      25
+    ),
     ingestionMaxDiscoveryThreadReads: parseNumber(
       process.env.OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS,
       DEFAULT_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS

@@ -277,7 +277,7 @@ OUTREACH_REDDIT_MIN_JITTER_MINUTES=18
 OUTREACH_REDDIT_MAX_JITTER_MINUTES=67
 OUTREACH_REDDIT_SESSION_DRY_RUN=true
 OUTREACH_REDDIT_MEMORY_PATH=.data/reddit-memory.json
-OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS=2
+OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS=4
 ```
 
 Discovery reads up to that many **hot threads per session** (comments + post). Set `0` to only re-read threads you already touched in memory.

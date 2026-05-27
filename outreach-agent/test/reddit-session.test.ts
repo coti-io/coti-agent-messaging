@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 
-import { appendRedditMemory, loadRedditMemory } from "../src/reddit-memory.js";
+import { appendRedditMemory, loadRedditMemory, pruneDraftedRedditMemory } from "../src/reddit-memory.js";
 import { runRedditSession } from "../src/reddit-session.js";
 import type { MoltbookRuntimeConfig } from "../src/config.js";
 import type { RedditIngestionResult } from "../src/reddit-ingestion.js";
@@ -25,7 +25,7 @@ function createConfig(memoryPath: string): MoltbookRuntimeConfig {
     agent: {
       venue: "reddit",
       venueAccountId: "reddit-user",
-      allowedSurfaces: ["sales"],
+      allowedSurfaces: ["AI_Agents"],
       mode: "approved_autopost"
     },
     reddit: {
@@ -40,7 +40,7 @@ function createConfig(memoryPath: string): MoltbookRuntimeConfig {
       }
     },
     redditOperating: {
-      targetSubreddits: ["sales"],
+      targetSubreddits: ["AI_Agents"],
       searchQueries: ["CRM messy data"],
       ingestionListLimit: 5,
       ingestionMaxOwnThreadReads: 25,
@@ -65,17 +65,26 @@ const ingestion: RedditIngestionResult = {
   ownThreadTargets: 0,
   ownThreadSnapshots: 0,
   discoveryThreadSnapshots: 0,
+  diagnostics: {
+    subreddits: ["AI_Agents"],
+    discoverySearchQueries: [],
+    discoveryListingSorts: [],
+    excludedThreadPostIds: [],
+    discoveryPickStrategy: "stochastic",
+    browserHeadless: false,
+    readViaBrowser: false
+  },
   sourceItems: [
     {
       id: "comment-1",
       kind: "comment",
-      subreddit: "sales",
-      title: "CRM messy data",
-      parentTitle: "CRM messy data",
-      body: "We keep breaking sales handoffs with duplicate CRM records. Any advice on fixing this manual workflow?",
+      subreddit: "AI_Agents",
+      title: "MCP agent messaging between services",
+      parentTitle: "MCP agent messaging between services",
+      body: "How are you handling private agent-to-agent messaging when tools need encrypted coordination outside the main LLM context?",
       createdUtc: Date.parse("2026-05-19T08:00:00.000Z") / 1000,
       commentCount: 12,
-      permalink: "/r/sales/comments/post-1/_/comment-1/",
+      permalink: "/r/AI_Agents/comments/post-1/_/comment-1/",
       onOwnThread: true,
       threadPostId: "post-1"
     }
@@ -98,19 +107,20 @@ test("reddit session dry-run emits decision report and records draft without pub
 
   assert.equal(published, false);
   assert.equal(report.dryRun, true);
+  assert.equal(report.duplicateCheckPolicy, "block_posted_only");
   assert.equal(report.decision.action?.type, "reply_to_comment");
   assert.equal(report.actionCandidates.length, 1);
   assert.equal(report.actionCandidates[0]?.type, "reply_to_activity");
-  assert.equal(report.selectedActionBundle?.selectedWriteCandidateId, "comment:sales:comment-1");
+  assert.equal(report.selectedActionBundle?.selectedWriteCandidateId, "comment:AI_Agents:comment-1");
   assert.ok(report.draft?.content);
   const memory = await loadRedditMemory(memoryPath);
   assert.equal(memory.history.length, 1);
   assert.equal(memory.history[0]?.status, "drafted");
-  assert.equal(memory.history[0]?.targetId, undefined);
-  assert.equal(memory.history[0]?.targetTitle, "CRM messy data");
+  assert.equal(memory.history[0]?.targetId, "comment-1");
+  assert.equal(memory.history[0]?.targetTitle, "MCP agent messaging between services");
   assert.equal(
     memory.history[0]?.targetUrl,
-    "https://www.reddit.com/r/sales/comments/post-1/_/comment-1/"
+    "https://www.reddit.com/r/AI_Agents/comments/post-1/_/comment-1/"
   );
   assert.ok(memory.history[0]?.promptVariantId);
   assert.ok(memory.history[0]?.promptParameters?.messageStyle);
@@ -132,7 +142,7 @@ test("reddit session live mode publishes at most one action and records outcome"
         actionId: action.id,
         candidateId: action.candidateId,
         remoteContentId: "reply-1",
-        remoteContentUrl: "https://www.reddit.com/r/sales/comments/post-1/_/reply-1/",
+        remoteContentUrl: "https://www.reddit.com/r/AI_Agents/comments/post-1/_/reply-1/",
         type: "replied",
         occurredAt: new Date().toISOString()
       };
@@ -142,7 +152,7 @@ test("reddit session live mode publishes at most one action and records outcome"
   assert.equal(published.length, 0);
   assert.equal(firstReport.outcome, undefined);
   assert.equal(firstReport.queuedActionJobs.length, 1);
-  assert.equal(firstReport.selectedActionBundle?.selectedWriteCandidateId, "comment:sales:comment-1");
+  assert.equal(firstReport.selectedActionBundle?.selectedWriteCandidateId, "comment:AI_Agents:comment-1");
 
   const report = await runRedditSession({
     config: createConfig(memoryPath),
@@ -156,7 +166,7 @@ test("reddit session live mode publishes at most one action and records outcome"
         actionId: action.id,
         candidateId: action.candidateId,
         remoteContentId: "reply-1",
-        remoteContentUrl: "https://www.reddit.com/r/sales/comments/post-1/_/reply-1/",
+        remoteContentUrl: "https://www.reddit.com/r/AI_Agents/comments/post-1/_/reply-1/",
         type: "replied",
         occurredAt: new Date().toISOString()
       };
@@ -174,7 +184,7 @@ test("reddit session live mode publishes at most one action and records outcome"
   assert.equal((memory.queuedJobs?.length ?? 0), 0);
 });
 
-test("reddit session ignores prior dry-run drafts when selecting a live target", async () => {
+test("reddit session live can publish after batch prune clears prior dry-run draft", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-reuse-"));
   const memoryPath = path.join(tempDir, "memory.json");
   await runRedditSession({
@@ -182,6 +192,13 @@ test("reddit session ignores prior dry-run drafts when selecting a live target",
     ingestion,
     dryRun: true
   });
+
+  let memory = await loadRedditMemory(memoryPath);
+  assert.equal(memory.history.length, 1);
+  assert.equal(memory.history[0]?.status, "drafted");
+  await pruneDraftedRedditMemory(memoryPath);
+  memory = await loadRedditMemory(memoryPath);
+  assert.equal(memory.history.length, 0);
 
   const published: VenueAction[] = [];
   const queued = await runRedditSession({
@@ -196,14 +213,15 @@ test("reddit session ignores prior dry-run drafts when selecting a live target",
         actionId: action.id,
         candidateId: action.candidateId,
         remoteContentId: "reply-2",
-        remoteContentUrl: "https://www.reddit.com/r/sales/comments/post-1/_/reply-2/",
+        remoteContentUrl: "https://www.reddit.com/r/AI_Agents/comments/post-1/_/reply-2/",
         type: "replied",
         occurredAt: new Date().toISOString()
       };
     }
   });
+  assert.equal(published.length, 0);
+  assert.equal(queued.queuedActionJobs.length, 1);
 
-  assert.equal(queued.outcome, undefined);
   const report = await runRedditSession({
     config: createConfig(memoryPath),
     ingestion,
@@ -216,7 +234,7 @@ test("reddit session ignores prior dry-run drafts when selecting a live target",
         actionId: action.id,
         candidateId: action.candidateId,
         remoteContentId: "reply-2",
-        remoteContentUrl: "https://www.reddit.com/r/sales/comments/post-1/_/reply-2/",
+        remoteContentUrl: "https://www.reddit.com/r/AI_Agents/comments/post-1/_/reply-2/",
         type: "replied",
         occurredAt: new Date().toISOString()
       };
@@ -225,6 +243,54 @@ test("reddit session ignores prior dry-run drafts when selecting a live target",
 
   assert.equal(published.length, 1);
   assert.equal(report.recorded?.targetId, "comment-1");
+  memory = await loadRedditMemory(memoryPath);
+  assert.equal(memory.history.length, 1);
+  assert.equal(memory.history[0]?.status, "posted");
+});
+
+test("reddit session dry-run remembers draft within a batch and skips the same target", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-draft-batch-"));
+  const memoryPath = path.join(tempDir, "memory.json");
+  const first = await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: true
+  });
+  assert.ok(first.draft?.content);
+  const second = await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: true
+  });
+  assert.equal(second.decision.action, undefined);
+  const memory = await loadRedditMemory(memoryPath);
+  assert.equal(memory.history.length, 1);
+  assert.equal(memory.history[0]?.status, "drafted");
+  assert.equal(memory.history[0]?.targetId, "comment-1");
+});
+
+test("batch prune clears drafts but keeps posted history", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-batch-prune-"));
+  const memoryPath = path.join(tempDir, "memory.json");
+  await appendRedditMemory(memoryPath, {
+    id: "posted-1",
+    subreddit: "AI_Agents",
+    kind: "reply",
+    content: "already live",
+    createdAt: new Date().toISOString(),
+    targetId: "comment-old",
+    status: "posted",
+    firstReply: true
+  });
+  await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: true
+  });
+  await pruneDraftedRedditMemory(memoryPath);
+  const memory = await loadRedditMemory(memoryPath);
+  assert.equal(memory.history.length, 1);
+  assert.equal(memory.history[0]?.status, "posted");
 });
 
 test("reddit session enforces the daily live action cap", async () => {
@@ -233,7 +299,7 @@ test("reddit session enforces the daily live action cap", async () => {
   const config = createConfig(memoryPath);
   await appendRedditMemory(memoryPath, {
     id: "posted-1",
-    subreddit: "sales",
+    subreddit: "AI_Agents",
     kind: "reply",
     content: "Live reply",
     createdAt: new Date().toISOString(),
@@ -268,12 +334,63 @@ test("reddit session enforces the daily live action cap", async () => {
   assert.ok(report.decision.skipped.some((entry) => entry.includes("Daily Reddit action cap reached")));
 });
 
+test("reddit session dry-run skips live cooldown gate", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-dry-cooldown-"));
+  const memoryPath = path.join(tempDir, "memory.json");
+  await appendRedditMemory(memoryPath, {
+    id: "posted-dry-cooldown",
+    subreddit: "AI_Agents",
+    kind: "reply",
+    content: "Live reply",
+    createdAt: new Date().toISOString(),
+    targetId: "comment-older",
+    status: "posted",
+    firstReply: true,
+    nextEligibleAt: new Date(Date.now() + 20 * 60_000).toISOString()
+  });
+
+  const report = await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: true
+  });
+
+  assert.equal(report.decision.action?.type, "reply_to_comment");
+  assert.equal(report.decision.skipped.some((entry) => entry.includes("cooldown active")), false);
+});
+
+test("reddit session clears selected write candidate when cooldown blocks live action", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-cooldown-bundle-"));
+  const memoryPath = path.join(tempDir, "memory.json");
+  await appendRedditMemory(memoryPath, {
+    id: "posted-3",
+    subreddit: "AI_Agents",
+    kind: "reply",
+    content: "Live reply",
+    createdAt: new Date().toISOString(),
+    targetId: "comment-older",
+    status: "posted",
+    firstReply: true,
+    nextEligibleAt: new Date(Date.now() + 20 * 60_000).toISOString()
+  });
+
+  const report = await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: false
+  });
+
+  assert.equal(report.decision.action, undefined);
+  assert.equal(report.selectedActionBundle?.selectedWriteCandidateId, undefined);
+  assert.ok(report.decision.skipped.some((entry) => entry.includes("cooldown active")));
+});
+
 test("reddit session honors stored cooldown before another live action", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-cooldown-"));
   const memoryPath = path.join(tempDir, "memory.json");
   await appendRedditMemory(memoryPath, {
     id: "posted-2",
-    subreddit: "sales",
+    subreddit: "AI_Agents",
     kind: "reply",
     content: "Live reply",
     createdAt: new Date().toISOString(),

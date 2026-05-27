@@ -2,9 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildSafePromptVariantCandidates,
   canUseProductSpecificFollowUp,
   contentTokenSimilarity,
+  DEFAULT_PROMPT_PROFILE,
   filterPromptParameterOverrides,
+  promptProfileToPromptText,
   resolvePromptProfile,
   structuralFingerprint,
   validateDraftAgainstPromptProfile,
@@ -52,9 +55,50 @@ test("default Reddit prompt profile biases toward useful public answers", () => 
   });
 
   assert.equal(resolved.parameters.intent, "educate");
-  assert.equal(resolved.parameters.messageStyle, "informative");
-  assert.equal(resolved.parameters.layout, "question_answer");
+  assert.equal(resolved.parameters.responseLength, "brief");
+  assert.equal(resolved.parameters.messageStyle, "curious");
+  assert.equal(resolved.parameters.layout, "short_hook_then_detail");
+  assert.equal(resolved.parameters.technicalDepth, "simple");
   assert.equal(resolved.parameters.productSpecificity, "generic_category");
+  assert.match(promptProfileToPromptText(resolved), /under 420 characters/i);
+});
+
+test("reddit variant list includes a brief peer reply candidate", () => {
+  const candidates = buildSafePromptVariantCandidates({
+    venue: "reddit",
+    actionType: "comment_on_post"
+  });
+  assert.equal(candidates[0]?.id, "reddit-brief-peer");
+  assert.equal(
+    candidates.some((candidate) => candidate.id === "reddit-wry-peer" && candidate.parameters.humor === "light"),
+    true
+  );
+  assert.equal(
+    candidates.some((candidate) => candidate.id === "reddit-playful-peer" && candidate.parameters.humor === "playful"),
+    true
+  );
+  assert.equal(
+    candidates.some((candidate) => candidate.id === "operator-problem-solution"),
+    false
+  );
+});
+
+test("humor parameter is reflected in prompt text and can be overridden", () => {
+  const wry = resolvePromptProfile({
+    venue: "reddit",
+    actionType: "comment_on_post",
+    parameterOverrides: { humor: "light" }
+  });
+  assert.match(promptProfileToPromptText(wry), /Humor: light/i);
+  assert.match(promptProfileToPromptText(wry), /dry, understated/i);
+
+  const playful = resolvePromptProfile({
+    venue: "reddit",
+    actionType: "comment_on_post",
+    parameterOverrides: { humor: "playful", aggression: "high" }
+  });
+  assert.equal(playful.parameters.aggression, "low");
+  assert.match(promptProfileToPromptText(playful), /light irony/i);
 });
 
 test("Reddit product-specific follow-up requires explicit interest after public value", () => {
@@ -72,6 +116,64 @@ test("Reddit product-specific follow-up requires explicit interest after public 
   assert.equal(blocked.allowed, false);
   assert.match(blocked.reason, /explicitly asks/i);
   assert.equal(allowed.allowed, true);
+});
+
+test("default profile allows rotation to override reddit voice keys", () => {
+  const overrides = filterPromptParameterOverrides(
+    { id: "default", allowVariantOverrides: true, parameters: {} },
+    "reddit",
+    "comment_on_post",
+    {
+      humor: "light",
+      responseLength: "brief",
+      layout: "problem_solution",
+      messageStyle: "informative"
+    }
+  );
+
+  assert.deepEqual(overrides, {
+    humor: "light",
+    responseLength: "brief",
+    layout: "problem_solution",
+    messageStyle: "informative"
+  });
+});
+
+test("default profile applies wry-peer variant humor override on reddit", () => {
+  const wry = buildSafePromptVariantCandidates({
+    venue: "reddit",
+    actionType: "comment_on_post"
+  }).find((candidate) => candidate.id === "reddit-wry-peer");
+  assert.ok(wry);
+  const overrides = filterPromptParameterOverrides(
+    DEFAULT_PROMPT_PROFILE,
+    "reddit",
+    "comment_on_post",
+    wry?.parameters
+  );
+  const resolved = resolvePromptProfile({
+    venue: "reddit",
+    actionType: "comment_on_post",
+    profile: DEFAULT_PROMPT_PROFILE,
+    parameterOverrides: overrides
+  });
+  assert.equal(resolved.parameters.humor, "light");
+  assert.equal(resolved.parameters.responseLength, "brief");
+});
+
+test("default profile still locks promotion and CTA overrides from rotation", () => {
+  const overrides = filterPromptParameterOverrides(
+    { id: "default", allowVariantOverrides: true, parameters: {} },
+    "reddit",
+    "comment_on_post",
+    {
+      promotionLevel: "direct",
+      ctaStyle: "direct_next_step",
+      humor: "light"
+    }
+  );
+
+  assert.deepEqual(overrides, { humor: "light" });
 });
 
 test("profile defaults do not strip safe prompt-rotation overrides", () => {

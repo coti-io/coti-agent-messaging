@@ -304,6 +304,35 @@ export async function runRedditSession(input: {
       ...memory,
       queuedJobs: nextQueuedJobs
     });
+    if (shouldPublishQueuedActionImmediately()) {
+      const storeAfterQueue = await loadRedditMemory(operating.memoryPath);
+      const executed = await executeQueuedRedditJob(storeAfterQueue, {
+        config,
+        publishAction: input.publishAction,
+        now
+      });
+      if (executed) {
+        return {
+          generatedAt: now.toISOString(),
+          dryRun,
+          duplicateCheckPolicy,
+          readSource: operating.readController,
+          memoryPath: operating.memoryPath,
+          ingestion: summarizeIngestion(ingestion),
+          actionCandidates: summarizeActionCandidates(actionCandidates),
+          selectedActionBundle,
+          queuedActionJobs: summarizeQueuedRedditJobs(executed.store),
+          planner: summarizePlanner(decision),
+          decision: {
+            ...decision,
+            action: plannedAction
+          },
+          draft,
+          outcome: executed.outcome,
+          recorded: executed.recorded
+        };
+      }
+    }
   }
 
   const recorded: RedditDecisionMemoryEntry = {
@@ -704,6 +733,10 @@ function findSessionCooldownReason(
 
 function structuralFingerprint(content: string): string {
   return (content.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []).slice(0, 20).join("-");
+}
+
+function shouldPublishQueuedActionImmediately(): boolean {
+  return process.env.OUTREACH_REDDIT_PUBLISH_IMMEDIATELY?.trim() === "true";
 }
 
 function parseDiscoverySeedFromEnv(): number | undefined {

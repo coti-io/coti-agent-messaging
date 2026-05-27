@@ -43,7 +43,8 @@ export function resolveOutreachEnvFilePaths(input?: {
 
 export function loadOutreachEnv(input?: Parameters<typeof resolveOutreachEnvFilePaths>[0]): void {
   for (const envPath of resolveOutreachEnvFilePaths(input)) {
-    loadDotenv({ path: envPath, override: true });
+    // Do not clobber variables already set on the process (e.g. live/soak batch scripts).
+    loadDotenv({ path: envPath, override: false });
   }
 }
 

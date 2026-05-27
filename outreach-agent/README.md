@@ -97,6 +97,8 @@ ssh grant 'sudo journalctl -u moltbook-outreach-heartbeat.service -n 100 --no-pa
 
 ## Environment
 
+CLI commands load env from the monorepo root `.env`, then `moltbook-outreach-agent/.env`, then `outreach-agent/.env`, then `process.cwd()/.env` (later files override). That keeps `npm run … -w @coti-agent-messaging/outreach-agent` working when secrets live at the repo root. Set `DOTENV_CONFIG_PATH` to load one file only.
+
 ### Moltbook
 
 Required for authenticated operations:
@@ -228,11 +230,11 @@ npm run reddit:login -w @coti-agent-messaging/outreach-agent
 npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
 npm run reddit:browser:install:deps -w @coti-agent-messaging/outreach-agent
 npm run reddit:session:dry-run -w @coti-agent-messaging/outreach-agent
-npm run reddit:session:local -w @coti-agent-messaging/outreach-agent
+npm run reddit:session -w @coti-agent-messaging/outreach-agent
 npm run reddit:docker:build -w @coti-agent-messaging/outreach-agent
 npm run reddit:docker:worker -w @coti-agent-messaging/outreach-agent
 npm run reddit:docker:session:dry-run -w @coti-agent-messaging/outreach-agent
-npm run reddit:docker:session:local -w @coti-agent-messaging/outreach-agent
+npm run reddit:docker:session -w @coti-agent-messaging/outreach-agent
 ```
 
 For live read-only monitoring through Reddit OAuth:
@@ -260,21 +262,29 @@ Controller behavior:
 - `api`: submits `create_post`, `comment_on_post`, and `reply_to_comment` through Reddit OAuth using `REDDIT_ACCESS_TOKEN` and `REDDIT_USER_AGENT`
 - `browser`: writes publish requests into `outreach-agent/.bridge/reddit-browser/requests` and waits for a matching response file in `responses`; the bundled `reddit-browser-worker` command fulfills those requests through Playwright and returns remote ids/URLs
 
-`reddit-session` is the autonomous operating loop. In dry-run mode it reads Reddit state, ranks candidate comments/posts, drafts a validated zero-marketing reply, writes memory, and prints a decision report without publishing. In local live mode it publishes at most one reply/comment through the selected controller, then records the outcome in `OUTREACH_REDDIT_MEMORY_PATH`.
+`reddit-session` is the autonomous operating loop. In dry-run mode it reads Reddit state, ranks candidate comments/posts, drafts a validated zero-marketing reply, writes memory, and prints a decision report without publishing. In live mode (`reddit:session`) it publishes at most one reply/comment through the selected controller, then records the outcome in `OUTREACH_REDDIT_MEMORY_PATH`.
 
 Operating-agent config:
 
 ```bash
 OUTREACH_REDDIT_READ_CONTROLLER=auto
 OUTREACH_REDDIT_TARGET_SUBREDDITS=sales,SaaS,CustomerSuccess,DigitalMarketing
-OUTREACH_REDDIT_SEARCH_QUERIES=CRM messy data,sales handoff broken,manual workflow,customer success workflow,automation failed,duplicate CRM records,SaaS ops process,marketing ops data quality
+OUTREACH_REDDIT_SEARCH_QUERIES=AI agent messaging,MCP agent communication,private agent channel,agent coordination encrypted,agent to agent messaging,LLM agent inbox
+OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT=1
 OUTREACH_REDDIT_MAX_ACTIONS_PER_SESSION=1
 OUTREACH_REDDIT_MAX_ACTIONS_PER_DAY=4
 OUTREACH_REDDIT_MIN_JITTER_MINUTES=18
 OUTREACH_REDDIT_MAX_JITTER_MINUTES=67
 OUTREACH_REDDIT_SESSION_DRY_RUN=true
 OUTREACH_REDDIT_MEMORY_PATH=.data/reddit-memory.json
+OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS=2
 ```
+
+Discovery reads up to that many **hot threads per session** (comments + post). Set `0` to only re-read threads you already touched in memory.
+
+By default the agent also runs **one subreddit search per target** using agent-messaging queries (`OUTREACH_REDDIT_SEARCH_QUERIES`). Cold discovery threads must match agent/MCP/private-messaging topics **or** reach relevance `>= 8`. Rhetorical title-only questions (e.g. “Anyone else …?”) no longer count as help intent.
+
+Duplicate safety: drafts are compared to prior outbound text (including dry-runs) and to other comments on the same ingested thread.
 
 Browser worker setup:
 
@@ -292,7 +302,7 @@ npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
 
 `reddit:login` opens a visible Playwright browser, lets you log in manually, checks `/api/me.json` to confirm the session is authenticated, and saves the Playwright storage state to the configured path. Copy that file to the server if you want the browser worker there to reuse the same session.
 
-Reddit blocks headless browser automation ("network security"). Run the worker with a visible browser (`OUTREACH_REDDIT_BROWSER_HEADLESS=false`, or use `npm run outreach:reddit:browser-worker:local` from the repo root). On WSL, set `DISPLAY=:0` so the browser can open on your Windows desktop.
+Reddit blocks headless browser automation ("network security"). Browser login and `reddit:browser-worker` default to a visible Playwright window; set `OUTREACH_REDDIT_BROWSER_HEADLESS=true` or `OUTREACH_REDDIT_BROWSER_LOGIN_HEADLESS=true` only if you explicitly want headless. On WSL, set `DISPLAY=:0` so the browser can open on your Windows desktop.
 
 Comment/reply publish uses `old.reddit.com` forms (reliable) and verifies the comment appears before reporting success.
 
@@ -321,7 +331,7 @@ npm run reddit:docker:session:dry-run -w @coti-agent-messaging/outreach-agent
 3. Only after dry-run output looks sane, try one live action:
 
 ```bash
-npm run reddit:docker:session:local -w @coti-agent-messaging/outreach-agent
+npm run reddit:docker:session -w @coti-agent-messaging/outreach-agent
 ```
 
 The Docker setup mounts `outreach-agent/.browser`, `outreach-agent/.bridge`, and `outreach-agent/.data` into the container. That means the host-generated Playwright `storageState.json` is reused by the containerized worker without ever putting Reddit credentials into environment variables.

@@ -20,7 +20,9 @@ test("reddit planner ranks comment replies above post comments", () => {
       title: "CRM messy data",
       body: "How do you fix duplicate CRM records?",
       createdUtc: now.getTime() / 1000,
-      commentCount: 50
+      commentCount: 50,
+      onOwnThread: true,
+      threadPostId: "post-1"
     },
     {
       id: "comment-1",
@@ -30,7 +32,9 @@ test("reddit planner ranks comment replies above post comments", () => {
       parentTitle: "CRM messy data",
       body: "We keep breaking sales handoffs with messy CRM fields. Any advice?",
       createdUtc: now.getTime() / 1000,
-      commentCount: 5
+      commentCount: 5,
+      onOwnThread: true,
+      threadPostId: "post-1"
     }
   ];
 
@@ -59,7 +63,9 @@ test("reddit planner skips hostile and already-touched targets", () => {
       subreddit: "sales",
       title: "CRM help",
       body: "How do I fix this manual workflow?",
-      createdUtc: now.getTime() / 1000
+      createdUtc: now.getTime() / 1000,
+      onOwnThread: true,
+      threadPostId: "post-1"
     },
     {
       id: "comment-2",
@@ -67,7 +73,9 @@ test("reddit planner skips hostile and already-touched targets", () => {
       subreddit: "sales",
       title: "CRM help",
       body: "This whole thing is trash, change my mind. CRM bots are scams.",
-      createdUtc: now.getTime() / 1000
+      createdUtc: now.getTime() / 1000,
+      onOwnThread: true,
+      threadPostId: "post-1"
     }
   ];
 
@@ -85,7 +93,9 @@ test("reddit planner does not autopublish threads that need clarification first"
       title: "CRM handoff keeps breaking",
       body: "Sales duplicates records and ops cleans spreadsheets every week.",
       createdUtc: now.getTime() / 1000,
-      commentCount: 10
+      commentCount: 10,
+      onOwnThread: true,
+      threadPostId: "post-clarify"
     }
   ];
 

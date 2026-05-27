@@ -1,5 +1,6 @@
 import {
   buildRedditReviewQueue,
+  type RedditDuplicateCheckPolicy,
   redditMemoryEntryConsumesTarget,
   type RedditOutboundMemoryEntry,
   type RedditOutreachTargeting,
@@ -100,6 +101,7 @@ export function planRedditAction(input: {
   now?: Date;
   rng?: () => number;
   config?: Partial<RedditPlannerConfig>;
+  duplicateCheckPolicy?: RedditDuplicateCheckPolicy;
 }): RedditPlannerResult {
   const now = input.now ?? new Date();
   const config = { ...DEFAULT_REDDIT_PLANNER_CONFIG, ...input.config };
@@ -108,6 +110,7 @@ export function planRedditAction(input: {
     history: input.history ?? [],
     targeting: input.targeting ?? DEFAULT_REDDIT_OPERATING_TARGETING,
     registry: input.registry ?? DEFAULT_REDDIT_OPERATING_RULES,
+    duplicateCheckPolicy: input.duplicateCheckPolicy ?? "block_posted_only",
     now
   });
   const skipped = [

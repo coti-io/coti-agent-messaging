@@ -2,13 +2,70 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  DEFAULT_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS,
+  DEFAULT_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT,
+  DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES,
   collectOwnThreadTargets,
+  resolveRedditTargetTitle,
+  resolveRedditTargetUrl,
   parseRedditThreadUrl,
   pickThreadReadCandidates,
   snapshotsToSourceItems
 } from "../src/reddit-ingestion.js";
+import { buildRedditOperatingAgentConfig, resolveRedditSearchQueries } from "../src/config.js";
 import type { RedditSearchResult } from "../src/reddit-controller.js";
 import type { RedditConversationSnapshot } from "../src/reddit-controller.js";
+
+test("reddit operating config enables discovery and search by default", () => {
+  const previousDiscovery = process.env.OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS;
+  const previousSearch = process.env.OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT;
+  const previousQueries = process.env.OUTREACH_REDDIT_SEARCH_QUERIES;
+  delete process.env.OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS;
+  delete process.env.OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT;
+  delete process.env.OUTREACH_REDDIT_SEARCH_QUERIES;
+  try {
+    const operating = buildRedditOperatingAgentConfig("/tmp/outreach-agent");
+    assert.equal(operating.ingestionMaxDiscoveryThreadReads, DEFAULT_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS);
+    assert.equal(operating.ingestionMaxSearchesPerSubreddit, DEFAULT_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT);
+    assert.deepEqual(operating.searchQueries, [...DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES]);
+    assert.equal(resolveRedditSearchQueries(undefined).length > 0, true);
+  } finally {
+    if (previousDiscovery === undefined) {
+      delete process.env.OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS;
+    } else {
+      process.env.OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS = previousDiscovery;
+    }
+    if (previousSearch === undefined) {
+      delete process.env.OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT;
+    } else {
+      process.env.OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT = previousSearch;
+    }
+    if (previousQueries === undefined) {
+      delete process.env.OUTREACH_REDDIT_SEARCH_QUERIES;
+    } else {
+      process.env.OUTREACH_REDDIT_SEARCH_QUERIES = previousQueries;
+    }
+  }
+});
+
+test("resolveRedditTargetUrl and title normalize permalink and post references", () => {
+  assert.equal(
+    resolveRedditTargetUrl({
+      id: "1towpxq",
+      kind: "post",
+      subreddit: "SaaS",
+      permalink: "/r/SaaS/comments/1towpxq/im_shutting_down/"
+    }),
+    "https://www.reddit.com/r/SaaS/comments/1towpxq/im_shutting_down/"
+  );
+  assert.equal(
+    resolveRedditTargetTitle({
+      title: "Shutdown postmortem",
+      parentTitle: "ignored"
+    }),
+    "Shutdown postmortem"
+  );
+});
 
 test("reddit ingestion collects own thread targets from memory urls", () => {
   const targets = collectOwnThreadTargets([
@@ -30,6 +87,24 @@ test("reddit ingestion collects own thread targets from memory urls", () => {
     subreddit: "SaaS",
     postId: "xyz9"
   });
+});
+
+test("reddit ingestion collects own thread targets from targetUrl on drafts", () => {
+  const targets = collectOwnThreadTargets([
+    {
+      id: "draft-1",
+      subreddit: "SaaS",
+      kind: "comment",
+      content: "draft",
+      createdAt: "2026-05-20T10:00:00.000Z",
+      status: "posted",
+      threadPostId: "1towpxq",
+      targetUrl: "https://www.reddit.com/r/SaaS/comments/1towpxq/im_shutting_down/"
+    }
+  ]);
+  assert.equal(targets.length, 1);
+  assert.equal(targets[0]?.postId, "1towpxq");
+  assert.equal(targets[0]?.subreddit, "SaaS");
 });
 
 test("reddit ingestion ranks hot candidates and caps thread reads", () => {

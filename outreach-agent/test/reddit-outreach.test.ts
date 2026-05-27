@@ -8,8 +8,12 @@ import {
   assertRulesRegistryCoversTargets,
   assertTargetingIsViable,
   buildRedditReviewQueue,
+  collectPeerThreadCommentBodies,
   evaluateRedditOutcomes,
+  hasAgentMessagingTopicMatch,
+  hasExplicitHelpIntent,
   parseRedditListing,
+  passesDiscoveryTopicalFit,
   textSimilarity,
   type RedditOutboundMemoryEntry,
   type RedditSourceItem
@@ -71,7 +75,8 @@ test("review queue accepts operational pain even before a direct how-to question
     title: "Our CRM handoff is broken and the workflow is still manual",
     body: "Sales keeps duplicating records and ops is cleaning spreadsheets every day.",
     commentCount: 16,
-    createdUtc: Math.floor(new Date("2026-05-07T08:00:00.000Z").getTime() / 1000)
+    createdUtc: Math.floor(new Date("2026-05-07T08:00:00.000Z").getTime() / 1000),
+    onOwnThread: true
   };
 
   const queue = buildRedditReviewQueue({
@@ -160,6 +165,144 @@ test("review queue blocks near-duplicate outbound comments", () => {
     true
   );
   assert.equal(textSimilarity(previous, previous), 1);
+});
+
+test("review queue blocks near-duplicate drafted outbound on the same thread", () => {
+  const source: RedditSourceItem = {
+    id: "post-1",
+    kind: "post",
+    subreddit: "AI_Agents",
+    title: "How should agents coordinate private messages across MCP tools?",
+    body: "What should live in the tool layer versus the agent policy?",
+    threadPostId: "post-1"
+  };
+  const draft = buildRedditReviewQueue({
+    items: [source],
+    now: new Date("2026-05-27T09:00:00.000Z")
+  }).items[0]?.draft;
+  assert.ok(draft);
+
+  const queue = buildRedditReviewQueue({
+    items: [source],
+    duplicateCheckPolicy: "block_all_outbound",
+    history: [
+      {
+        id: "draft:post-1:1",
+        subreddit: "AI_Agents",
+        kind: "comment",
+        content: draft,
+        createdAt: "2026-05-27T09:00:00.000Z",
+        firstReply: true,
+        status: "drafted",
+        threadPostId: "post-1"
+      }
+    ],
+    now: new Date("2026-05-27T10:00:00.000Z")
+  });
+
+  assert.equal(queue.items.length, 0);
+  assert.equal(
+    queue.ignored[0]?.gates.some((gate) => gate.id === "not_near_duplicate" && !gate.passed),
+    true
+  );
+});
+
+test("rhetorical title question alone does not count as help intent", () => {
+  const source: RedditSourceItem = {
+    id: "thread-rant",
+    kind: "post",
+    subreddit: "AI_Agents",
+    title: "Anyone else hang up when the receptionist is AI?",
+    body: "When I get one I just hang up. I have absolutely no patience for it."
+  };
+
+  assert.equal(hasExplicitHelpIntent(source), false);
+});
+
+test("discovery threads without topical fit are blocked", () => {
+  const source: RedditSourceItem = {
+    id: "thread-rant",
+    kind: "post",
+    subreddit: "AI_Agents",
+    title: "Anyone else hang up when the receptionist is AI?",
+    body: "When I get one I just hang up.",
+    onOwnThread: false
+  };
+
+  const queue = buildRedditReviewQueue({
+    items: [source],
+    now: new Date("2026-05-27T10:00:00.000Z")
+  });
+
+  assert.equal(queue.items.length, 0);
+  assert.equal(
+    queue.ignored[0]?.gates.some((gate) => gate.id === "discovery_topical_fit" && !gate.passed),
+    true
+  );
+});
+
+test("discovery threads with agent-messaging topics can pass", () => {
+  const source: RedditSourceItem = {
+    id: "thread-agent",
+    kind: "post",
+    subreddit: "AI_Agents",
+    title: "How are you handling private agent messaging over MCP?",
+    body: "Looking for patterns for encrypted agent-to-agent coordination with our AI agents SDK.",
+    onOwnThread: false,
+    commentCount: 20,
+    createdUtc: Math.floor(new Date("2026-05-27T09:00:00.000Z").getTime() / 1000)
+  };
+
+  assert.equal(hasAgentMessagingTopicMatch(`${source.title}\n${source.body}`), true);
+  assert.equal(
+    passesDiscoveryTopicalFit({
+      discoveryThread: true,
+      topicalMatch: true,
+      relevanceScore: 4
+    }),
+    true
+  );
+
+  const queue = buildRedditReviewQueue({
+    items: [source],
+    now: new Date("2026-05-27T10:00:00.000Z")
+  });
+
+  assert.equal(queue.items.length, 1);
+});
+
+test("collectPeerThreadCommentBodies returns other comments on the same thread", () => {
+  const threadPostId = "post-1";
+  const source: RedditSourceItem = {
+    id: "post-1",
+    kind: "post",
+    subreddit: "AI_Agents",
+    title: "Thread",
+    body: "Question?",
+    threadPostId
+  };
+  const peerBody =
+    "Short answer: duplicate CRM records usually mean ownership rules are unclear across sales and ops.";
+  const peers = collectPeerThreadCommentBodies(source, [
+    source,
+    {
+      id: "comment-1",
+      kind: "comment",
+      subreddit: "AI_Agents",
+      title: "Thread",
+      parentTitle: "Thread",
+      body: peerBody,
+      threadPostId
+    }
+  ]);
+
+  assert.deepEqual(peers, [peerBody]);
+  assert.ok(
+    textSimilarity(
+      "Short answer: duplicate CRM records usually mean ownership rules are unclear across sales teams.",
+      peerBody
+    ) >= 0.55
+  );
 });
 
 test("outcome evaluation surfaces kill criteria", () => {

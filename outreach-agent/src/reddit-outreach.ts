@@ -63,6 +63,8 @@ export interface RedditSourceItem {
   parentTitle?: string;
   /** Thread where we already posted or commented (from memory). */
   onOwnThread?: boolean;
+  /** Root post id for comments and posts on a thread. */
+  threadPostId?: string;
 }
 
 export interface RedditOutboundMemoryEntry {
@@ -72,6 +74,10 @@ export interface RedditOutboundMemoryEntry {
   content: string;
   createdAt: string;
   targetId?: string;
+  /** Post or thread title for lookup in memory exports and dashboards. */
+  targetTitle?: string;
+  /** Canonical Reddit URL for the post or thread being engaged. */
+  targetUrl?: string;
   /** Root post id for this participation (used to re-ingest replies). */
   threadPostId?: string;
   remoteContentUrl?: string;
@@ -166,9 +172,10 @@ export interface RedditReadOnlyClientConfig {
 const DEFAULT_MAX_FIRST_REPLIES_PER_SUBREDDIT_PER_DAY = 2;
 const DEFAULT_MAX_FIRST_REPLIES_GLOBAL_PER_DAY = 8;
 const SIMILARITY_BLOCK_THRESHOLD = 0.58;
+const SAME_THREAD_SIMILARITY_BLOCK_THRESHOLD = 0.48;
+const THREAD_COMMENT_SIMILARITY_BLOCK_THRESHOLD = 0.55;
 
 const EXPLICIT_HELP_PATTERNS = [
-  /\?/,
   /\bhow (?:do|would|can|should|to)\b/i,
   /\bwhat (?:is|are|would|should|can)\b/i,
   /\bwhy (?:is|are|would|does|do)\b/i,
@@ -177,6 +184,28 @@ const EXPLICIT_HELP_PATTERNS = [
   /\btrying to\b/i,
   /\bstruggling with\b/i,
   /\bneed (?:a|an|some|help)\b/i
+] as const;
+
+const RHETORICAL_TITLE_PATTERNS = [
+  /^anyone else\b/i,
+  /^am i the only one\b/i,
+  /^is it just me\b/i,
+  /^does anyone else\b/i,
+  /^who else\b/i
+] as const;
+
+export const DISCOVERY_MIN_RELEVANCE_SCORE = 8;
+
+export const AGENT_MESSAGING_TOPIC_PATTERNS = [
+  /\bai agents?\b/i,
+  /\bmcp\b/i,
+  /\bprivate (?:message|messaging|channel|inbox)\b/i,
+  /\bagent(?:s)?\s+(?:coordination|communication|messaging)\b/i,
+  /\bagent(?:-|\s)?to(?:-|\s)?agent\b/i,
+  /\bencrypted?(?:\s+)?(?:message|messaging|channel)\b/i,
+  /\bagent(?:s)?\s+sdk\b/i,
+  /\bllm agents?\b/i,
+  /\bmulti[- ]?agent\b/i
 ] as const;
 
 const LOW_INTENT_PATTERNS = [
@@ -401,6 +430,7 @@ export function buildRedditReviewQueue(input: {
   registry?: RedditRulesRegistry;
   promptProfile?: PromptProfile;
   promptProfileId?: string;
+  duplicateCheckPolicy?: RedditDuplicateCheckPolicy;
   now?: Date;
 }): RedditReviewQueue {
   const targeting = input.targeting ?? DEFAULT_REDDIT_TARGETING;
@@ -417,7 +447,17 @@ export function buildRedditReviewQueue(input: {
   const ranked = input.items
     .filter((item) => targetNames.has(item.subreddit.toLowerCase()))
     .map((item) =>
-      buildReviewItem(item, targeting, registry, history, now, input.promptProfile, input.promptProfileId)
+      buildReviewItem(
+        item,
+        targeting,
+        registry,
+        history,
+        now,
+        input.promptProfile,
+        input.promptProfileId,
+        input.items,
+        input.duplicateCheckPolicy ?? "block_posted_only"
+      )
     )
     .sort((left, right) => {
       if (left.status !== right.status) {
@@ -434,6 +474,65 @@ export function buildRedditReviewQueue(input: {
   };
 }
 
+export type RedditDuplicateCheckPolicy = "block_all_outbound" | "block_posted_only";
+
+export function outboundHistoryForSimilarityCheck(
+  history: readonly RedditOutboundMemoryEntry[],
+  policy: RedditDuplicateCheckPolicy = "block_posted_only"
+): readonly RedditOutboundMemoryEntry[] {
+  const withContent = history.filter((entry) => Boolean(entry.content?.trim()));
+  if (policy === "block_all_outbound") {
+    return withContent;
+  }
+  return withContent.filter((entry) => redditMemoryEntryConsumesTarget(entry));
+}
+
+export function collectPeerThreadCommentBodies(
+  source: RedditSourceItem,
+  items: readonly RedditSourceItem[]
+): string[] {
+  const threadPostId = resolveSourceThreadPostId(source);
+  if (!threadPostId) {
+    return [];
+  }
+
+  return items
+    .filter(
+      (item) =>
+        item.id !== source.id &&
+        resolveSourceThreadPostId(item) === threadPostId &&
+        item.kind === "comment" &&
+        Boolean(item.body?.trim())
+    )
+    .map((item) => item.body!.trim());
+}
+
+export function resolveSourceThreadPostId(source: RedditSourceItem): string | undefined {
+  if (source.threadPostId) {
+    return source.threadPostId;
+  }
+  if (source.kind === "post") {
+    return source.id;
+  }
+  if (source.permalink) {
+    return parseRedditThreadUrlFromPath(source.permalink);
+  }
+  if (source.url) {
+    return parseRedditThreadUrlFromPath(source.url);
+  }
+  return undefined;
+}
+
+function parseRedditThreadUrlFromPath(input: string): string | undefined {
+  try {
+    const url = input.startsWith("http") ? new URL(input) : new URL(input, "https://www.reddit.com");
+    const match = url.pathname.match(/\/r\/[^/]+\/comments\/([^/]+)/i);
+    return match?.[1]?.replace(/^t[0-9]_/, "");
+  } catch {
+    return undefined;
+  }
+}
+
 function buildReviewItem(
   source: RedditSourceItem,
   targeting: RedditOutreachTargeting,
@@ -441,7 +540,9 @@ function buildReviewItem(
   history: readonly RedditOutboundMemoryEntry[],
   now: Date,
   promptProfile: PromptProfile | undefined,
-  promptProfileId: string | undefined
+  promptProfileId: string | undefined,
+  allItems: readonly RedditSourceItem[],
+  duplicateCheckPolicy: RedditDuplicateCheckPolicy
 ): RedditReviewItem {
   const rule = findRule(registry, source.subreddit);
   const text = sourceText(source);
@@ -453,7 +554,8 @@ function buildReviewItem(
   });
   validatePromptProfile(resolvedPromptProfile);
   const hasPainSignal = hasOperationalPain(text);
-  const needsHelp = hasExplicitHelpIntent(text) || hasPainSignal;
+  const hasExplicitIntent = hasExplicitHelpIntent(source);
+  const needsHelp = hasExplicitIntent || hasPainSignal;
   const explicitProductInterest = hasExplicitProductInterest(text, targeting.productAliases);
   const privateMessageAssessment = assessPrivateMessageEscalation({ text });
   const publicValueDeliveredFirst = false;
@@ -464,9 +566,15 @@ function buildReviewItem(
   });
   const relevanceScore = scoreRelevance(source, text, now);
   const riskScore = scoreRisk(source, rule, text, now);
-  const hasExplicitIntent = hasExplicitHelpIntent(text);
+  const topicalMatch = hasAgentMessagingTopicMatch(text);
+  const discoveryThread = source.onOwnThread !== true;
+  const passesDiscoveryFit = passesDiscoveryTopicalFit({
+    discoveryThread,
+    topicalMatch,
+    relevanceScore
+  });
   const draft =
-    relevanceScore >= 5 && needsHelp
+    relevanceScore >= 5 && needsHelp && passesDiscoveryFit
       ? buildExplanatoryDraft(source, resolvedPromptProfile.parameters.layout)
       : undefined;
   const gates = buildGates(
@@ -481,7 +589,15 @@ function buildReviewItem(
     explicitProductInterest,
     privateMessageAssessment,
     productSpecificFollowUp.reason,
-    resolvedPromptProfile
+    resolvedPromptProfile,
+    collectPeerThreadCommentBodies(source, allItems),
+    duplicateCheckPolicy,
+    {
+      discoveryThread,
+      topicalMatch,
+      relevanceScore,
+      passesDiscoveryFit
+    }
   );
   const blocked = gates.some((gate) => gate.severity === "block" && !gate.passed);
 
@@ -557,14 +673,37 @@ function buildGates(
   explicitProductInterest: boolean,
   privateMessageAssessment: PrivateMessageEscalationAssessment,
   productSpecificFollowUpReason: string,
-  resolvedPromptProfile: ReturnType<typeof resolvePromptProfile>
+  resolvedPromptProfile: ReturnType<typeof resolvePromptProfile>,
+  peerThreadComments: readonly string[] = [],
+  duplicateCheckPolicy: RedditDuplicateCheckPolicy = "block_posted_only",
+  discoveryContext: {
+    discoveryThread: boolean;
+    topicalMatch: boolean;
+    relevanceScore: number;
+    passesDiscoveryFit: boolean;
+  } = {
+    discoveryThread: false,
+    topicalMatch: false,
+    relevanceScore: 0,
+    passesDiscoveryFit: true
+  }
 ): RedditReviewGate[] {
+  const threadPostId = resolveSourceThreadPostId(source);
   const similar = draft
     ? findMostSimilarOutbound(
         draft,
-        history.filter((entry) => redditMemoryEntryConsumesTarget(entry))
+        outboundHistoryForSimilarityCheck(history, duplicateCheckPolicy),
+        threadPostId
       )
     : undefined;
+  const similarThreadCommentScore =
+    draft && peerThreadComments.length > 0
+      ? peerThreadComments.reduce(
+          (best, body) => Math.max(best, textSimilarity(draft, body)),
+          0
+        )
+      : 0;
+  const duplicateThreshold = similar?.threshold ?? SIMILARITY_BLOCK_THRESHOLD;
   const dailySubredditCount = countRecentFirstReplies(history, now, source.subreddit);
   const dailyGlobalCount = countRecentFirstReplies(history, now);
   const gates: RedditReviewGate[] = [
@@ -587,12 +726,26 @@ function buildGates(
     },
     {
       id: "clear_user_need",
-      passed: hasExplicitIntent || hasPainSignal,
+      passed: (hasExplicitIntent || hasPainSignal) && discoveryContext.passesDiscoveryFit,
       severity: "block",
       reason:
-        hasExplicitIntent || hasPainSignal
-          ? "The source shows explicit help intent or clear operational pain."
-          : "No explicit help intent or operational pain; public replies would still be unsolicited."
+        !(hasExplicitIntent || hasPainSignal)
+          ? "No explicit help intent or operational pain; public replies would still be unsolicited."
+          : !discoveryContext.passesDiscoveryFit
+            ? "Discovery thread lacks agent-messaging topical fit and relevance is below the cold-thread threshold."
+            : "The source shows explicit help intent or clear operational pain."
+    },
+    {
+      id: "discovery_topical_fit",
+      passed: discoveryContext.passesDiscoveryFit,
+      severity: "block",
+      reason: discoveryContext.discoveryThread
+        ? discoveryContext.passesDiscoveryFit
+          ? discoveryContext.topicalMatch
+            ? `Discovery thread matches agent-messaging topics (relevance ${discoveryContext.relevanceScore}).`
+            : `Discovery thread cleared on high relevance (${discoveryContext.relevanceScore} >= ${DISCOVERY_MIN_RELEVANCE_SCORE}).`
+          : `Discovery thread needs agent-messaging topics or relevance >= ${DISCOVERY_MIN_RELEVANCE_SCORE}; got ${discoveryContext.relevanceScore}.`
+        : "Own-thread follow-up; discovery topical gate not applied."
     },
     {
       id: "low_spam_topic_risk",
@@ -669,11 +822,22 @@ function buildGates(
       },
       {
         id: "not_near_duplicate",
-        passed: !similar || similar.score < SIMILARITY_BLOCK_THRESHOLD,
+        passed: !similar || similar.score < duplicateThreshold,
         severity: "block",
         reason: similar
-          ? `Most similar prior outbound score ${similar.score.toFixed(2)} from ${similar.entry.id}.`
+          ? `Most similar prior outbound score ${similar.score.toFixed(2)} from ${similar.entry.id} (threshold ${duplicateThreshold.toFixed(2)}).`
           : "No similar prior outbound content found."
+      },
+      {
+        id: "not_redundant_with_thread",
+        passed: similarThreadCommentScore < THREAD_COMMENT_SIMILARITY_BLOCK_THRESHOLD,
+        severity: "block",
+        reason:
+          similarThreadCommentScore >= THREAD_COMMENT_SIMILARITY_BLOCK_THRESHOLD
+            ? `Draft overlaps an existing thread comment (score ${similarThreadCommentScore.toFixed(2)}).`
+            : peerThreadComments.length > 0
+              ? "Draft is sufficiently distinct from visible thread comments."
+              : "No peer thread comments were ingested for comparison."
       }
     );
   }
@@ -1011,7 +1175,7 @@ function scoreRelevance(source: RedditSourceItem, text: string, now: Date): numb
   const negative = LOW_INTENT_PATTERNS.reduce((score, pattern) => {
     return pattern.test(text) ? score + 4 : score;
   }, 0);
-  const helpBoost = hasExplicitHelpIntent(text) ? 2 : 0;
+  const helpBoost = hasExplicitHelpIntent(source) ? 2 : 0;
   const painBoost = OPERATIONAL_PAIN_PATTERNS.some((pattern) => pattern.test(text)) ? 2 : 0;
   const freshness = freshnessBoost(source, now);
   const activity = conversationActivityBoost(source);
@@ -1028,7 +1192,7 @@ function scoreRisk(
 ): number {
   const ruleRisk = rule?.risk === "low" ? 1 : rule?.risk === "medium" ? 3 : rule?.risk === "high" ? 6 : 10;
   const promotionRisk = LOW_INTENT_PATTERNS.some((pattern) => pattern.test(text)) ? 6 : 0;
-  const noQuestionRisk = hasExplicitHelpIntent(text) ? 0 : 3;
+  const noQuestionRisk = hasExplicitHelpIntent(source) ? 0 : 3;
   const externalUrlRisk = source.url && !source.url.includes("reddit.com") ? 1 : 0;
   const argumentRisk = ARGUMENT_OR_HOSTILITY_PATTERNS.some((pattern) => pattern.test(text)) ? 5 : 0;
   const staleRisk = freshnessBoost(source, now) === 0 ? 2 : 0;
@@ -1101,8 +1265,48 @@ function sourceText(source: RedditSourceItem): string {
   return [source.parentTitle, source.title, source.body].filter(Boolean).join("\n");
 }
 
-function hasExplicitHelpIntent(text: string): boolean {
-  return EXPLICIT_HELP_PATTERNS.some((pattern) => pattern.test(text));
+export function hasAgentMessagingTopicMatch(text: string): boolean {
+  return AGENT_MESSAGING_TOPIC_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+export function passesDiscoveryTopicalFit(input: {
+  discoveryThread: boolean;
+  topicalMatch: boolean;
+  relevanceScore: number;
+}): boolean {
+  if (!input.discoveryThread) {
+    return true;
+  }
+  return input.topicalMatch || input.relevanceScore >= DISCOVERY_MIN_RELEVANCE_SCORE;
+}
+
+export function hasExplicitHelpIntent(source: RedditSourceItem): boolean {
+  const title = source.title?.trim() ?? "";
+  const body = source.body?.trim() ?? "";
+
+  if (body.length > 0) {
+    if (EXPLICIT_HELP_PATTERNS.some((pattern) => pattern.test(body))) {
+      return true;
+    }
+    if (/\?/.test(body)) {
+      return true;
+    }
+    return false;
+  }
+
+  if (!title) {
+    return false;
+  }
+
+  if (RHETORICAL_TITLE_PATTERNS.some((pattern) => pattern.test(title))) {
+    return false;
+  }
+
+  if (EXPLICIT_HELP_PATTERNS.some((pattern) => pattern.test(title))) {
+    return true;
+  }
+
+  return /\?/.test(title) && /\b(how|what|why|should|can|recommend|advice)\b/i.test(title);
 }
 
 function hasOperationalPain(text: string): boolean {
@@ -1135,12 +1339,19 @@ function containsPrivateMessagePrompt(content: string): boolean {
 
 function findMostSimilarOutbound(
   content: string,
-  history: readonly RedditOutboundMemoryEntry[]
-): { entry: RedditOutboundMemoryEntry; score: number } | undefined {
-  return history.reduce<{ entry: RedditOutboundMemoryEntry; score: number } | undefined>((best, entry) => {
+  history: readonly RedditOutboundMemoryEntry[],
+  threadPostId?: string
+): { entry: RedditOutboundMemoryEntry; score: number; threshold: number } | undefined {
+  return history.reduce<
+    { entry: RedditOutboundMemoryEntry; score: number; threshold: number } | undefined
+  >((best, entry) => {
     const score = textSimilarity(content, entry.content);
+    const threshold =
+      threadPostId && entry.threadPostId === threadPostId
+        ? SAME_THREAD_SIMILARITY_BLOCK_THRESHOLD
+        : SIMILARITY_BLOCK_THRESHOLD;
     if (!best || score > best.score) {
-      return { entry, score };
+      return { entry, score, threshold };
     }
 
     return best;

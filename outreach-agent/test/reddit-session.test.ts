@@ -75,7 +75,9 @@ const ingestion: RedditIngestionResult = {
       body: "We keep breaking sales handoffs with duplicate CRM records. Any advice on fixing this manual workflow?",
       createdUtc: Date.parse("2026-05-19T08:00:00.000Z") / 1000,
       commentCount: 12,
-      permalink: "/r/sales/comments/post-1/_/comment-1/"
+      permalink: "/r/sales/comments/post-1/_/comment-1/",
+      onOwnThread: true,
+      threadPostId: "post-1"
     }
   ]
 };
@@ -105,6 +107,11 @@ test("reddit session dry-run emits decision report and records draft without pub
   assert.equal(memory.history.length, 1);
   assert.equal(memory.history[0]?.status, "drafted");
   assert.equal(memory.history[0]?.targetId, undefined);
+  assert.equal(memory.history[0]?.targetTitle, "CRM messy data");
+  assert.equal(
+    memory.history[0]?.targetUrl,
+    "https://www.reddit.com/r/sales/comments/post-1/_/comment-1/"
+  );
   assert.ok(memory.history[0]?.promptVariantId);
   assert.ok(memory.history[0]?.promptParameters?.messageStyle);
 });

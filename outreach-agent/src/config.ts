@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./load-env.js";
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -19,6 +19,11 @@ import {
   type JsonLlmProvider
 } from "./llm-client.js";
 import type { PromptProfile } from "./prompt-profile.js";
+import {
+  DEFAULT_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS,
+  DEFAULT_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT,
+  DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES
+} from "./reddit-ingestion.js";
 import type { OutreachAgentConfig, OutreachAgentMode, OutreachVenueId } from "./venue.js";
 
 export interface MoltbookStoredCredentials {
@@ -617,15 +622,20 @@ export function getRedditControllerConfig(config: Pick<MoltbookRuntimeConfig, "p
   return config.reddit ?? buildRedditControllerConfig(config.packageRoot);
 }
 
+export function resolveRedditSearchQueries(raw?: string): string[] {
+  const configured = parseCsv(raw);
+  return configured.length > 0 ? configured : [...DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES];
+}
+
 export function buildRedditOperatingAgentConfig(packageRoot: string): RedditOperatingAgentConfig {
   return {
     targetSubreddits: parseCsv(process.env.OUTREACH_REDDIT_TARGET_SUBREDDITS),
-    searchQueries: parseCsv(process.env.OUTREACH_REDDIT_SEARCH_QUERIES),
+    searchQueries: resolveRedditSearchQueries(process.env.OUTREACH_REDDIT_SEARCH_QUERIES),
     ingestionListLimit: parseNumber(process.env.OUTREACH_REDDIT_INGESTION_LIST_LIMIT, 5),
     ingestionMaxOwnThreadReads: parseNumber(process.env.OUTREACH_REDDIT_INGESTION_MAX_OWN_THREAD_READS, 25),
     ingestionMaxDiscoveryThreadReads: parseNumber(
       process.env.OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS,
-      0
+      DEFAULT_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS
     ),
     ingestionOwnThreadCommentLimit: parseNumber(
       process.env.OUTREACH_REDDIT_INGESTION_OWN_THREAD_COMMENT_LIMIT,
@@ -633,7 +643,7 @@ export function buildRedditOperatingAgentConfig(packageRoot: string): RedditOper
     ),
     ingestionMaxSearchesPerSubreddit: parseNumber(
       process.env.OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT,
-      0
+      DEFAULT_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT
     ),
     maxActionsPerSession: parseNumber(process.env.OUTREACH_REDDIT_MAX_ACTIONS_PER_SESSION, 1),
     maxActionsPerDay: parseNumber(process.env.OUTREACH_REDDIT_MAX_ACTIONS_PER_DAY, 4),

@@ -26,21 +26,27 @@ export const DEFAULT_REDDIT_OPERATING_SUBREDDITS = [
   "DigitalMarketing"
 ] as const;
 
-/** Example queries for docs/tests; ingestion does not search unless OUTREACH_REDDIT_SEARCH_QUERIES is set. */
-export const DEFAULT_REDDIT_OPERATING_QUERIES = [
-  "CRM messy data",
-  "sales handoff broken",
-  "manual workflow"
+/** Default subreddit searches when OUTREACH_REDDIT_SEARCH_QUERIES is unset. */
+export const DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES = [
+  "AI agent messaging",
+  "MCP agent communication",
+  "private agent channel",
+  "agent coordination encrypted",
+  "agent to agent messaging",
+  "LLM agent inbox"
 ] as const;
+
+/** @deprecated Use DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES */
+export const DEFAULT_REDDIT_OPERATING_QUERIES = DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES;
 
 /** Hot posts listed per subreddit when discovery is enabled. */
 export const DEFAULT_REDDIT_INGESTION_LIST_LIMIT = 5;
 /** Threads to fully re-read where we already participated (priority). */
 export const DEFAULT_REDDIT_INGESTION_MAX_OWN_THREAD_READS = 25;
-/** Optional cold threads from hot feeds (0 = discovery off). */
-export const DEFAULT_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS = 0;
+/** Cold threads from hot feeds per session (0 turns discovery off). */
+export const DEFAULT_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS = 2;
 /** Subreddit searches per session; 0 keeps browsing to hot listings only. */
-export const DEFAULT_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT = 0;
+export const DEFAULT_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT = 1;
 export const DEFAULT_REDDIT_INGESTION_OWN_THREAD_COMMENT_LIMIT = 100;
 export const DEFAULT_REDDIT_INGESTION_DISCOVERY_COMMENT_LIMIT = 25;
 
@@ -149,6 +155,44 @@ function resolveIngestionLimits(
   };
 }
 
+export function resolveRedditTargetUrl(
+  source: Pick<RedditSourceItem, "url" | "permalink" | "subreddit" | "id" | "kind">
+): string | undefined {
+  const fromUrl = source.url?.trim();
+  if (fromUrl && fromUrl.includes("reddit.com")) {
+    try {
+      const url = new URL(fromUrl);
+      url.search = "";
+      url.hash = "";
+      return url.toString();
+    } catch {
+      return fromUrl;
+    }
+  }
+
+  const permalink = source.permalink?.trim();
+  if (permalink) {
+    const path = permalink.startsWith("/") ? permalink : `/${permalink}`;
+    return new URL(path, "https://www.reddit.com").toString();
+  }
+
+  if (source.kind === "post" && source.subreddit && source.id) {
+    return `https://www.reddit.com/r/${encodeURIComponent(source.subreddit)}/comments/${source.id}/`;
+  }
+
+  return undefined;
+}
+
+export function resolveRedditTargetTitle(
+  source: Pick<RedditSourceItem, "title" | "parentTitle">
+): string | undefined {
+  const title = source.title?.trim();
+  if (title) {
+    return title;
+  }
+  return source.parentTitle?.trim() || undefined;
+}
+
 export function parseRedditThreadUrl(
   input: string
 ): { subreddit: string; postId: string } | undefined {
@@ -185,7 +229,8 @@ export function collectOwnThreadTargets(
       continue;
     }
 
-    const parsedUrl = entry.remoteContentUrl ? parseRedditThreadUrl(entry.remoteContentUrl) : undefined;
+    const threadReference = entry.remoteContentUrl ?? entry.targetUrl;
+    const parsedUrl = threadReference ? parseRedditThreadUrl(threadReference) : undefined;
     const postId = normalizeRedditId(entry.threadPostId ?? parsedUrl?.postId ?? "");
     const subreddit = (parsedUrl?.subreddit || entry.subreddit || "").trim();
     if (!postId || !subreddit) {
@@ -193,7 +238,7 @@ export function collectOwnThreadTargets(
         registerOwnThreadTarget(byKey, {
           postId: normalizeRedditId(entry.targetId),
           subreddit: entry.subreddit,
-          url: entry.remoteContentUrl,
+          url: threadReference,
           lastTouchedAt: entry.createdAt
         });
       }
@@ -203,7 +248,7 @@ export function collectOwnThreadTargets(
     registerOwnThreadTarget(byKey, {
       postId,
       subreddit,
-      url: entry.remoteContentUrl,
+      url: threadReference,
       permalink: parsedUrl ? `/r/${subreddit}/comments/${postId}/` : undefined,
       lastTouchedAt: entry.createdAt
     });
@@ -507,7 +552,8 @@ export function snapshotsToSourceItems(
         createdUtc: comment.createdUtc,
         score: comment.score,
         commentCount: thread.commentCount,
-        onOwnThread
+        onOwnThread,
+        threadPostId: thread.id
       });
     }
 
@@ -524,7 +570,8 @@ export function snapshotsToSourceItems(
         createdUtc: thread.createdUtc,
         score: thread.score,
         commentCount: thread.commentCount,
-        onOwnThread
+        onOwnThread,
+        threadPostId: thread.id
       });
     }
   }

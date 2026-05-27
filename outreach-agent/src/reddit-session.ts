@@ -2,7 +2,12 @@ import { getOutreachAgentConfig, getRedditControllerConfig, getRedditOperatingAg
 import { createActionJob, type ActionJob } from "./action-planning.js";
 import { draftRedditResponse } from "./reddit-drafting.js";
 import { recordPromptRotationAction, selectPromptVariant } from "./prompt-rotation.js";
-import { ingestRedditState, parseRedditThreadUrl } from "./reddit-ingestion.js";
+import {
+  ingestRedditState,
+  parseRedditThreadUrl,
+  resolveRedditTargetTitle,
+  resolveRedditTargetUrl
+} from "./reddit-ingestion.js";
 import { enqueueActionJobs, removeActionJob, summarizeActionJobs } from "./job-queue.js";
 import { appendRedditMemory, loadRedditMemory, saveRedditMemory, type RedditMemoryStore } from "./reddit-memory.js";
 import {
@@ -153,6 +158,7 @@ export async function runRedditSession(input: {
     history: memory.history,
     targeting: DEFAULT_REDDIT_OPERATING_TARGETING,
     registry: DEFAULT_REDDIT_OPERATING_RULES,
+    duplicateCheckPolicy: dryRun ? "block_all_outbound" : "block_posted_only",
     config: {
       maxActionsPerSession: maxActions,
       minDelayMinutes: operating.minJitterMinutes,
@@ -286,6 +292,8 @@ export async function runRedditSession(input: {
     content: draft.content,
     createdAt: now.toISOString(),
     targetId: dryRun ? undefined : plannedAction.item.source.id,
+    targetTitle: resolveRedditTargetTitle(plannedAction.item.source),
+    targetUrl: resolveRedditTargetUrl(plannedAction.item.source),
     targetSummary: plannedAction.item.source.body ?? plannedAction.item.source.title,
     nextEligibleAt: dryRun ? undefined : plannedAction.nextEligibleAt,
     status: dryRun ? "drafted" : "posted",
@@ -357,6 +365,9 @@ function resolveThreadPostId(
   const fromUrl = remoteContentUrl ? parseRedditThreadUrl(remoteContentUrl)?.postId : undefined;
   if (fromUrl) {
     return fromUrl;
+  }
+  if (planned.item.source.threadPostId) {
+    return planned.item.source.threadPostId;
   }
   if (planned.item.source.kind === "post") {
     return planned.item.source.id;
@@ -463,6 +474,8 @@ async function executeQueuedRedditJob(
     content: queuedJob.payload.content ?? "",
     createdAt: input.now.toISOString(),
     targetId: metadata.plannedAction.item.source.id,
+    targetTitle: resolveRedditTargetTitle(metadata.plannedAction.item.source),
+    targetUrl: resolveRedditTargetUrl(metadata.plannedAction.item.source),
     targetSummary: metadata.plannedAction.item.source.body ?? metadata.plannedAction.item.source.title,
     nextEligibleAt: new Date(
       input.now.getTime() +

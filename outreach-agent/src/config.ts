@@ -183,13 +183,41 @@ export function resolveRedditBrowserStorageStatePath(rawPath?: string): string {
   return path.resolve(agentRoot, normalized);
 }
 
-function defaultPromptRotationStatePath(packageRoot: string): string {
-  return path.join(packageRoot, ".data", "prompt-rotation.json");
+function defaultPromptRotationStatePath(statePath: string): string {
+  return path.join(path.dirname(statePath), "prompt-rotation.json");
 }
 
-function defaultLlmDebugDir(packageRoot: string): string {
-  return path.join(packageRoot, ".data", "llm-debug");
+function defaultLlmDebugDir(statePath: string): string {
+  return path.join(path.dirname(statePath), "llm-debug");
 }
+
+function defaultAttributionDbPath(statePath: string): string {
+  return path.join(path.dirname(statePath), "outreach-attribution.sqlite");
+}
+
+function defaultHeartbeatReportPath(statePath: string): string {
+  return path.join(path.dirname(statePath), "last-heartbeat.json");
+}
+
+function defaultCredentialsPath(statePath: string, packageRoot: string): string {
+  const defaultDevStatePath = path.join(packageRoot, ".data", "state.json");
+  if (path.resolve(statePath) === path.resolve(defaultDevStatePath)) {
+    return "~/.config/moltbook/credentials.json";
+  }
+
+  return path.join(path.dirname(statePath), "credentials.json");
+}
+
+export function resolveRuntimeDataDir(statePath: string): string {
+  return path.dirname(statePath);
+}
+
+export {
+  defaultAttributionDbPath,
+  defaultHeartbeatReportPath,
+  defaultLlmDebugDir,
+  defaultPromptRotationStatePath
+};
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) {
@@ -321,14 +349,16 @@ export function resolveRpcUrl(network = resolveNetwork()): string | undefined {
 export function resolvePaths(): RuntimePaths {
   const packageRoot = getPackageRoot();
   const projectRoot = path.resolve(packageRoot, "..");
-  const credentialsPath = resolveHomePath(
-    process.env.MOLTBOOK_CREDENTIALS_PATH ?? "~/.config/moltbook/credentials.json"
-  );
-  const defaultStatePath = path.join(packageRoot, ".data", "state.json");
+  const runtimeDirOverride = getOptionalEnv("OUTREACH_RUNTIME_DIR");
+  const defaultStatePath = runtimeDirOverride
+    ? path.join(resolveHomePath(runtimeDirOverride), "state.json")
+    : path.join(packageRoot, ".data", "state.json");
   const statePath = resolveHomePath(process.env.MOLTBOOK_STATE_PATH ?? defaultStatePath);
+  const credentialsPath = resolveHomePath(
+    process.env.MOLTBOOK_CREDENTIALS_PATH ?? defaultCredentialsPath(statePath, packageRoot)
+  );
   const heartbeatReportPath = resolveHomePath(
-    process.env.MOLTBOOK_HEARTBEAT_REPORT_PATH ??
-      path.join(path.dirname(statePath), "last-heartbeat.json")
+    process.env.MOLTBOOK_HEARTBEAT_REPORT_PATH ?? defaultHeartbeatReportPath(statePath)
   );
 
   return {
@@ -495,22 +525,28 @@ export async function loadRuntimeConfig(
     forceWriteMode: parseForceWriteMode(process.env.MOLTBOOK_FORCE_WRITE_MODE),
     promptProfileId,
     promptProfile,
-    promptRotationStatePath:
-      resolveHomePath(
-        getOptionalEnv("OUTREACH_PROMPT_ROTATION_STATE_PATH") ??
-          defaultPromptRotationStatePath(paths.packageRoot)
-      ),
+    promptRotationStatePath: resolveHomePath(
+      getOptionalEnv("OUTREACH_PROMPT_ROTATION_STATE_PATH") ??
+        defaultPromptRotationStatePath(paths.statePath)
+    ),
     llmDebugDir: resolveHomePath(
-      getOptionalEnv("MOLTBOOK_LLM_DEBUG_DIR") ?? defaultLlmDebugDir(paths.packageRoot)
+      getOptionalEnv("MOLTBOOK_LLM_DEBUG_DIR") ?? defaultLlmDebugDir(paths.statePath)
     ),
     attributionCampaignId,
-    attributionDbPath: getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH"),
-    ctaBaseUrl:
-      getOptionalEnv("OUTREACH_TRACKING_BASE_URL") ?? getOptionalEnv("OUTREACH_CTA_BASE_URL"),
-    ctaApprovedDomains: parseCsv(
-      process.env.OUTREACH_TRACKING_APPROVED_DOMAINS ??
-        process.env.OUTREACH_CTA_APPROVED_DOMAINS
+    attributionDbPath: resolveHomePath(
+      getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH") ?? defaultAttributionDbPath(paths.statePath)
     ),
+    ctaBaseUrl:
+      getOptionalEnv("OUTREACH_TRACKING_BASE_URL") ??
+      getOptionalEnv("OUTREACH_CTA_BASE_URL") ??
+      "https://agents.coti.io/pm",
+    ctaApprovedDomains: (() => {
+      const configured = parseCsv(
+        process.env.OUTREACH_TRACKING_APPROVED_DOMAINS ??
+          process.env.OUTREACH_CTA_APPROVED_DOMAINS
+      );
+      return configured.length > 0 ? configured : ["agents.coti.io"];
+    })(),
     llm,
     llmBridge,
     verificationLlm: verificationLlmApiKey

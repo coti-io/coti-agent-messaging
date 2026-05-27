@@ -10,6 +10,42 @@ function getPackageRoot(): string {
   return path.resolve(path.dirname(currentFile), "..", "..");
 }
 
+function getOptionalEnv(name: string): string | undefined {
+  const value = process.env[name];
+  return value && value.length > 0 ? value : undefined;
+}
+
+function resolveHomePath(relativePath: string): string {
+  if (relativePath.startsWith("~/")) {
+    const homeDir = process.env.HOME;
+    if (!homeDir) {
+      throw new Error("Cannot resolve '~' because HOME is not set.");
+    }
+
+    return path.join(homeDir, relativePath.slice(2));
+  }
+
+  if (path.isAbsolute(relativePath)) {
+    return relativePath;
+  }
+
+  return relativePath;
+}
+
+function defaultAttributionDbPath(packageRoot: string): string {
+  const runtimeDir = getOptionalEnv("OUTREACH_RUNTIME_DIR");
+  if (runtimeDir) {
+    return path.join(resolveHomePath(runtimeDir), "outreach-attribution.sqlite");
+  }
+
+  const deployPath = getOptionalEnv("MOLTBOOK_OUTREACH_DEPLOY_PATH");
+  if (deployPath) {
+    return path.join(resolveHomePath(deployPath), ".runtime", "outreach-attribution.sqlite");
+  }
+
+  return path.join(packageRoot, ".data", "outreach-attribution.sqlite");
+}
+
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
@@ -17,11 +53,6 @@ function getRequiredEnv(name: string): string {
   }
 
   return value;
-}
-
-function getOptionalEnv(name: string): string | undefined {
-  const value = process.env[name];
-  return value && value.length > 0 ? value : undefined;
 }
 
 function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
@@ -76,7 +107,8 @@ export function resolveStarterGrantServiceConfig(): StarterGrantServiceConfig {
     statePath:
       process.env.STARTER_GRANT_SERVICE_STATE_PATH ??
       path.join(packageRoot, ".data", "starter-grants.json"),
-    attributionDbPath: getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH"),
+    attributionDbPath:
+      getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH") ?? defaultAttributionDbPath(packageRoot),
     authToken: getOptionalEnv("STARTER_GRANT_SERVICE_AUTH_TOKEN"),
     trustProxy: parseBoolean(process.env.STARTER_GRANT_SERVICE_TRUST_PROXY, false),
     maxBodyBytes: parseNumber(process.env.STARTER_GRANT_SERVICE_MAX_BODY_BYTES, 16 * 1024),

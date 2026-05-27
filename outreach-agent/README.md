@@ -77,11 +77,13 @@ export MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE=/absolute/path/to/outreach-agent.env
 export MOLTBOOK_OUTREACH_DEPLOY_DELETE=1
 ```
 
-The deployed `systemd` service pins stable runtime files under `<deploy-path>/.runtime/`:
+The deployed `systemd` service only needs to pin `MOLTBOOK_STATE_PATH` under `<deploy-path>/.runtime/state.json`. The agent derives the other runtime files from that directory:
 
 - `credentials.json`
-- `state.json`
 - `last-heartbeat.json`
+- `prompt-rotation.json`
+- `llm-debug/`
+- `outreach-attribution.sqlite`
 - `heartbeat.lock`
 
 Useful remote checks:
@@ -141,12 +143,16 @@ OUTREACH_POLICY_PROFILE_ID=moltbook-default
 OUTREACH_PROMPT_PROFILE_ID=default-technical-soft-cta
 OUTREACH_PROMPT_PROFILE_PATH=/absolute/path/to/prompt-profile.json
 OUTREACH_ATTRIBUTION_CAMPAIGN_ID=private_messaging
-OUTREACH_ATTRIBUTION_DB_PATH=/absolute/path/to/outreach-attribution.sqlite
+# Optional overrides. Defaults derive from MOLTBOOK_STATE_PATH:
+# OUTREACH_ATTRIBUTION_DB_PATH=/absolute/path/to/outreach-attribution.sqlite
+# OUTREACH_PROMPT_ROTATION_STATE_PATH=/absolute/path/to/prompt-rotation.json
+# MOLTBOOK_LLM_DEBUG_DIR=/absolute/path/to/llm-debug
+# OUTREACH_RUNTIME_DIR=/absolute/path/to/runtime
 OUTREACH_TRACKING_BASE_URL=https://example.com/agent-messaging
 OUTREACH_TRACKING_APPROVED_DOMAINS=example.com
 ```
 
-When `OUTREACH_TRACKING_BASE_URL` is set, authored posts/comments/replies can use a tracked URL with `utm_source`, `utm_medium=outreach_agent`, `utm_campaign`, `utm_content`, and `ref`. The durable `ref` maps back to the venue, venue account, surface, prompt profile, full prompt parameters, message style, layout variant, candidate id, and generated content id. If `OUTREACH_ATTRIBUTION_DB_PATH` is set, the outreach agent also writes that ref into a shared SQLite database that the grant backend can read and append events to. Link shorteners and unapproved tracking domains are blocked.
+When `OUTREACH_TRACKING_BASE_URL` is set (default: `https://agents.coti.io/pm`), authored posts/comments/replies can use a tracked URL with `utm_source`, `utm_medium=outreach_agent`, `utm_campaign`, `utm_content`, and `ref`. The durable `ref` maps back to the venue, venue account, surface, prompt profile, full prompt parameters, message style, layout variant, candidate id, and generated content id. By default the outreach agent also writes that ref into `<state-dir>/outreach-attribution.sqlite`, which the grant backend can read and append events to. Link shorteners and unapproved tracking domains are blocked.
 
 `OUTREACH_AGENT_VENUE` is the venue provider id. Current values are `moltbook` for the heartbeat writer and `reddit` for the Reddit outreach runtime. Reddit can run in scan/draft-only, API-backed publish, or browser-bridge publish mode depending on controller config.
 

@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  defaultPromptRotationStatePath as defaultPromptRotationStatePathForState
+} from "./config.js";
+
 import { readAttributionSummaryFromStore } from "./attribution-store.js";
 import { buildMainLlmProvider, type MoltbookRuntimeConfig } from "./config.js";
 import { saveLlmDebugInput } from "./llm-debug.js";
@@ -152,8 +156,12 @@ const MAX_ROTATION_WINDOW = 20;
 const MAX_VARIANT_AGE_MS = 12 * 60 * 60 * 1_000;
 const HISTORY_CONTEXT_LIMIT = 20;
 
-export function defaultPromptRotationStatePath(packageRoot: string): string {
-  return path.join(packageRoot, ".data", "prompt-rotation.json");
+export function defaultPromptRotationStatePath(statePathOrPackageRoot: string): string {
+  if (statePathOrPackageRoot.endsWith("state.json")) {
+    return defaultPromptRotationStatePathForState(statePathOrPackageRoot);
+  }
+
+  return path.join(statePathOrPackageRoot, ".data", "prompt-rotation.json");
 }
 
 export function defaultPromptRotationAuditPath(rotationStatePath: string): string {
@@ -215,7 +223,8 @@ export async function selectPromptVariant(input: {
   rng?: () => number;
 }): Promise<SelectedPromptVariant> {
   const statePath =
-    input.config.promptRotationStatePath ?? defaultPromptRotationStatePath(input.config.packageRoot);
+    input.config.promptRotationStatePath ??
+      defaultPromptRotationStatePath(input.config.statePath ?? input.config.packageRoot);
   const store = await loadPromptRotationStore(statePath);
   const scopeKey = buildPromptRotationScopeKey(input.venue, input.actionType);
   const bucket = getBucketState(store.state, scopeKey);
@@ -362,7 +371,8 @@ export async function recordPromptRotationAction(input: {
   countTowardsRotation?: boolean;
 }): Promise<void> {
   const statePath =
-    input.config.promptRotationStatePath ?? defaultPromptRotationStatePath(input.config.packageRoot);
+    input.config.promptRotationStatePath ??
+      defaultPromptRotationStatePath(input.config.statePath ?? input.config.packageRoot);
   const store = await loadPromptRotationStore(statePath);
   const entry = normalizeHistoryEntry(input.entry);
   const scopeKey = entry.scopeKey ?? buildPromptRotationScopeKey(entry.venue, entry.actionType);
@@ -457,10 +467,11 @@ export async function recordPromptRotationAction(input: {
 }
 
 export async function readPromptRotationDebugSnapshot(
-  config: Pick<MoltbookRuntimeConfig, "promptRotationStatePath" | "packageRoot">
+  config: Pick<MoltbookRuntimeConfig, "promptRotationStatePath" | "packageRoot" | "statePath">
 ): Promise<PromptRotationDebugSnapshot> {
   const statePath =
-    config.promptRotationStatePath ?? defaultPromptRotationStatePath(config.packageRoot);
+    config.promptRotationStatePath ??
+      defaultPromptRotationStatePath(config.statePath ?? config.packageRoot);
   const store = await loadPromptRotationStore(statePath);
   return {
     statePath,

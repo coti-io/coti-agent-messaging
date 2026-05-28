@@ -27,6 +27,9 @@ import { createVenueProvider } from "./venue-factory.js";
 import type { VenueAction, VenueOutcome } from "./venue.js";
 import type { MoltbookRuntimeConfig } from "./config.js";
 import type { RedditIngestionDiagnostics, RedditIngestionResult } from "./reddit-ingestion.js";
+import { verifyPublicRedditCommentVisibility } from "./reddit-visibility-verification.js";
+import type { ConstrainedActionCandidate, ActionConstraint } from "./action-planning.js";
+import type { PromptParameterSet } from "./prompt-profile.js";
 
 export interface RedditSessionReport {
   generatedAt: string;
@@ -124,7 +127,8 @@ export async function runRedditSession(input: {
     const executed = await executeQueuedRedditJob(memory, {
       config,
       publishAction: input.publishAction,
-      now
+      now,
+      fetchImpl: input.fetchImpl
     });
     if (executed) {
       return {
@@ -182,6 +186,11 @@ export async function runRedditSession(input: {
     }
   });
   const actionCandidates = buildRedditActionCandidates(decision);
+  const subredditCooldowns = findRedditSubredditCooldowns(memory.history, now);
+  const gatedActionCandidates =
+    dryRun || subredditCooldowns.size === 0
+      ? actionCandidates
+      : applySubredditCooldownsToCandidates(actionCandidates, subredditCooldowns);
   const emptyBundle = chooseRedditActionBundle([], maxActions);
 
   const dailyLimitReason = findDailyActionLimitReason(memory.history, operating.maxActionsPerDay, now);
@@ -198,7 +207,7 @@ export async function runRedditSession(input: {
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
       ingestion: summarizeIngestion(ingestion),
-      actionCandidates: summarizeActionCandidates(actionCandidates),
+      actionCandidates: summarizeActionCandidates(gatedActionCandidates),
       selectedActionBundle: emptyBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
       planner: summarizePlanner(limitedDecision),
@@ -220,7 +229,7 @@ export async function runRedditSession(input: {
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
       ingestion: summarizeIngestion(ingestion),
-      actionCandidates: summarizeActionCandidates(actionCandidates),
+      actionCandidates: summarizeActionCandidates(gatedActionCandidates),
       selectedActionBundle: emptyBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
       planner: summarizePlanner(cooledDecision),
@@ -228,16 +237,17 @@ export async function runRedditSession(input: {
     };
   }
 
-  const selectedActionBundle = chooseRedditActionBundle(actionCandidates, maxActions);
+  const selectedActionBundle = chooseRedditActionBundle(gatedActionCandidates, maxActions);
 
   const selectedAction = selectedActionBundle.selectedWriteCandidateId
-    ? actionCandidates.find((candidate) => candidate.id === selectedActionBundle.selectedWriteCandidateId)
+    ? gatedActionCandidates.find((candidate) => candidate.id === selectedActionBundle.selectedWriteCandidateId)
     : undefined;
   const plannedAction = selectedAction ? plannedRedditActionFromCandidate(selectedAction) : undefined;
   if (!plannedAction || maxActions < 1) {
     const emptyDecision = {
       ...decision,
-      action: undefined
+      action: undefined,
+      skipped: [...summarizeRedditSubredditCooldowns(subredditCooldowns, now), ...decision.skipped]
     };
     return {
       generatedAt: now.toISOString(),
@@ -246,7 +256,7 @@ export async function runRedditSession(input: {
       readSource: operating.readController,
       memoryPath: operating.memoryPath,
       ingestion: summarizeIngestion(ingestion),
-      actionCandidates: summarizeActionCandidates(actionCandidates),
+      actionCandidates: summarizeActionCandidates(gatedActionCandidates),
       selectedActionBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
       planner: summarizePlanner(emptyDecision),
@@ -260,6 +270,7 @@ export async function runRedditSession(input: {
     actionType: plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
     fetchImpl: input.fetchImpl
   });
+  const adaptiveOverrides = resolveAdaptiveRedditPromptOverrides(memory.history, plannedAction.item.source.subreddit, now);
   const draft = await draftRedditResponse({
     config,
     item: plannedAction.item,
@@ -267,7 +278,10 @@ export async function runRedditSession(input: {
     actionType: plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
     recentContent: memory.history.slice(-20).map((entry) => entry.content),
     promptVariantId: selectedVariant.variantId,
-    promptParameterOverrides: selectedVariant.parameterOverrides,
+    promptParameterOverrides: {
+      ...selectedVariant.parameterOverrides,
+      ...adaptiveOverrides
+    },
     fetchImpl: input.fetchImpl
   });
   const action = toVenueAction(plannedAction, draft.content);
@@ -309,7 +323,8 @@ export async function runRedditSession(input: {
       const executed = await executeQueuedRedditJob(storeAfterQueue, {
         config,
         publishAction: input.publishAction,
-        now
+        now,
+        fetchImpl: input.fetchImpl
       });
       if (executed) {
         return {
@@ -319,7 +334,7 @@ export async function runRedditSession(input: {
           readSource: operating.readController,
           memoryPath: operating.memoryPath,
           ingestion: summarizeIngestion(ingestion),
-          actionCandidates: summarizeActionCandidates(actionCandidates),
+        actionCandidates: summarizeActionCandidates(gatedActionCandidates),
           selectedActionBundle,
           queuedActionJobs: summarizeQueuedRedditJobs(executed.store),
           planner: summarizePlanner(decision),
@@ -380,7 +395,7 @@ export async function runRedditSession(input: {
     readSource: operating.readController,
     memoryPath: operating.memoryPath,
     ingestion: summarizeIngestion(ingestion),
-    actionCandidates: summarizeActionCandidates(actionCandidates),
+    actionCandidates: summarizeActionCandidates(gatedActionCandidates),
     selectedActionBundle,
     queuedActionJobs: dryRun ? summarizeQueuedRedditJobs(memory) : summarizeQueuedRedditJobs({ ...memory, queuedJobs: nextQueuedJobs }),
     planner: summarizePlanner(decision),
@@ -508,6 +523,7 @@ async function executeQueuedRedditJob(
     config: MoltbookRuntimeConfig;
     publishAction?: (action: VenueAction) => Promise<VenueOutcome>;
     now: Date;
+    fetchImpl?: typeof fetch;
   }
 ): Promise<{ store: RedditMemoryStore; outcome: VenueOutcome; recorded: RedditDecisionMemoryEntry } | undefined> {
   const queuedJob = (store.queuedJobs ?? []).find(
@@ -571,6 +587,18 @@ async function executeQueuedRedditJob(
     throw error;
   }
   const operating = getRedditOperatingAgentConfig(input.config);
+  const visibility =
+    metadata.plannedAction.type === "comment_on_post" || metadata.plannedAction.type === "reply_to_comment"
+      ? await verifyPublicRedditCommentVisibility({
+          subreddit: metadata.plannedAction.item.source.subreddit,
+          threadPostId: resolveThreadPostId(metadata.plannedAction, outcome.remoteContentUrl),
+          remoteContentId: outcome.remoteContentId,
+          remoteContentUrl: outcome.remoteContentUrl,
+          content: queuedJob.payload.content ?? "",
+          fetchImpl: input.fetchImpl,
+          userAgent: getRedditControllerConfig(input.config).api.userAgent
+        })
+      : undefined;
   const recorded: RedditDecisionMemoryEntry = {
     id: `outcome:${metadata.plannedAction.item.source.id}:${input.now.getTime()}`,
     decisionId: metadata.plannedAction.item.id,
@@ -588,7 +616,7 @@ async function executeQueuedRedditJob(
         (operating.minJitterMinutes + Math.max(0, operating.maxJitterMinutes - operating.minJitterMinutes) / 2) *
           60_000
     ).toISOString(),
-    status: "posted",
+    status: visibility?.visible === false ? "spam_filtered" : "posted",
     firstReply: true,
     productMentioned: false,
     linkIncluded: false,
@@ -631,7 +659,7 @@ async function executeQueuedRedditJob(
         actionType: metadata.plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
         scopeKey: metadata.scopeKey,
         createdAt: recorded.createdAt,
-        status: recorded.action,
+        status: recorded.status,
         promptProfileId: recorded.promptProfileId,
         promptVariantId: recorded.promptVariantId,
         promptVariantLabel: metadata.promptVariantLabel,
@@ -729,6 +757,125 @@ function findSessionCooldownReason(
   }
   const waitMinutes = Math.max(1, Math.ceil((nextEligibleAt - now.getTime()) / 60_000));
   return `Reddit session cooldown active for about ${waitMinutes} more minute${waitMinutes === 1 ? "" : "s"}.`;
+}
+
+function findRedditSubredditCooldowns(
+  history: readonly RedditDecisionMemoryEntry[],
+  now: Date
+): Map<string, { subreddit: string; until: string; reason: string }> {
+  const recentWindowMs = 72 * 60 * 60 * 1_000;
+  const pauseMs = 12 * 60 * 60 * 1_000;
+  const bySubreddit = new Map<string, RedditDecisionMemoryEntry[]>();
+  for (const entry of history) {
+    if (entry.status !== "spam_filtered") {
+      continue;
+    }
+    const createdAt = Date.parse(entry.createdAt);
+    if (Number.isNaN(createdAt) || now.getTime() - createdAt > recentWindowMs) {
+      continue;
+    }
+    const key = entry.subreddit.trim().toLowerCase();
+    if (!key) {
+      continue;
+    }
+    const existing = bySubreddit.get(key) ?? [];
+    existing.push(entry);
+    bySubreddit.set(key, existing);
+  }
+
+  const pauses = new Map<string, { subreddit: string; until: string; reason: string }>();
+  for (const [key, entries] of bySubreddit.entries()) {
+    if (entries.length < 2) {
+      continue;
+    }
+    const latest = entries
+      .map((entry) => ({ entry, timestamp: Date.parse(entry.createdAt) }))
+      .filter((row) => !Number.isNaN(row.timestamp))
+      .sort((left, right) => right.timestamp - left.timestamp)[0];
+    if (!latest) {
+      continue;
+    }
+    const untilTs = latest.timestamp + pauseMs;
+    if (untilTs <= now.getTime()) {
+      continue;
+    }
+    pauses.set(key, {
+      subreddit: entries[0]?.subreddit ?? key,
+      until: new Date(untilTs).toISOString(),
+      reason: `Subreddit pause for ${entries[0]?.subreddit ?? key}: repeated hidden comments detected.`
+    });
+  }
+  return pauses;
+}
+
+function applySubredditCooldownsToCandidates(
+  candidates: readonly ConstrainedActionCandidate[],
+  cooldowns: ReadonlyMap<string, { subreddit: string; until: string; reason: string }>
+): ConstrainedActionCandidate[] {
+  return candidates.map((candidate) => {
+    const surface = candidate.surface?.trim().toLowerCase();
+    if (!surface) {
+      return candidate;
+    }
+    const cooldown = cooldowns.get(surface);
+    if (!cooldown) {
+      return candidate;
+    }
+    const constraint: ActionConstraint = {
+      id: "subreddit_pause_hidden_comments",
+      passed: false,
+      severity: "block",
+      reason: cooldown.reason
+    };
+    return {
+      ...candidate,
+      allowed: false,
+      constraints: [...candidate.constraints, constraint]
+    };
+  });
+}
+
+function summarizeRedditSubredditCooldowns(
+  cooldowns: ReadonlyMap<string, { subreddit: string; until: string; reason: string }>,
+  now: Date
+): string[] {
+  return [...cooldowns.values()]
+    .sort((left, right) => left.subreddit.localeCompare(right.subreddit))
+    .map((cooldown) => {
+      const waitMinutes = Math.max(1, Math.ceil((Date.parse(cooldown.until) - now.getTime()) / 60_000));
+      return `${cooldown.reason} Cooldown active for about ${waitMinutes} more minute${waitMinutes === 1 ? "" : "s"}.`;
+    });
+}
+
+function resolveAdaptiveRedditPromptOverrides(
+  history: readonly RedditDecisionMemoryEntry[],
+  subreddit: string,
+  now: Date
+): Partial<PromptParameterSet> {
+  const windowMs = 7 * 24 * 60 * 60 * 1_000;
+  const hiddenCount = history.filter((entry) => {
+    if (entry.status !== "spam_filtered") {
+      return false;
+    }
+    if (entry.subreddit.trim().toLowerCase() !== subreddit.trim().toLowerCase()) {
+      return false;
+    }
+    const createdAt = Date.parse(entry.createdAt);
+    return !Number.isNaN(createdAt) && now.getTime() - createdAt <= windowMs;
+  }).length;
+  if (hiddenCount < 1) {
+    return {};
+  }
+  return {
+    messageStyle: "informative",
+    layout: "regular_paragraph",
+    tone: "operator",
+    technicalDepth: "simple",
+    responseLength: "brief",
+    creativity: "conservative",
+    humor: "none",
+    aggression: "low"
+  };
 }
 
 function structuralFingerprint(content: string): string {

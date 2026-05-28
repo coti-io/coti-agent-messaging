@@ -21,11 +21,46 @@ function createConfig(memoryPath: string): MoltbookRuntimeConfig {
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: false,
+    promptProfile: {
+      id: "test-reddit-session-profile",
+      allowVariantOverrides: false,
+      parameters: {
+        layout: "regular_paragraph",
+        responseLength: "brief",
+        promotionLevel: "none",
+        ctaStyle: "none",
+        productSpecificity: "generic_category",
+        rewardEmphasis: "none",
+        technicalDepth: "simple",
+        tone: "operator",
+        messageStyle: "informative"
+      },
+      venueOverrides: {
+        reddit: {
+          layout: "regular_paragraph",
+          responseLength: "brief",
+          promotionLevel: "none",
+          ctaStyle: "none",
+          productSpecificity: "generic_category",
+          rewardEmphasis: "none"
+        }
+      },
+      actionOverrides: {
+        reply_to_activity: {
+          layout: "regular_paragraph",
+          messageStyle: "informative"
+        },
+        comment_on_post: {
+          layout: "regular_paragraph",
+          messageStyle: "informative"
+        }
+      }
+    },
     autoVerify: false,
     agent: {
       venue: "reddit",
       venueAccountId: "reddit-user",
-      allowedSurfaces: ["AI_Agents"],
+      allowedSurfaces: ["AI_Agents", "LocalLLaMA"],
       mode: "approved_autopost"
     },
     reddit: {
@@ -90,6 +125,40 @@ const ingestion: RedditIngestionResult = {
     }
   ]
 };
+
+function createPublicThreadListing(postId: string, comments: Array<{ id: string; body: string }>): unknown[] {
+  return [
+    {
+      data: {
+        children: [
+          {
+            kind: "t3",
+            data: {
+              id: postId,
+              subreddit: "AI_Agents",
+              title: "MCP agent messaging between services",
+              selftext: "Thread body"
+            }
+          }
+        ]
+      }
+    },
+    {
+      data: {
+        children: comments.map((comment) => ({
+          kind: "t1",
+          data: {
+            id: comment.id,
+            body: comment.body,
+            author: "someone",
+            parent_id: `t3_${postId}`,
+            replies: ""
+          }
+        }))
+      }
+    }
+  ];
+}
 
 test("reddit session dry-run emits decision report and records draft without publishing", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-dry-"));
@@ -158,6 +227,17 @@ test("reddit session live mode publishes at most one action and records outcome"
     config: createConfig(memoryPath),
     ingestion,
     dryRun: false,
+    fetchImpl: async (input) => {
+      const url = new URL(input instanceof URL ? input.toString() : String(input));
+      assert.equal(url.pathname, "/r/AI_Agents/comments/post-1.json");
+      return new Response(JSON.stringify(createPublicThreadListing("post-1", [
+        {
+          id: "reply-1",
+          body:
+            "A practical pattern is a small transport interface plus per-tool encrypted payloads so agents can coordinate off-thread without leaking everything into the public context."
+        }
+      ])));
+    },
     publishAction: async (action) => {
       published.push(action);
       return {
@@ -182,6 +262,75 @@ test("reddit session live mode publishes at most one action and records outcome"
   assert.ok(memory.history[0]?.promptVariantId);
   assert.ok(memory.history[0]?.nextEligibleAt);
   assert.equal((memory.queuedJobs?.length ?? 0), 0);
+});
+
+test("reddit session marks a published reply as spam filtered when it is not publicly visible", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-hidden-"));
+  const memoryPath = path.join(tempDir, "memory.json");
+  await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: false,
+    publishAction: async (action) => ({
+      id: "queued-hidden",
+      venue: "reddit",
+      actionId: action.id,
+      candidateId: action.candidateId,
+      remoteContentId: "reply-hidden",
+      remoteContentUrl: "https://www.reddit.com/r/AI_Agents/comments/post-1/_/reply-hidden/",
+      type: "replied",
+      occurredAt: new Date().toISOString()
+    })
+  });
+
+  const report = await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: false,
+    fetchImpl: async () => new Response(JSON.stringify(createPublicThreadListing("post-1", []))),
+    publishAction: async (action) => ({
+      id: "outcome-hidden",
+      venue: "reddit",
+      actionId: action.id,
+      candidateId: action.candidateId,
+      remoteContentId: "reply-hidden",
+      remoteContentUrl: "https://www.reddit.com/r/AI_Agents/comments/post-1/_/reply-hidden/",
+      type: "replied",
+      occurredAt: new Date().toISOString()
+    })
+  });
+
+  assert.equal(report.recorded?.status, "spam_filtered");
+  const memory = await loadRedditMemory(memoryPath);
+  assert.equal(memory.history.length, 1);
+  assert.equal(memory.history[0]?.status, "spam_filtered");
+});
+
+test("reddit session uses softer prompt params after a hidden reply in the same subreddit", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-adaptive-"));
+  const memoryPath = path.join(tempDir, "memory.json");
+  await appendRedditMemory(memoryPath, {
+    id: "hidden-previous",
+    subreddit: "AI_Agents",
+    kind: "reply",
+    content: "Hidden reply",
+    createdAt: new Date().toISOString(),
+    targetId: "comment-old",
+    status: "spam_filtered",
+    firstReply: true
+  });
+
+  const report = await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: true
+  });
+
+  assert.equal(report.recorded?.promptParameters?.layout, "regular_paragraph");
+  assert.equal(report.recorded?.promptParameters?.messageStyle, "informative");
+  assert.equal(report.recorded?.promptParameters?.technicalDepth, "simple");
+  assert.equal(report.recorded?.promptParameters?.creativity, "conservative");
+  assert.equal(report.recorded?.promptParameters?.aggression, "low");
 });
 
 test("reddit session live can publish after batch prune clears prior dry-run draft", async () => {
@@ -291,6 +440,41 @@ test("batch prune clears drafts but keeps posted history", async () => {
   const memory = await loadRedditMemory(memoryPath);
   assert.equal(memory.history.length, 1);
   assert.equal(memory.history[0]?.status, "posted");
+});
+
+test("reddit session pauses a subreddit after repeated hidden replies without tripping the global kill switch", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-sub-pause-"));
+  const memoryPath = path.join(tempDir, "memory.json");
+  await appendRedditMemory(memoryPath, {
+    id: "hidden-1",
+    subreddit: "AI_Agents",
+    kind: "reply",
+    content: "Hidden reply one",
+    createdAt: new Date().toISOString(),
+    targetId: "comment-a",
+    status: "spam_filtered",
+    firstReply: true
+  });
+  await appendRedditMemory(memoryPath, {
+    id: "hidden-2",
+    subreddit: "AI_Agents",
+    kind: "reply",
+    content: "Hidden reply two",
+    createdAt: new Date().toISOString(),
+    targetId: "comment-b",
+    status: "spam_filtered",
+    firstReply: true
+  });
+
+  const report = await runRedditSession({
+    config: createConfig(memoryPath),
+    ingestion,
+    dryRun: false
+  });
+
+  assert.equal(report.decision.action, undefined);
+  assert.equal(report.decision.skipped.some((entry) => entry.includes("Kill switch")), false);
+  assert.equal(report.decision.skipped.some((entry) => entry.includes("Subreddit pause for AI_Agents")), true);
 });
 
 test("reddit session enforces the daily live action cap", async () => {

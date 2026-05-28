@@ -93,6 +93,7 @@ export interface RedditOutboundMemoryEntry {
     | "drafted"
     | "approved"
     | "posted"
+    | "spam_filtered"
     | "removed"
     | "mod_warning"
     | "spam_accusation"
@@ -888,12 +889,12 @@ export function evaluateRedditOutcomes(
   now = new Date()
 ): RedditOutcomeSummary {
   const firstReplies = history.filter((entry) => entry.firstReply);
-  const removals = history.filter((entry) => entry.status === "removed").length;
+  const removals = history.filter((entry) => entry.status === "removed" || entry.status === "spam_filtered").length;
   const modWarnings = history.filter((entry) => entry.status === "mod_warning").length;
   const spamAccusations = history.filter((entry) => entry.status === "spam_accusation").length;
   const bans = history.filter((entry) => entry.status === "banned").length;
   const postedFirstReplies = firstReplies.filter((entry) =>
-    ["posted", "removed", "mod_warning", "spam_accusation", "banned"].includes(entry.status ?? "")
+    ["posted", "spam_filtered", "removed", "mod_warning", "spam_accusation", "banned"].includes(entry.status ?? "")
   ).length;
   const firstReplyPromotionViolations = firstReplies.filter(
     (entry) => entry.productMentioned || entry.linkIncluded || containsAnyCta(entry.content)
@@ -910,7 +911,9 @@ export function evaluateRedditOutcomes(
   const removalOrWarningRate =
     postedFirstReplies === 0 ? 0 : (removals + modWarnings) / postedFirstReplies;
   const repeatedModRemovalSubreddits = subredditsWithAtLeast(
-    history.filter((entry) => entry.status === "removed" || entry.status === "mod_warning"),
+    history.filter(
+      (entry) => entry.status === "spam_filtered" || entry.status === "removed" || entry.status === "mod_warning"
+    ),
     2
   );
   const killReasons: string[] = [];
@@ -919,7 +922,7 @@ export function evaluateRedditOutcomes(
     killReasons.push("An account, subreddit, or domain ban was recorded.");
   }
   if (repeatedModRemovalSubreddits.length > 0) {
-    killReasons.push(`Repeated mod removals/warnings: ${repeatedModRemovalSubreddits.join(", ")}.`);
+    killReasons.push(`Repeated hidden replies, mod removals, or warnings: ${repeatedModRemovalSubreddits.join(", ")}.`);
   }
   if (spamAccusations > 0) {
     killReasons.push("Users accused the account of spam, botting, or astroturfing.");
@@ -1084,7 +1087,7 @@ export function parseRedditThreadJsonListing(
   if (!post) {
     return undefined;
   }
-  const comments = Array.isArray(input[1]) ? parseRedditCommentListingJson(input[1]) : [];
+  const comments = parseRedditCommentListingJson(input[1]);
   return {
     id: post.id,
     subreddit: post.subreddit,

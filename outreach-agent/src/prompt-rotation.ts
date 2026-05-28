@@ -660,7 +660,10 @@ export function scorePromptRotationHistoryEntry(
     (entry.privateMessageCount ?? 0) * 8 +
     (entry.clickCount ?? 0) * 1 +
     (entry.status === "posted" || entry.status === "replied" || entry.status === "commented" ? 1 : 0) -
-    (entry.status === "removed" || entry.status === "mod_warning" || entry.status === "spam_accusation"
+    (entry.status === "spam_filtered" ||
+    entry.status === "removed" ||
+    entry.status === "mod_warning" ||
+    entry.status === "spam_accusation"
       ? 5
       : 0)
   );

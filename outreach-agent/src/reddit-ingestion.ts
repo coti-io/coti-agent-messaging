@@ -445,13 +445,22 @@ export function collectDiscoveryExcludePostIds(
 
 /** Any thread we drafted on or posted in should be re-read for follow-up comments. */
 export function qualifiesForOwnThreadParticipation(entry: RedditOutboundMemoryEntry): boolean {
+  if (
+    entry.status === "spam_filtered" ||
+    entry.status === "removed" ||
+    entry.status === "mod_warning" ||
+    entry.status === "spam_accusation" ||
+    entry.status === "banned"
+  ) {
+    return false;
+  }
   if (entry.status === "posted") {
     return true;
   }
   if (entry.status === "drafted" && (entry.kind === "comment" || entry.kind === "reply")) {
     return true;
   }
-  return redditMemoryEntryCountsTowardPublishedLimits(entry);
+  return entry.kind === "post" && redditMemoryEntryCountsTowardPublishedLimits(entry);
 }
 
 export function pickThreadReadCandidates(

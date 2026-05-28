@@ -326,7 +326,7 @@ test("outcome evaluation surfaces kill criteria", () => {
         content: "Explanatory reply",
         createdAt: "2026-05-07T10:00:00.000Z",
         firstReply: true,
-        status: "removed"
+        status: "spam_filtered"
       },
       {
         id: "comment-3",
@@ -360,10 +360,11 @@ test("outcome evaluation surfaces kill criteria", () => {
   );
 
   assert.equal(summary.firstReplyPromotionViolations, 1);
+  assert.equal(summary.removals, 1);
   assert.equal(summary.spamAccusations, 1);
   assert.equal(summary.lowValuePrivateMessagePrompts, 1);
   assert.equal(summary.killReasons.length >= 3, true);
-  assert.match(summary.killReasons.join(" "), /first reply|spam|Repeated mod|private-message/i);
+  assert.match(summary.killReasons.join(" "), /first reply|spam|hidden replies|private-message/i);
 });
 
 test("Reddit read-only client maps OAuth listing responses", async () => {

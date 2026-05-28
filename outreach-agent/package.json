@@ -29,6 +29,7 @@
     "reddit:soak:10x": "node scripts/reddit-soak-10x.mjs --runs 10 --interval-min 5",
     "reddit:live:2x": "node scripts/reddit-live-batch.mjs --runs 2 --interval-min 3",
     "reddit:memory:prune-drafts": "node scripts/reddit-prune-drafts.mjs",
+    "reddit:reddapi-probe": "node scripts/reddapi-comment-probe.mjs",
     "reddit:session": "OUTREACH_AGENT_VENUE=reddit OUTREACH_AGENT_MODE=approved_autopost OUTREACH_REDDIT_SESSION_DRY_RUN=false OUTREACH_REDDIT_CONTROLLER=browser OUTREACH_REDDIT_READ_CONTROLLER=browser node dist/src/index.js reddit-session --live --once --max-actions 1",
     "reddit:docker:build": "docker compose -f docker-compose.yml build reddit-browser-worker",
     "reddit:docker:worker": "docker compose -f docker-compose.yml up -d reddit-browser-worker",

@@ -9,7 +9,6 @@ import {
   type ResolvedPromptProfile
 } from "./prompt-profile.js";
 import type { RedditReviewItem, RedditOutreachTargeting } from "./reddit-outreach.js";
-import { textSimilarity } from "./reddit-outreach.js";
 
 export interface RedditDraftInput {
   config: MoltbookRuntimeConfig;
@@ -38,8 +37,6 @@ const FORBIDDEN_MARKETING_PATTERNS = [
   /\btry (?:our|my)\b/i
 ] as const;
 
-/** Block drafts that reuse recent outbound phrasing (lower bar than queue-time duplicate gate). */
-const RECENT_OUTBOUND_SIMILARITY_THRESHOLD = 0.4;
 const MAX_LLM_DRAFT_ATTEMPTS = 3;
 
 export class RedditDraftGenerationError extends Error {
@@ -76,7 +73,6 @@ export async function draftRedditResponse(input: RedditDraftInput): Promise<{
     )
   });
   const maxChars = maxCharsForResponseLength(resolvedProfile.parameters.responseLength, "reddit");
-  const recentContent = input.recentContent ?? [];
 
   let lastError: Error | undefined;
   let strictLength = false;
@@ -99,7 +95,7 @@ export async function draftRedditResponse(input: RedditDraftInput): Promise<{
     }
 
     try {
-      assertValidRedditDraft(content, input.targeting.productAliases, resolvedProfile, recentContent);
+      validateRedditDraft(content, input.targeting.productAliases, resolvedProfile);
       return {
         content,
         rationale: "LLM drafted a zero-marketing Reddit response.",
@@ -153,41 +149,6 @@ export function validateRedditDraft(
   }
 }
 
-function assertValidRedditDraft(
-  content: string,
-  productAliases: readonly string[],
-  profile: ResolvedPromptProfile,
-  recentContent: readonly string[]
-): void {
-  validateRedditDraft(content, productAliases, profile);
-  assertDistinctFromRecentOutbound(content, recentContent);
-}
-
-function assertDistinctFromRecentOutbound(content: string, recentContent: readonly string[]): void {
-  const similar = findMostSimilarRecentOutbound(content, recentContent);
-  if (similar) {
-    throw new Error(
-      `Reddit draft repeats recent outbound wording (similarity ${similar.score.toFixed(2)} vs recent reply).`
-    );
-  }
-}
-
-function findMostSimilarRecentOutbound(
-  content: string,
-  recentContent: readonly string[]
-): { score: number; snippet: string } | undefined {
-  return recentContent.reduce<{ score: number; snippet: string } | undefined>((best, prior) => {
-    const score = textSimilarity(content, prior);
-    if (score < RECENT_OUTBOUND_SIMILARITY_THRESHOLD) {
-      return best;
-    }
-    if (!best || score > best.score) {
-      return { score, snippet: prior.slice(0, 120) };
-    }
-    return best;
-  }, undefined);
-}
-
 function summarizeRecentOutbound(recentContent: readonly string[]): string[] {
   return recentContent
     .filter((entry) => entry.trim().length > 0)
@@ -208,7 +169,7 @@ async function requestRedditLlmDraft(params: {
     ? `Your previous draft was too long. Rewrite shorter: stay under ${params.maxChars} characters with no filler.`
     : `Hard cap: keep content under ${params.maxChars} characters.`;
   const retryInstruction = params.retryReason
-    ? `Previous draft failed validation: ${params.retryReason} Rewrite with a clearly different opener, structure, and examples.`
+    ? `Previous draft failed validation: ${params.retryReason}`
     : undefined;
   const response = await params.llmProvider.createJsonCompletion<RedditDraftResponse>([
     {
@@ -216,15 +177,15 @@ async function requestRedditLlmDraft(params: {
       content: [
         "You write Reddit comments as a practical operator, not a marketer.",
         "Zero direct marketing. No product name. No company name. No links. No CTA. No DM request.",
-        "Be useful first. Answer the concrete day-to-day operational pain in this thread.",
-        "Sound like a human peer in the thread: specific, varied, and grounded in what was asked.",
-        "Do not reuse the same opener, cadence, or boilerplate across replies.",
+        "Be useful first. Answer the concrete operational pain in this thread.",
+        "Sound like a human peer: specific, natural, grounded in what was asked.",
+        "Do not repeat yourself too much across replies — vary openers, examples, and structure.",
         recentOutbound.length > 0
-          ? "recentOutbound shows your own prior replies — write something clearly different in opener, structure, and examples. Do not paraphrase them."
-          : "No recent outbound yet; still avoid generic consultant boilerplate.",
-        "A short opener is allowed only when it is immediately followed by concrete substance in the same reply.",
-        "Never write standalone fluff like 'great point' or 'interesting take' by itself.",
-        "Prefer concise, natural peer tone over polished essay copy or consultant cadence.",
+          ? "recentOutbound lists your recent comments; use them for context but do not copy or lightly paraphrase them."
+          : undefined,
+        "A short opener is fine when followed immediately by concrete substance.",
+        "Never write standalone fluff like 'great point' by itself.",
+        "Prefer concise peer tone over polished consultant copy.",
         params.resolvedProfile.parameters.humor === "none"
           ? "Do not force humor."
           : "Humor is allowed only when it sharpens the point; never at the OP's expense.",

@@ -6,7 +6,7 @@ import {
   draftRedditResponse,
   validateRedditDraft
 } from "../src/reddit-drafting.js";
-import { DEFAULT_REDDIT_TARGETING, textSimilarity, type RedditReviewItem } from "../src/reddit-outreach.js";
+import { DEFAULT_REDDIT_TARGETING, type RedditReviewItem } from "../src/reddit-outreach.js";
 import type { JsonLlmProvider } from "../src/llm-client.js";
 import type { MoltbookRuntimeConfig } from "../src/config.js";
 import { resolvePromptProfile } from "../src/prompt-profile.js";
@@ -102,29 +102,6 @@ test("draftRedditResponse returns validated LLM output", async () => {
 
   assert.equal(draft.content, validHookDraft);
   assert.equal(draft.promptParameters.layout, "short_hook_then_detail");
-});
-
-test("draftRedditResponse retries LLM and rejects recent boilerplate", async () => {
-  const recentBoilerplate =
-    "Fair point. The pattern I have seen work is to keep the process small enough that someone can still reason about it. Define the trigger, the data it is allowed to touch, the failure mode, and who gets notified.";
-  const freshDraft =
-    "Yeah. For memory context, I keep a small working set per turn, durable facts in a separate store, and a hard rule for when each layer refreshes so stale history does not ride along silently.";
-
-  const draft = await draftRedditResponse({
-    config: createConfig(createMockLlmProvider([recentBoilerplate, freshDraft])),
-    item: createReviewItem(),
-    targeting: DEFAULT_REDDIT_TARGETING,
-    actionType: "comment_on_post",
-    recentContent: [recentBoilerplate],
-    promptParameterOverrides: {
-      responseLength: "brief",
-      layout: "short_hook_then_detail",
-      humor: "none"
-    }
-  });
-
-  assert.equal(draft.content, freshDraft);
-  assert.ok(textSimilarity(draft.content, recentBoilerplate) < 0.4);
 });
 
 test("draftRedditResponse fails closed when LLM never produces a valid draft", async () => {

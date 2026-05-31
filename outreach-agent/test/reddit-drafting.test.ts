@@ -1,11 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { draftRedditResponse } from "../src/reddit-drafting.js";
-import { DEFAULT_REDDIT_TARGETING, type RedditReviewItem } from "../src/reddit-outreach.js";
+import {
+  RedditDraftGenerationError,
+  draftRedditResponse,
+  validateRedditDraft
+} from "../src/reddit-drafting.js";
+import { DEFAULT_REDDIT_TARGETING, textSimilarity, type RedditReviewItem } from "../src/reddit-outreach.js";
+import type { JsonLlmProvider } from "../src/llm-client.js";
 import type { MoltbookRuntimeConfig } from "../src/config.js";
+import { resolvePromptProfile } from "../src/prompt-profile.js";
 
-function createConfig(): MoltbookRuntimeConfig {
+function createConfig(llmProvider?: JsonLlmProvider): MoltbookRuntimeConfig {
   const packageRoot = "/tmp/outreach-agent";
   return {
     packageRoot,
@@ -16,7 +22,8 @@ function createConfig(): MoltbookRuntimeConfig {
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: true,
-    autoVerify: false
+    autoVerify: false,
+    llmProvider
   };
 }
 
@@ -52,9 +59,37 @@ function createReviewItem(): RedditReviewItem {
   };
 }
 
-test("draftRedditResponse without LLM produces valid brief hook-style reddit draft", async () => {
+const validHookDraft =
+  "Fair point. For agent-to-agent messaging, I keep transport separate from authorization: one channel for delivery, explicit capability checks before any side effect, and an audit log the operator can read without replaying the whole thread.";
+
+function createMockLlmProvider(responses: string[]): JsonLlmProvider {
+  let callIndex = 0;
+  return {
+    label: "mock",
+    async createJsonCompletion<T>() {
+      const content = responses[Math.min(callIndex, responses.length - 1)];
+      callIndex += 1;
+      return { content } as T;
+    }
+  };
+}
+
+test("draftRedditResponse requires an LLM provider", async () => {
+  await assert.rejects(
+    () =>
+      draftRedditResponse({
+        config: createConfig(),
+        item: createReviewItem(),
+        targeting: DEFAULT_REDDIT_TARGETING,
+        actionType: "comment_on_post"
+      }),
+    RedditDraftGenerationError
+  );
+});
+
+test("draftRedditResponse returns validated LLM output", async () => {
   const draft = await draftRedditResponse({
-    config: createConfig(),
+    config: createConfig(createMockLlmProvider([validHookDraft])),
     item: createReviewItem(),
     targeting: DEFAULT_REDDIT_TARGETING,
     actionType: "comment_on_post",
@@ -65,8 +100,63 @@ test("draftRedditResponse without LLM produces valid brief hook-style reddit dra
     }
   });
 
-  assert.ok(draft.content.length > 0);
-  assert.equal(draft.promptParameters.responseLength, "brief");
+  assert.equal(draft.content, validHookDraft);
   assert.equal(draft.promptParameters.layout, "short_hook_then_detail");
-  assert.match(draft.content, /^Fair point\./);
+});
+
+test("draftRedditResponse retries LLM and rejects recent boilerplate", async () => {
+  const recentBoilerplate =
+    "Fair point. The pattern I have seen work is to keep the process small enough that someone can still reason about it. Define the trigger, the data it is allowed to touch, the failure mode, and who gets notified.";
+  const freshDraft =
+    "Yeah. For memory context, I keep a small working set per turn, durable facts in a separate store, and a hard rule for when each layer refreshes so stale history does not ride along silently.";
+
+  const draft = await draftRedditResponse({
+    config: createConfig(createMockLlmProvider([recentBoilerplate, freshDraft])),
+    item: createReviewItem(),
+    targeting: DEFAULT_REDDIT_TARGETING,
+    actionType: "comment_on_post",
+    recentContent: [recentBoilerplate],
+    promptParameterOverrides: {
+      responseLength: "brief",
+      layout: "short_hook_then_detail",
+      humor: "none"
+    }
+  });
+
+  assert.equal(draft.content, freshDraft);
+  assert.ok(textSimilarity(draft.content, recentBoilerplate) < 0.4);
+});
+
+test("draftRedditResponse fails closed when LLM never produces a valid draft", async () => {
+  await assert.rejects(
+    () =>
+      draftRedditResponse({
+        config: createConfig(createMockLlmProvider(["great point"])),
+        item: createReviewItem(),
+        targeting: DEFAULT_REDDIT_TARGETING,
+        actionType: "comment_on_post",
+        promptParameterOverrides: {
+          responseLength: "brief",
+          layout: "short_hook_then_detail",
+          humor: "none"
+        }
+      }),
+    /failed after 3 LLM attempts/
+  );
+});
+
+test("validateRedditDraft rejects standalone fluff", () => {
+  const profile = resolvePromptProfile({
+    venue: "reddit",
+    actionType: "comment_on_post",
+    parameterOverrides: {
+      responseLength: "brief",
+      layout: "short_hook_then_detail",
+      humor: "none"
+    }
+  });
+  assert.throws(
+    () => validateRedditDraft("great point", DEFAULT_REDDIT_TARGETING.productAliases, profile),
+    /too fluffy/
+  );
 });

@@ -271,19 +271,42 @@ export async function runRedditSession(input: {
     fetchImpl: input.fetchImpl
   });
   const adaptiveOverrides = resolveAdaptiveRedditPromptOverrides(memory.history, plannedAction.item.source.subreddit, now);
-  const draft = await draftRedditResponse({
-    config,
-    item: plannedAction.item,
-    targeting: DEFAULT_REDDIT_TARGETING,
-    actionType: plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
-    recentContent: memory.history.slice(-20).map((entry) => entry.content),
-    promptVariantId: selectedVariant.variantId,
-    promptParameterOverrides: {
-      ...selectedVariant.parameterOverrides,
-      ...adaptiveOverrides
-    },
-    fetchImpl: input.fetchImpl
-  });
+  let draft;
+  try {
+    draft = await draftRedditResponse({
+      config,
+      item: plannedAction.item,
+      targeting: DEFAULT_REDDIT_TARGETING,
+      actionType: plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
+      recentContent: memory.history.slice(-20).map((entry) => entry.content),
+      promptVariantId: selectedVariant.variantId,
+      promptParameterOverrides: {
+        ...selectedVariant.parameterOverrides,
+        ...adaptiveOverrides
+      },
+      fetchImpl: input.fetchImpl
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const draftFailedDecision = {
+      ...decision,
+      action: undefined,
+      skipped: [`Reddit draft generation failed: ${reason}`, ...decision.skipped]
+    };
+    return {
+      generatedAt: now.toISOString(),
+      dryRun,
+      duplicateCheckPolicy,
+      readSource: operating.readController,
+      memoryPath: operating.memoryPath,
+      ingestion: summarizeIngestion(ingestion),
+      actionCandidates: summarizeActionCandidates(gatedActionCandidates),
+      selectedActionBundle,
+      queuedActionJobs: summarizeQueuedRedditJobs(memory),
+      planner: summarizePlanner(draftFailedDecision),
+      decision: draftFailedDecision
+    };
+  }
   const action = toVenueAction(plannedAction, draft.content);
   let outcome: VenueOutcome | undefined;
   let nextQueuedJobs = memory.queuedJobs ?? [];

@@ -7,8 +7,21 @@ import { mkdtemp } from "node:fs/promises";
 import { appendRedditMemory, loadRedditMemory, pruneDraftedRedditMemory } from "../src/reddit-memory.js";
 import { runRedditSession } from "../src/reddit-session.js";
 import type { MoltbookRuntimeConfig } from "../src/config.js";
+import type { JsonLlmProvider } from "../src/llm-client.js";
 import type { RedditIngestionResult } from "../src/reddit-ingestion.js";
 import type { VenueAction } from "../src/venue.js";
+
+const VALID_REDDIT_SESSION_DRAFT =
+  "For agent coordination, I keep transport separate from authorization with explicit capability checks before side effects and an audit log the operator can actually read.";
+
+function createMockLlmProvider(content = VALID_REDDIT_SESSION_DRAFT): JsonLlmProvider {
+  return {
+    label: "mock-reddit-session",
+    async createJsonCompletion<T>() {
+      return { content } as T;
+    }
+  };
+}
 
 function createConfig(memoryPath: string): MoltbookRuntimeConfig {
   const packageRoot = path.resolve(import.meta.dirname, "..", "..");
@@ -57,6 +70,7 @@ function createConfig(memoryPath: string): MoltbookRuntimeConfig {
       }
     },
     autoVerify: false,
+    llmProvider: createMockLlmProvider(),
     agent: {
       venue: "reddit",
       venueAccountId: "reddit-user",

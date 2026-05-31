@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * Run one or more live reddit-session iterations via unofficial oauth transport.
+ * Run live reddit-session iterations via unofficial oauth transport.
+ * Reddit planner only supports comment_on_post + reply_to_comment (no create_post).
  *
  * Usage:
- *   node scripts/reddit-unofficial-heartbeat.mjs [--runs 1] [--interval-min 5] [--out-dir path]
+ *   node scripts/reddit-unofficial-heartbeat.mjs [--runs 12] [--interval-min 5] [--out-dir path]
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir, writeFile, appendFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, "..");
 
 function parseArgs(argv) {
-  const args = { runs: 1, intervalMin: 5, outDir: undefined };
+  const args = { runs: 12, intervalMin: 5, outDir: undefined, pruneDraftsAtBatchStart: false };
   for (let i = 2; i < argv.length; i += 1) {
     if (argv[i] === "--runs" && argv[i + 1]) {
       args.runs = Number(argv[++i]);
@@ -23,6 +24,8 @@ function parseArgs(argv) {
       args.intervalMin = Number(argv[++i]);
     } else if (argv[i] === "--out-dir" && argv[i + 1]) {
       args.outDir = argv[++i];
+    } else if (argv[i] === "--prune-drafts") {
+      args.pruneDraftsAtBatchStart = true;
     }
   }
   return args;
@@ -70,9 +73,28 @@ function extractJsonReport(stdout) {
   throw new Error("No JSON report found in session output");
 }
 
+function permalinkFromOutcome(outcome) {
+  const permalink = outcome?.raw?.json?.data?.things?.[0]?.data?.permalink;
+  return permalink ? `https://www.reddit.com${permalink}` : undefined;
+}
+
 function summarizeReport(report) {
   const ingestion = report.ingestion ?? {};
   const action = report.decision?.action;
+  const remoteContentUrl =
+    report.outcome?.remoteContentUrl ??
+    report.recorded?.remoteContentUrl ??
+    permalinkFromOutcome(report.outcome);
+  const posted = Boolean(
+    remoteContentUrl ??
+      (report.recorded?.status === "posted" ? report.recorded.targetUrl ?? true : undefined) ??
+      (report.outcome?.type === "replied" || report.outcome?.type === "commented"
+        ? report.outcome.occurredAt
+        : undefined)
+  );
+  const skipped = report.decision?.skipped ?? [];
+  const cooldown = skipped.find((entry) => /cooldown/i.test(entry));
+  const dailyCap = skipped.find((entry) => /daily/i.test(entry));
   return {
     generatedAt: report.generatedAt,
     dryRun: report.dryRun,
@@ -85,29 +107,34 @@ function summarizeReport(report) {
     actionType: action?.type,
     actionSubreddit: action?.item?.source?.subreddit,
     targetTitle: action?.item?.source?.title,
-    posted: Boolean(
-      report.outcome?.remoteContentUrl ??
-        report.recorded?.remoteContentUrl ??
-        (report.recorded?.status === "posted"
-          ? report.recorded.targetUrl ?? true
-          : undefined) ??
-        (report.outcome?.type === "replied" || report.outcome?.type === "commented"
-          ? report.outcome.occurredAt
-          : undefined)
-    ),
-    remoteContentUrl:
-      report.outcome?.remoteContentUrl ??
-      report.recorded?.remoteContentUrl ??
-      (report.outcome?.raw?.json?.data?.things?.[0]?.data?.permalink
-        ? `https://www.reddit.com${report.outcome.raw.json.data.things[0].data.permalink}`
-        : undefined),
+    posted,
+    remoteContentUrl,
     draftPreview: report.draft?.content?.slice(0, 120),
-    plannerSkipped: (report.planner?.skipped ?? []).length
+    plannerSkipped: (report.planner?.skipped ?? []).length,
+    sessionSkipped: cooldown ?? dailyCap,
+    executedQueued: skipped.some((entry) => /queued Reddit action/i.test(entry))
   };
 }
 
+async function pruneDraftsForNewBatch() {
+  const result = spawnSync("npm", ["run", "reddit:memory:prune-drafts"], {
+    cwd: packageRoot,
+    encoding: "utf8",
+    env: process.env
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || "reddit:memory:prune-drafts failed");
+  }
+  const payload = JSON.parse(result.stdout.trim().split("\n").pop() ?? "{}");
+  console.log(
+    payload.clearedDrafts > 0
+      ? `Batch start: cleared ${payload.clearedDrafts} draft(s)`
+      : "Batch start: no drafts to clear"
+  );
+}
+
 async function main() {
-  const { runs, intervalMin, outDir: outDirArg } = parseArgs(process.argv);
+  const { runs, intervalMin, outDir: outDirArg, pruneDraftsAtBatchStart } = parseArgs(process.argv);
   const startedAt = new Date().toISOString();
   const stamp = startedAt.replace(/[:.]/g, "-").slice(0, 19);
   const outDir = outDirArg ?? path.join(packageRoot, ".data", `reddit-unofficial-heartbeat-${stamp}`);
@@ -115,15 +142,27 @@ async function main() {
   const summaryPath = path.join(outDir, "heartbeat-summary.json");
 
   await mkdir(outDir, { recursive: true });
-  console.log(`Unofficial Reddit heartbeat — live ingest/decision/post`);
-  console.log(`Runs: ${runs}, output: ${outDir}`);
+  console.log("Unofficial Reddit heartbeat — comments + replies only, live via oauth.");
+  console.log(
+    `Runs: ${runs}, interval: ${intervalMin}m (~${((runs - 1) * intervalMin) / 60}h), output: ${outDir}`
+  );
+
+  if (pruneDraftsAtBatchStart) {
+    await pruneDraftsForNewBatch();
+  }
+
+  const ingestionModule = await import(path.join(packageRoot, "dist/src/reddit-ingestion.js"));
+  const discoveryQueries = [...ingestionModule.DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES];
+  const batchDiscoverySeed = Date.now() % 1_000_000;
 
   const rows = [];
   await writeFile(path.join(outDir, "heartbeat.log"), `started ${startedAt}\n`, "utf8");
 
   for (let runIndex = 1; runIndex <= runs; runIndex += 1) {
     const runStartedAt = new Date().toISOString();
+    const rotatedQuery = discoveryQueries[(runIndex - 1) % discoveryQueries.length] ?? discoveryQueries[0];
     console.log(`\n--- Run ${runIndex}/${runs} @ ${runStartedAt} ---`);
+    console.log(`unofficial ingest+post; query="${rotatedQuery}" seed=${batchDiscoverySeed + runIndex}`);
 
     const { code, stdout, stderr } = await runSession({
       OUTREACH_AGENT_VENUE: "reddit",
@@ -134,9 +173,11 @@ async function main() {
       OUTREACH_REDDIT_PUBLISH_IMMEDIATELY: "true",
       OUTREACH_REDDIT_MIN_JITTER_MINUTES: "0",
       OUTREACH_REDDIT_MAX_JITTER_MINUTES: "1",
-      OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS: "2",
+      OUTREACH_REDDIT_MAX_ACTIONS_PER_DAY: "12",
+      OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS: "4",
       OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT: "1",
-      OUTREACH_REDDIT_DISCOVERY_SEED: String(Date.now() % 1_000_000)
+      OUTREACH_REDDIT_DISCOVERY_SEED: String(batchDiscoverySeed + runIndex),
+      OUTREACH_REDDIT_SEARCH_QUERIES: rotatedQuery
     });
 
     await writeFile(path.join(outDir, `run-${runIndex}.stdout`), stdout, "utf8");
@@ -149,9 +190,15 @@ async function main() {
       await writeFile(path.join(outDir, `run-${runIndex}.json`), JSON.stringify(report, null, 2), "utf8");
       summary = summarizeReport(report);
       if (summary.posted) {
-        note = `posted ${summary.remoteContentUrl}`;
+        note = `${summary.actionType ?? "posted"} ${summary.remoteContentUrl ?? ""}`.trim();
+      } else if (summary.executedQueued) {
+        note = "executed queued job";
+      } else if (summary.sessionSkipped) {
+        note = summary.sessionSkipped.slice(0, 80);
       } else if (!summary.actionType) {
         note = summary.snapshotCount === 0 ? "no ingestion (rate limit?)" : "no action";
+      } else {
+        note = "planned but not posted";
       }
     } catch (error) {
       note = stderr.trim().slice(0, 200) || `parse error: ${error instanceof Error ? error.message : String(error)}`;
@@ -162,7 +209,7 @@ async function main() {
     rows.push(row);
     await appendFile(
       path.join(outDir, "heartbeat.log"),
-      `run ${runIndex} exit=${code} note=${note} snapshots=${summary.snapshotCount ?? 0} posted=${summary.posted}\n`,
+      `run ${runIndex} exit=${code} note=${note} snapshots=${summary.snapshotCount ?? 0} posted=${summary.posted} type=${summary.actionType ?? "-"}\n`,
       "utf8"
     );
     console.log(JSON.stringify(row, null, 2));
@@ -189,10 +236,16 @@ async function main() {
     runs,
     intervalMin,
     controller: "unofficial",
+    actionTypes: "comment_on_post,reply_to_comment",
     postedCount: rows.filter((r) => r.posted).length,
+    noActionCount: rows.filter((r) => r.note === "no action").length,
+    cooldownCount: rows.filter((r) => /cooldown/i.test(r.note ?? "")).length,
+    errorCount: rows.filter((r) => r.exitCode !== 0).length,
+    avgSnapshots: rows.reduce((sum, r) => sum + (r.snapshotCount ?? 0), 0) / rows.length,
     rows
   };
   await writeFile(summaryPath, JSON.stringify(aggregate, null, 2), "utf8");
+  await appendFile(path.join(outDir, "heartbeat.log"), `finished ${finishedAt}\n`, "utf8");
   console.log(`\nDone @ ${finishedAt}`);
   console.log(`Summary: ${summaryPath}`);
 }

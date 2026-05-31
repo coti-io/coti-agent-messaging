@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { getRedditControllerConfig, type MoltbookRuntimeConfig, type RedditControllerKind } from "./config.js";
 import { RedditReddapiClient, resolveReddapiPostUrl } from "./reddit-reddapi.js";
+import { RedditUnofficialClient } from "./reddit-unofficial.js";
 import type { OutreachAgentMode } from "./venue.js";
 import type { VenueAction } from "./venue.js";
 
@@ -84,7 +85,7 @@ export interface RedditSearchResult {
 
 export interface RedditConversationSnapshot {
   thread: RedditThreadState;
-  source: "browser" | "api" | "reddapi" | "input";
+  source: "browser" | "api" | "reddapi" | "unofficial" | "input";
   capturedAt: string;
   /** Thread where we have prior outbound participation. */
   ownThread?: boolean;
@@ -273,6 +274,8 @@ export function createRedditController(
       return new RedditApiController(config, dependencies.fetchImpl ?? fetch);
     case "reddapi":
       return new RedditReddapiController(config, dependencies.fetchImpl ?? fetch);
+    case "unofficial":
+      return new RedditUnofficialController(config, dependencies.fetchImpl ?? fetch);
   }
 }
 
@@ -451,6 +454,58 @@ export class RedditReddapiController implements RedditController {
           storageStatePath: redditConfig.storageStatePath,
           rapidApiHost: redditConfig.rapidApiHost,
           bearerOverride: redditConfig.bearerOverride
+        },
+        this.fetchImpl
+      );
+    }
+    return this.client;
+  }
+}
+
+export class RedditUnofficialController implements RedditController {
+  readonly id = "unofficial" as const;
+  private client?: RedditUnofficialClient;
+
+  constructor(
+    private readonly config: MoltbookRuntimeConfig,
+    private readonly fetchImpl: typeof fetch = fetch
+  ) {}
+
+  async publishAction(action: VenueAction, _context: RedditControllerContext): Promise<RedditPublishResult> {
+    const publishableAction = assertRedditPublishableAction(action);
+    const client = this.getClient();
+    switch (publishableAction.type) {
+      case "create_post":
+        throw new RedditControllerConfigurationError(
+          "Unofficial Reddit controller does not support create_post in the MVP."
+        );
+      case "comment_on_post":
+        return client.postComment({
+          thingId: toRedditThingId(publishableAction.parentId, "t3"),
+          text: publishableAction.content
+        });
+      case "reply_to_comment":
+        return client.postComment({
+          thingId: toRedditThingId(publishableAction.candidateId, "t1"),
+          text: publishableAction.content
+        });
+    }
+  }
+
+  private getClient(): RedditUnofficialClient {
+    if (!this.client) {
+      const redditConfig = getRedditControllerConfig(this.config).unofficial;
+      if (!redditConfig) {
+        throw new RedditControllerConfigurationError("Unofficial Reddit controller config is missing.");
+      }
+      this.client = new RedditUnofficialClient(
+        {
+          proxy: redditConfig.proxy,
+          storageStatePath: redditConfig.storageStatePath,
+          bearerOverride: redditConfig.bearerOverride,
+          publicBaseUrl: redditConfig.publicBaseUrl,
+          oauthBaseUrl: redditConfig.oauthBaseUrl,
+          userAgent: redditConfig.userAgent
         },
         this.fetchImpl
       );

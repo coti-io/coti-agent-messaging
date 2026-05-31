@@ -77,7 +77,7 @@ export async function draftRedditResponse(input: RedditDraftInput): Promise<{
     try {
       validateRedditDraft(content, input.targeting.productAliases, resolvedProfile);
     } catch (error) {
-      if (!isRedditDraftLengthError(error)) {
+      if (isRedditDraftForbiddenError(error)) {
         throw error;
       }
       const retryDraft = await requestRedditLlmDraft({
@@ -85,17 +85,16 @@ export async function draftRedditResponse(input: RedditDraftInput): Promise<{
         draftInput: input,
         resolvedProfile,
         maxChars,
-        strictLength: true
+        strictLength: isRedditDraftLengthError(error)
       });
       content = retryDraft?.trim() || fallback;
       try {
         validateRedditDraft(content, input.targeting.productAliases, resolvedProfile);
       } catch (retryError) {
-        if (!isRedditDraftLengthError(retryError)) {
+        if (isRedditDraftForbiddenError(retryError)) {
           throw retryError;
         }
-        content = fallback;
-        validateRedditDraft(content, input.targeting.productAliases, resolvedProfile);
+        content = coerceValidRedditDraft(fallback, input.targeting.productAliases, resolvedProfile);
       }
     }
   } else {
@@ -191,6 +190,53 @@ async function requestRedditLlmDraft(params: {
 
 function isRedditDraftLengthError(error: unknown): boolean {
   return error instanceof Error && /length limit|exceeds .* chars/i.test(error.message);
+}
+
+function isRedditDraftForbiddenError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /forbidden marketing|product\/company alias|mentions a product/i.test(error.message)
+  );
+}
+
+function coerceValidRedditDraft(
+  preferred: string,
+  productAliases: readonly string[],
+  profile: ResolvedPromptProfile
+): string {
+  for (const candidate of [
+    preferred,
+    trimDraftToLength(
+      formatDeterministicSentences(
+        [
+          "The pattern I have seen work is to keep the process small enough that someone can still reason about it.",
+          "Define the trigger, the data it is allowed to touch, the failure mode, and who gets notified."
+        ],
+        profile.parameters.layout
+      ),
+      profile
+    ),
+    trimDraftToLength(
+      formatDeterministicSentences(
+        [
+          "The pattern I have seen work is to keep the process small enough that someone can still reason about it.",
+          "Define the trigger, the data it is allowed to touch, the failure mode, and who gets notified."
+        ],
+        "short_hook_then_detail"
+      ),
+      profile
+    )
+  ]) {
+    try {
+      validateRedditDraft(candidate, productAliases, profile);
+      return candidate;
+    } catch (error) {
+      if (isRedditDraftForbiddenError(error)) {
+        throw error;
+      }
+    }
+  }
+  throw new Error("Reddit draft could not be coerced into a valid response.");
 }
 
 function deterministicDraft(item: RedditReviewItem, profile: ResolvedPromptProfile): string {

@@ -7,7 +7,7 @@ import type { RedditOutboundMemoryEntry } from "./reddit-outreach.js";
 export interface RedditDecisionMemoryEntry extends RedditOutboundMemoryEntry {
   decisionId?: string;
   action?: "skipped" | "commented" | "replied" | "posted";
-  controller?: "manual" | "api" | "browser" | "reddapi";
+  controller?: "manual" | "api" | "browser" | "reddapi" | "unofficial";
   decisionReason?: string;
   relevanceScore?: number;
   riskScore?: number;

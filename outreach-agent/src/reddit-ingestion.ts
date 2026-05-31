@@ -5,6 +5,7 @@ import {
   type MoltbookRuntimeConfig
 } from "./config.js";
 import { buildPublicRedditThreadUrl, RedditReddapiClient } from "./reddit-reddapi.js";
+import { buildUnofficialRedditThreadUrl, RedditUnofficialClient } from "./reddit-unofficial.js";
 import {
   RedditBrowserController,
   type RedditControllerContext,
@@ -74,7 +75,7 @@ export interface RedditIngestionInput {
   maxSearchesPerSubreddit?: number;
   threadCommentLimit?: number;
   ownThreadCommentLimit?: number;
-  source?: "browser" | "api" | "reddapi" | "auto";
+  source?: "browser" | "api" | "reddapi" | "unofficial" | "auto";
   /** Optional seed for deterministic tests; omit for per-run randomness. */
   discoverySeed?: number;
   discoveryPickStrategy?: DiscoveryPickStrategy;
@@ -100,6 +101,7 @@ export interface RedditIngestionDiagnostics {
   browserHeadless: boolean;
   readViaBrowser: boolean;
   readViaReddapi: boolean;
+  readViaUnofficial?: boolean;
 }
 
 export interface RedditIngestionResult {
@@ -137,12 +139,14 @@ export async function ingestRedditState(input: RedditIngestionInput): Promise<Re
     discoveryPickStrategy,
     browserHeadless: isRedditBrowserHeadless(),
     readViaBrowser: false,
-    readViaReddapi: false
+    readViaReddapi: false,
+    readViaUnofficial: false
   };
 
   const ingestionBackend = resolveIngestionBackend(source, input.config, operating);
   diagnostics.readViaBrowser = ingestionBackend === "browser";
   diagnostics.readViaReddapi = ingestionBackend === "reddapi";
+  diagnostics.readViaUnofficial = ingestionBackend === "unofficial";
   const discoveryOptions: DiscoveryIngestionOptions = {
     random: discoveryRng,
     excludePostIds: discoveryExcludePostIds,
@@ -170,6 +174,16 @@ export async function ingestRedditState(input: RedditIngestionInput): Promise<Re
             skipped,
             discoveryOptions
           )
+        : ingestionBackend === "unofficial"
+          ? await ingestViaUnofficial(
+              input.config,
+              subreddits,
+              queries,
+              limits,
+              ownThreadTargets,
+              skipped,
+              discoveryOptions
+            )
         : await ingestViaApi(
             input.config,
             subreddits,
@@ -516,7 +530,7 @@ function resolveIngestionBackend(
   source: RedditIngestionInput["source"] | undefined,
   config: MoltbookRuntimeConfig,
   operating: ReturnType<typeof getRedditOperatingAgentConfig>
-): "browser" | "api" | "reddapi" {
+): "browser" | "api" | "reddapi" | "unofficial" {
   if (source && source !== "auto") {
     return source;
   }
@@ -525,6 +539,9 @@ function resolveIngestionBackend(
     const publishController = getRedditControllerConfig(config).controller;
     if (publishController === "reddapi") {
       return "reddapi";
+    }
+    if (publishController === "unofficial") {
+      return "unofficial";
     }
     if (publishController === "browser") {
       return "browser";
@@ -639,6 +656,130 @@ async function ingestViaReddapi(
       });
     } catch (error) {
       skipped.push(`reddapi read ${result.id}: ${formatError(error)}`);
+    }
+  }
+
+  return snapshots;
+}
+
+async function ingestViaUnofficial(
+  config: MoltbookRuntimeConfig,
+  subreddits: readonly string[],
+  queries: readonly string[],
+  limits: RedditIngestionLimits,
+  ownThreadTargets: readonly RedditOwnThreadTarget[],
+  skipped: string[],
+  discovery: DiscoveryIngestionOptions
+): Promise<RedditConversationSnapshot[]> {
+  const redditConfig = getRedditControllerConfig(config).unofficial;
+  if (!redditConfig) {
+    skipped.push("unofficial ingestion skipped: unofficial Reddit config is missing.");
+    return [];
+  }
+  const client = new RedditUnofficialClient({
+    proxy: redditConfig.proxy,
+    storageStatePath: redditConfig.storageStatePath,
+    bearerOverride: redditConfig.bearerOverride,
+    publicBaseUrl: redditConfig.publicBaseUrl,
+    oauthBaseUrl: redditConfig.oauthBaseUrl,
+    userAgent: redditConfig.userAgent
+  });
+  const snapshots: RedditConversationSnapshot[] = [];
+  const capturedAt = new Date().toISOString();
+  const readPostIds = new Set<string>();
+
+  for (const target of ownThreadTargets.slice(0, limits.maxOwnThreadReads)) {
+    const key = `${target.subreddit}:${target.postId}`;
+    if (readPostIds.has(key)) {
+      continue;
+    }
+    readPostIds.add(key);
+    const postUrl =
+      target.url ??
+      (target.permalink?.startsWith("http")
+        ? target.permalink
+        : target.permalink
+          ? new URL(target.permalink, "https://www.reddit.com").toString()
+          : buildUnofficialRedditThreadUrl(target.subreddit, target.postId, redditConfig.publicBaseUrl));
+    try {
+      const thread = await client.scrapeThread(postUrl, limits.ownThreadCommentLimit);
+      snapshots.push({
+        thread,
+        source: "unofficial",
+        capturedAt,
+        ownThread: true
+      });
+    } catch (error) {
+      skipped.push(`unofficial own thread ${target.postId}: ${formatError(error)}`);
+    }
+  }
+
+  if (limits.maxDiscoveryThreadReads <= 0) {
+    return snapshots;
+  }
+
+  const results: RedditSearchResult[] = [];
+  const searchQueries =
+    limits.maxSearchesPerSubreddit > 0
+      ? selectDiscoverySearchQueries(queries, limits.maxSearchesPerSubreddit, discovery.random)
+      : [];
+  discovery.diagnostics.discoverySearchQueries = [...searchQueries];
+
+  for (const subreddit of shuffleWithRng(subreddits, discovery.random)) {
+    const listingSort = selectDiscoveryListingSort(discovery.random);
+    discovery.diagnostics.discoveryListingSorts.push({ subreddit, sort: listingSort });
+    try {
+      results.push(
+        ...(await client.listSubredditPosts(subreddit, {
+          sort: listingSort,
+          limit: limits.listLimit
+        }))
+      );
+    } catch (error) {
+      skipped.push(`unofficial list r/${subreddit} ${listingSort}: ${formatError(error)}`);
+    }
+
+    for (const query of searchQueries) {
+      try {
+        results.push(
+          ...(await client.searchPosts(query, {
+            subreddit,
+            limit: Math.max(limits.listLimit, 10)
+          }))
+        );
+      } catch (error) {
+        skipped.push(`unofficial search r/${subreddit} "${query}": ${formatError(error)}`);
+      }
+    }
+  }
+
+  for (const result of pickThreadReadCandidates(dedupeSearchResults(results), limits.maxDiscoveryThreadReads, {
+    excludePostIds: discovery.excludePostIds,
+    strategy: discovery.pickStrategy,
+    random: discovery.random
+  })) {
+    const key = `${result.subreddit}:${result.id}`;
+    if (readPostIds.has(key)) {
+      continue;
+    }
+    readPostIds.add(key);
+    const postUrl =
+      result.url ??
+      (result.permalink?.startsWith("http")
+        ? result.permalink
+        : result.permalink
+          ? new URL(result.permalink, "https://www.reddit.com").toString()
+          : buildUnofficialRedditThreadUrl(result.subreddit, result.id, redditConfig.publicBaseUrl));
+    try {
+      const thread = await client.scrapeThread(postUrl, limits.discoveryCommentLimit);
+      snapshots.push({
+        thread,
+        source: "unofficial",
+        capturedAt,
+        ownThread: false
+      });
+    } catch (error) {
+      skipped.push(`unofficial read ${result.id}: ${formatError(error)}`);
     }
   }
 

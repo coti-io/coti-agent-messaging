@@ -54,7 +54,7 @@ export interface MoltbookOutreachPolicyConfig {
   followCommentMinScore?: number;
 }
 
-export type RedditControllerKind = "manual" | "browser" | "api" | "reddapi";
+export type RedditControllerKind = "manual" | "browser" | "api" | "reddapi" | "unofficial";
 
 export interface RedditBrowserBridgeConfig {
   bridgeDir: string;
@@ -76,11 +76,21 @@ export interface RedditReddapiRuntimeConfig {
   bearerOverride?: string;
 }
 
+export interface RedditUnofficialRuntimeConfig {
+  proxy?: string;
+  storageStatePath: string;
+  bearerOverride?: string;
+  publicBaseUrl: string;
+  oauthBaseUrl: string;
+  userAgent: string;
+}
+
 export interface RedditControllerConfig {
   controller: RedditControllerKind;
   browserBridge: RedditBrowserBridgeConfig;
   api: RedditApiRuntimeConfig;
   reddapi: RedditReddapiRuntimeConfig;
+  unofficial?: RedditUnofficialRuntimeConfig;
 }
 
 export interface RedditOperatingAgentConfig {
@@ -95,7 +105,7 @@ export interface RedditOperatingAgentConfig {
   maxActionsPerDay: number;
   minJitterMinutes: number;
   maxJitterMinutes: number;
-  readController: "browser" | "api" | "auto" | "reddapi";
+  readController: "browser" | "api" | "auto" | "reddapi" | "unofficial";
   dryRunDefault: boolean;
   memoryPath: string;
 }
@@ -290,7 +300,7 @@ function parseRedditController(value: string | undefined): RedditControllerKind 
   if (value === "manual") {
     return "manual";
   }
-  if (value === "browser" || value === "api" || value === "reddapi") {
+  if (value === "browser" || value === "api" || value === "reddapi" || value === "unofficial") {
     return value;
   }
 
@@ -645,6 +655,17 @@ export function buildRedditControllerConfig(packageRoot: string): RedditControll
       ),
       rapidApiHost: process.env.RAPIDAPI_REDDAPI_HOST?.trim() || "reddapi.p.rapidapi.com",
       bearerOverride: getOptionalEnv("REDDAPI_BEARER")
+    },
+    unofficial: {
+      proxy: getOptionalEnv("OUTREACH_REDDIT_UNOFFICIAL_PROXY") ?? getOptionalEnv("REDDAPI_PROXY"),
+      storageStatePath: resolveRedditBrowserStorageStatePath(
+        process.env.OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH
+      ),
+      bearerOverride: getOptionalEnv("OUTREACH_REDDIT_UNOFFICIAL_BEARER") ?? getOptionalEnv("REDDAPI_BEARER"),
+      publicBaseUrl: process.env.OUTREACH_REDDIT_UNOFFICIAL_PUBLIC_BASE_URL?.trim() || "https://www.reddit.com",
+      oauthBaseUrl: process.env.OUTREACH_REDDIT_UNOFFICIAL_OAUTH_BASE_URL?.trim() || "https://oauth.reddit.com",
+      userAgent: process.env.OUTREACH_REDDIT_UNOFFICIAL_USER_AGENT?.trim() ||
+        "coti-agent-messaging:reddit-unofficial-mvp:0.1"
     }
   };
 }
@@ -706,7 +727,7 @@ function parseRedditReadController(value: string | undefined): RedditOperatingAg
   if (value === "auto") {
     return "auto";
   }
-  if (value === "browser" || value === "api" || value === "reddapi") {
+  if (value === "browser" || value === "api" || value === "reddapi" || value === "unofficial") {
     return value;
   }
   throw new Error(`Invalid OUTREACH_REDDIT_READ_CONTROLLER: ${value}`);

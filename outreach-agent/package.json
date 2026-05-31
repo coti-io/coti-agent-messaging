@@ -31,6 +31,9 @@
     "reddit:memory:prune-drafts": "node scripts/reddit-prune-drafts.mjs",
     "reddit:reddapi-probe": "node scripts/reddapi-comment-probe.mjs",
     "reddit:reddapi-test": "node scripts/reddapi-natural-test.mjs",
+    "reddit:unofficial:read-probe": "node scripts/reddit-unofficial-read-probe.mjs",
+    "reddit:unofficial:read-live": "OUTREACH_REDDIT_UNOFFICIAL_LIVE=1 node --test dist/test/reddit-unofficial-read-live.test.js",
+    "reddit:unofficial:heartbeat": "node scripts/reddit-unofficial-heartbeat.mjs --runs 1",
     "reddit:reddapi-proxy:grant": "bash scripts/setup-reddapi-proxy-grant.sh",
     "reddit:session": "OUTREACH_AGENT_VENUE=reddit OUTREACH_AGENT_MODE=approved_autopost OUTREACH_REDDIT_SESSION_DRY_RUN=false OUTREACH_REDDIT_CONTROLLER=reddapi OUTREACH_REDDIT_READ_CONTROLLER=reddapi node dist/src/index.js reddit-session --live --once --max-actions 1",
     "reddit:docker:build": "docker compose -f docker-compose.yml build reddit-browser-worker",
@@ -56,7 +59,8 @@
     "@coti-io/coti-sdk-private-messaging": "github:coti-io/coti-sdk-private-messaging#main",
     "dotenv": "^16.6.1",
     "playwright": "^1.60.0",
-    "sqlite3": "^6.0.1"
+    "sqlite3": "^6.0.1",
+    "undici": "^5.29.0"
   },
   "devDependencies": {
     "@types/node": "^25.3.5",

@@ -774,7 +774,25 @@ function getBucketState(
   state: PromptRotationState,
   scopeKey: PromptRotationScopeKey
 ): PromptRotationBucketState {
-  return state.buckets[scopeKey] ?? normalizeBucketState({ scopeKey });
+  const bucket = state.buckets[scopeKey];
+  if (bucket) {
+    return bucket;
+  }
+  if (state.currentPromptVariant) {
+    return normalizeBucketState({
+      scopeKey,
+      currentPromptVariant: state.currentPromptVariant,
+      currentPromptLabel: state.currentPromptLabel,
+      actionsSinceRotation: state.actionsSinceRotation,
+      rotateAfterActions: state.rotateAfterActions,
+      lastRotationAt: state.lastRotationAt,
+      lastSelectionRationale: state.lastSelectionRationale,
+      lastSelectionSource: state.lastSelectionSource,
+      lastSelectedAt: state.lastSelectedAt,
+      lastActionAt: state.lastActionAt
+    });
+  }
+  return normalizeBucketState({ scopeKey });
 }
 
 function setBucketState(

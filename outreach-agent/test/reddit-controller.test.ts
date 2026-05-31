@@ -35,6 +35,12 @@ function createConfig(overrides: Partial<MoltbookRuntimeConfig> = {}): MoltbookR
         accessToken: "token",
         userAgent: "test-agent",
         baseUrl: "https://oauth.reddit.test"
+      },
+      reddapi: {
+        rapidApiKey: "rapid-key",
+        proxy: "http://proxy.test:3128",
+        storageStatePath: path.join(os.tmpdir(), "reddit-storage-state.json"),
+        rapidApiHost: "reddapi.test"
       }
     },
     agent: {
@@ -116,7 +122,8 @@ test("Reddit browser controller writes bridge requests and reads responses", asy
           accessToken: "token",
           userAgent: "test-agent",
           baseUrl: "https://oauth.reddit.test"
-        }
+        },
+        reddapi: createConfig().reddit!.reddapi
       }
     })
   );
@@ -194,7 +201,8 @@ test("Reddit browser controller writes read requests and returns normalized resu
           accessToken: "token",
           userAgent: "test-agent",
           baseUrl: "https://oauth.reddit.test"
-        }
+        },
+        reddapi: createConfig().reddit!.reddapi
       }
     })
   );
@@ -272,7 +280,8 @@ test("Reddit browser controller maps typed bridge failures", async () => {
           accessToken: "token",
           userAgent: "test-agent",
           baseUrl: "https://oauth.reddit.test"
-        }
+        },
+        reddapi: createConfig().reddit!.reddapi
       }
     })
   );

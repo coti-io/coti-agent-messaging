@@ -72,6 +72,12 @@ function createConfig(memoryPath: string): MoltbookRuntimeConfig {
       },
       api: {
         baseUrl: "https://oauth.reddit.test"
+      },
+      reddapi: {
+        rapidApiKey: "rapid-key",
+        proxy: "http://proxy.test:3128",
+        storageStatePath: path.join(os.tmpdir(), "reddit-storage-state.json"),
+        rapidApiHost: "reddapi.test"
       }
     },
     redditOperating: {
@@ -107,7 +113,8 @@ const ingestion: RedditIngestionResult = {
     excludedThreadPostIds: [],
     discoveryPickStrategy: "stochastic",
     browserHeadless: false,
-    readViaBrowser: false
+    readViaBrowser: false,
+    readViaReddapi: false
   },
   sourceItems: [
     {

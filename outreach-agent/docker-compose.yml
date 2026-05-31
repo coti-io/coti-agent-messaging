@@ -41,14 +41,12 @@ services:
     environment:
       OUTREACH_AGENT_VENUE: reddit
       OUTREACH_REDDIT_SESSION_DRY_RUN: "true"
-      OUTREACH_REDDIT_CONTROLLER: browser
-      OUTREACH_REDDIT_READ_CONTROLLER: browser
+      OUTREACH_REDDIT_CONTROLLER: reddapi
+      OUTREACH_REDDIT_READ_CONTROLLER: reddapi
       OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH: /app/.browser/reddit-storage-state.json
-      OUTREACH_REDDIT_BROWSER_BRIDGE_DIR: /app/.bridge/reddit-browser
       OUTREACH_REDDIT_MEMORY_PATH: /app/.data/reddit-memory.json
     volumes:
       - ./.browser:/app/.browser
-      - ./.bridge:/app/.bridge
       - ./.data:/app/.data
 
   reddit-session-live:
@@ -67,12 +65,10 @@ services:
     environment:
       OUTREACH_AGENT_VENUE: reddit
       OUTREACH_AGENT_MODE: approved_autopost
-      OUTREACH_REDDIT_CONTROLLER: browser
-      OUTREACH_REDDIT_READ_CONTROLLER: browser
+      OUTREACH_REDDIT_CONTROLLER: reddapi
+      OUTREACH_REDDIT_READ_CONTROLLER: reddapi
       OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH: /app/.browser/reddit-storage-state.json
-      OUTREACH_REDDIT_BROWSER_BRIDGE_DIR: /app/.bridge/reddit-browser
       OUTREACH_REDDIT_MEMORY_PATH: /app/.data/reddit-memory.json
     volumes:
       - ./.browser:/app/.browser
-      - ./.bridge:/app/.bridge
       - ./.data:/app/.data

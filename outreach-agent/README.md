@@ -251,13 +251,14 @@ Reddit execution is now controller-selected from config:
 OUTREACH_AGENT_VENUE=reddit
 OUTREACH_AGENT_MODE=approved_autopost
 OUTREACH_AGENT_ALLOWED_SURFACES=AI_Agents,LocalLLaMA
-OUTREACH_REDDIT_CONTROLLER=manual # or browser or api
-OUTREACH_REDDIT_READ_CONTROLLER=auto # or browser or api
+OUTREACH_REDDIT_CONTROLLER=reddapi # or browser, api, manual
+OUTREACH_REDDIT_READ_CONTROLLER=reddapi # or browser, api, auto
 OUTREACH_REDDIT_TARGET_SUBREDDITS=sales,SaaS,CustomerSuccess,DigitalMarketing
 ```
 
 Controller behavior:
 
+- `reddapi` (default): reads threads via ReddAPI scrape/search endpoints and publishes comments through ReddAPI using `token_v2` from `outreach-agent/.browser/reddit-storage-state.json`, `RAPIDAPI_REDDAPI_KEY`, and `REDDAPI_PROXY`
 - `manual`: keeps the autonomous scan/draft-only workflow and rejects publish attempts because the controller is configured not to publish
 - `api`: submits `create_post`, `comment_on_post`, and `reply_to_comment` through Reddit OAuth using `REDDIT_ACCESS_TOKEN` and `REDDIT_USER_AGENT`
 - `browser`: writes publish requests into `outreach-agent/.bridge/reddit-browser/requests` and waits for a matching response file in `responses`; the bundled `reddit-browser-worker` command fulfills those requests through Playwright and returns remote ids/URLs
@@ -327,6 +328,28 @@ npm run reddit:docker:session:dry-run -w @coti-agent-messaging/outreach-agent
 ```
 
 `reddit:docker:build` intentionally builds only the shared `coti-agent-messaging/outreach-agent:local` image once through the `reddit-browser-worker` service. The session services reuse that same image instead of asking Docker to export the same image three times in parallel.
+
+### ReddAPI write probe (RapidAPI)
+
+ReddAPI read endpoints work from anywhere. **Write** endpoints (`/api/comment`) require a publicly reachable HTTP proxy URL in the request body; ReddAPI’s servers connect to that proxy when posting to Reddit.
+
+1. Set `RAPIDAPI_REDDAPI_KEY` in the repo-root `.env`.
+2. Bootstrap an authenticated Squid proxy on `grant` (reddit destinations only):
+
+```bash
+npm run reddit:reddapi-proxy:grant -w @coti-agent-messaging/outreach-agent
+```
+
+Copy the printed `REDDAPI_PROXY=...` line into `.env`.
+
+3. Open inbound **TCP 3128** on the EC2 security group (`launch-wizard-3` on instance `i-0540b41e7bcfe96ce`). Without this, ReddAPI returns `Proxy Connection timed out`.
+4. Run the probe (bearer from `.browser/reddit-storage-state.json` unless `REDDAPI_BEARER` is set):
+
+```bash
+REDDAPI_POST_URL='https://www.reddit.com/r/.../comments/.../.../' \
+REDDAPI_COMMENT_TEXT='[reddapi probe] safe to ignore.' \
+npm run reddit:reddapi-probe -w @coti-agent-messaging/outreach-agent
+```
 
 3. Only after dry-run output looks sane, try one live action:
 

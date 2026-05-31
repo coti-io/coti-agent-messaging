@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { getRedditControllerConfig, type MoltbookRuntimeConfig, type RedditControllerKind } from "./config.js";
+import { RedditReddapiClient, resolveReddapiPostUrl } from "./reddit-reddapi.js";
 import type { OutreachAgentMode } from "./venue.js";
 import type { VenueAction } from "./venue.js";
 
@@ -83,7 +84,7 @@ export interface RedditSearchResult {
 
 export interface RedditConversationSnapshot {
   thread: RedditThreadState;
-  source: "browser" | "api" | "input";
+  source: "browser" | "api" | "reddapi" | "input";
   capturedAt: string;
   /** Thread where we have prior outbound participation. */
   ownThread?: boolean;
@@ -270,6 +271,8 @@ export function createRedditController(
       return new RedditBrowserController(config);
     case "api":
       return new RedditApiController(config, dependencies.fetchImpl ?? fetch);
+    case "reddapi":
+      return new RedditReddapiController(config, dependencies.fetchImpl ?? fetch);
   }
 }
 
@@ -388,6 +391,71 @@ export class RedditApiController implements RedditController {
       ),
       raw: payload
     };
+  }
+}
+
+export class RedditReddapiController implements RedditController {
+  readonly id = "reddapi" as const;
+  private client?: RedditReddapiClient;
+
+  constructor(
+    private readonly config: MoltbookRuntimeConfig,
+    private readonly fetchImpl: typeof fetch = fetch
+  ) {}
+
+  async publishAction(action: VenueAction, _context: RedditControllerContext): Promise<RedditPublishResult> {
+    const publishableAction = assertRedditPublishableAction(action);
+    const redditConfig = getRedditControllerConfig(this.config).reddapi;
+    if (!redditConfig.rapidApiKey || !redditConfig.proxy) {
+      throw new RedditControllerConfigurationError(
+        "ReddAPI controller requires RAPIDAPI_REDDAPI_KEY and REDDAPI_PROXY."
+      );
+    }
+
+    const client = this.getClient();
+    switch (publishableAction.type) {
+      case "create_post":
+        throw new RedditControllerConfigurationError(
+          "ReddAPI controller does not support create_post yet — use browser or official API."
+        );
+      case "comment_on_post":
+      case "reply_to_comment": {
+        const postUrl = resolveReddapiPostUrl({
+          raw: publishableAction.raw,
+          surface: publishableAction.surface,
+          parentId:
+            publishableAction.type === "comment_on_post"
+              ? publishableAction.parentId
+              : publishableAction.parentId,
+          candidateId:
+            publishableAction.type === "reply_to_comment" ? publishableAction.candidateId : undefined,
+          type: publishableAction.type
+        });
+        return client.postComment(postUrl, publishableAction.content);
+      }
+    }
+  }
+
+  private getClient(): RedditReddapiClient {
+    if (!this.client) {
+      const redditConfig = getRedditControllerConfig(this.config).reddapi;
+      if (!redditConfig.rapidApiKey || !redditConfig.proxy) {
+        throw new RedditControllerConfigurationError(
+          "ReddAPI controller requires RAPIDAPI_REDDAPI_KEY and REDDAPI_PROXY."
+        );
+      }
+      this.client = new RedditReddapiClient(
+        {
+          rapidApiKey: redditConfig.rapidApiKey,
+          proxy: redditConfig.proxy,
+          storageStatePath: redditConfig.storageStatePath,
+          rapidApiHost: redditConfig.rapidApiHost,
+          bearerOverride: redditConfig.bearerOverride
+        },
+        this.fetchImpl
+      );
+    }
+    return this.client;
   }
 }
 

@@ -4,6 +4,7 @@ import {
   getRedditOperatingAgentConfig,
   type MoltbookRuntimeConfig
 } from "./config.js";
+import { buildPublicRedditThreadUrl, RedditReddapiClient } from "./reddit-reddapi.js";
 import {
   RedditBrowserController,
   type RedditControllerContext,
@@ -73,7 +74,7 @@ export interface RedditIngestionInput {
   maxSearchesPerSubreddit?: number;
   threadCommentLimit?: number;
   ownThreadCommentLimit?: number;
-  source?: "browser" | "api" | "auto";
+  source?: "browser" | "api" | "reddapi" | "auto";
   /** Optional seed for deterministic tests; omit for per-run randomness. */
   discoverySeed?: number;
   discoveryPickStrategy?: DiscoveryPickStrategy;
@@ -98,6 +99,7 @@ export interface RedditIngestionDiagnostics {
   discoveryPickStrategy: DiscoveryPickStrategy;
   browserHeadless: boolean;
   readViaBrowser: boolean;
+  readViaReddapi: boolean;
 }
 
 export interface RedditIngestionResult {
@@ -134,20 +136,21 @@ export async function ingestRedditState(input: RedditIngestionInput): Promise<Re
     excludedThreadPostIds: [...discoveryExcludePostIds],
     discoveryPickStrategy,
     browserHeadless: isRedditBrowserHeadless(),
-    readViaBrowser: false
+    readViaBrowser: false,
+    readViaReddapi: false
   };
 
-  const usedBrowser =
-    source === "browser" ||
-    (source === "auto" && getRedditControllerConfig(input.config).controller === "browser");
-  diagnostics.readViaBrowser = usedBrowser;
+  const ingestionBackend = resolveIngestionBackend(source, input.config, operating);
+  diagnostics.readViaBrowser = ingestionBackend === "browser";
+  diagnostics.readViaReddapi = ingestionBackend === "reddapi";
   const discoveryOptions: DiscoveryIngestionOptions = {
     random: discoveryRng,
     excludePostIds: discoveryExcludePostIds,
     pickStrategy: discoveryPickStrategy,
     diagnostics
   };
-  const snapshots = usedBrowser
+  const snapshots =
+    ingestionBackend === "browser"
       ? await ingestViaBrowser(
           input.config,
           subreddits,
@@ -157,21 +160,31 @@ export async function ingestRedditState(input: RedditIngestionInput): Promise<Re
           skipped,
           discoveryOptions
         )
-      : await ingestViaApi(
-          input.config,
-          subreddits,
-          queries,
-          limits,
-          ownThreadTargets,
-          skipped,
-          discoveryOptions
-        );
+      : ingestionBackend === "reddapi"
+        ? await ingestViaReddapi(
+            input.config,
+            subreddits,
+            queries,
+            limits,
+            ownThreadTargets,
+            skipped,
+            discoveryOptions
+          )
+        : await ingestViaApi(
+            input.config,
+            subreddits,
+            queries,
+            limits,
+            ownThreadTargets,
+            skipped,
+            discoveryOptions
+          );
 
   const deduped = dedupeSnapshots(snapshots);
   const agent = getOutreachAgentConfig(input.config);
   const discoveryThreadSnapshots = deduped.filter((snapshot) => !snapshot.ownThread).length;
   appendHeadlessDiscoveryWarning(skipped, {
-    usedBrowser,
+    usedBrowser: diagnostics.readViaBrowser,
     headless: isRedditBrowserHeadless(),
     maxDiscoveryThreadReads: limits.maxDiscoveryThreadReads,
     subredditCount: subreddits.length,
@@ -497,6 +510,139 @@ interface DiscoveryIngestionOptions {
   excludePostIds: ReadonlySet<string>;
   pickStrategy: DiscoveryPickStrategy;
   diagnostics: RedditIngestionDiagnostics;
+}
+
+function resolveIngestionBackend(
+  source: RedditIngestionInput["source"] | undefined,
+  config: MoltbookRuntimeConfig,
+  operating: ReturnType<typeof getRedditOperatingAgentConfig>
+): "browser" | "api" | "reddapi" {
+  if (source && source !== "auto") {
+    return source;
+  }
+  const readController = operating.readController;
+  if (readController === "auto") {
+    const publishController = getRedditControllerConfig(config).controller;
+    if (publishController === "reddapi") {
+      return "reddapi";
+    }
+    if (publishController === "browser") {
+      return "browser";
+    }
+    return "api";
+  }
+  return readController;
+}
+
+async function ingestViaReddapi(
+  config: MoltbookRuntimeConfig,
+  subreddits: readonly string[],
+  queries: readonly string[],
+  limits: RedditIngestionLimits,
+  ownThreadTargets: readonly RedditOwnThreadTarget[],
+  skipped: string[],
+  discovery: DiscoveryIngestionOptions
+): Promise<RedditConversationSnapshot[]> {
+  const redditConfig = getRedditControllerConfig(config).reddapi;
+  if (!redditConfig.rapidApiKey || !redditConfig.proxy) {
+    skipped.push("reddapi ingestion skipped: RAPIDAPI_REDDAPI_KEY and REDDAPI_PROXY are required.");
+    return [];
+  }
+
+  const client = new RedditReddapiClient({
+    rapidApiKey: redditConfig.rapidApiKey,
+    proxy: redditConfig.proxy,
+    storageStatePath: redditConfig.storageStatePath,
+    rapidApiHost: redditConfig.rapidApiHost,
+    bearerOverride: redditConfig.bearerOverride
+  });
+  const snapshots: RedditConversationSnapshot[] = [];
+  const capturedAt = new Date().toISOString();
+  const readPostIds = new Set<string>();
+
+  for (const target of ownThreadTargets.slice(0, limits.maxOwnThreadReads)) {
+    const key = `${target.subreddit}:${target.postId}`;
+    if (readPostIds.has(key)) {
+      continue;
+    }
+    readPostIds.add(key);
+    const postUrl =
+      target.url ??
+      (target.permalink?.startsWith("http")
+        ? target.permalink
+        : target.permalink
+          ? new URL(target.permalink, "https://www.reddit.com").toString()
+          : buildPublicRedditThreadUrl(target.subreddit, target.postId));
+    try {
+      const thread = await client.scrapeThread(postUrl);
+      snapshots.push({
+        thread,
+        source: "reddapi",
+        capturedAt,
+        ownThread: true
+      });
+    } catch (error) {
+      skipped.push(`reddapi own thread ${target.postId}: ${formatError(error)}`);
+    }
+  }
+
+  if (limits.maxDiscoveryThreadReads <= 0) {
+    return snapshots;
+  }
+
+  const results: RedditSearchResult[] = [];
+  const searchQueries =
+    limits.maxSearchesPerSubreddit > 0
+      ? selectDiscoverySearchQueries(queries, limits.maxSearchesPerSubreddit, discovery.random)
+      : [];
+  discovery.diagnostics.discoverySearchQueries = [...searchQueries];
+
+  for (const subreddit of shuffleWithRng(subreddits, discovery.random)) {
+    for (const query of searchQueries) {
+      try {
+        results.push(
+          ...(await client.searchPosts(query, {
+            subreddit,
+            limit: Math.max(limits.listLimit, 10)
+          }))
+        );
+      } catch (error) {
+        skipped.push(`reddapi search r/${subreddit} "${query}": ${formatError(error)}`);
+      }
+    }
+  }
+
+  for (const result of pickThreadReadCandidates(dedupeSearchResults(results), limits.maxDiscoveryThreadReads, {
+    excludePostIds: discovery.excludePostIds,
+    strategy: discovery.pickStrategy,
+    random: discovery.random
+  })) {
+    const key = `${result.subreddit}:${result.id}`;
+    if (readPostIds.has(key)) {
+      continue;
+    }
+    readPostIds.add(key);
+    const postUrl =
+      result.url ??
+      (result.permalink?.startsWith("http")
+        ? result.permalink
+        : result.permalink
+          ? new URL(result.permalink, "https://www.reddit.com").toString()
+          : buildPublicRedditThreadUrl(result.subreddit, result.id));
+    try {
+      const thread = await client.scrapeThread(postUrl);
+      snapshots.push({
+        thread,
+        source: "reddapi",
+        capturedAt,
+        ownThread: false
+      });
+    } catch (error) {
+      skipped.push(`reddapi read ${result.id}: ${formatError(error)}`);
+    }
+  }
+
+  return snapshots;
 }
 
 async function ingestViaBrowser(

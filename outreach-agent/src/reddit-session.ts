@@ -35,7 +35,7 @@ export interface RedditSessionReport {
   generatedAt: string;
   dryRun: boolean;
   duplicateCheckPolicy: RedditDuplicateCheckPolicy;
-  readSource: "browser" | "api" | "auto";
+  readSource: "browser" | "api" | "auto" | "reddapi";
   memoryPath: string;
   ingestion: {
     snapshotCount: number;
@@ -447,7 +447,8 @@ function emptyIngestionSummary(): RedditSessionReport["ingestion"] {
       excludedThreadPostIds: [],
       discoveryPickStrategy: "stochastic",
       browserHeadless: false,
-      readViaBrowser: false
+      readViaBrowser: false,
+      readViaReddapi: false
     }
   };
 }

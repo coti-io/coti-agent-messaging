@@ -31,6 +31,12 @@ function createConfig(overrides: Partial<MoltbookRuntimeConfig> = {}): MoltbookR
       },
       api: {
         baseUrl: "https://oauth.reddit.test"
+      },
+      reddapi: {
+        rapidApiKey: "rapid-key",
+        proxy: "http://proxy.test:3128",
+        storageStatePath: path.join(os.tmpdir(), "reddit-storage-state.json"),
+        rapidApiHost: "reddapi.test"
       }
     },
     agent: {
@@ -276,6 +282,12 @@ test("createVenueProvider returns a reddit provider for reddit config", () => {
         },
         api: {
           baseUrl: "https://oauth.reddit.test"
+        },
+        reddapi: {
+          rapidApiKey: "rapid-key",
+          proxy: "http://proxy.test:3128",
+          storageStatePath: path.join(os.tmpdir(), "reddit-storage-state.json"),
+          rapidApiHost: "reddapi.test"
         }
       }
     })

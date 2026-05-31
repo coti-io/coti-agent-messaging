@@ -14,11 +14,20 @@
  *   OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH
  */
 
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { config as loadDotenv } from "dotenv";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = path.resolve(packageRoot, "..");
+for (const envPath of [path.join(projectRoot, ".env"), path.join(packageRoot, ".env")]) {
+  if (existsSync(envPath)) {
+    loadDotenv({ path: envPath, override: false });
+  }
+}
+
 const DEFAULT_POST_URL =
   "https://www.reddit.com/r/Moltbook/comments/1s4zubp/anyone_else_getting_api_errors_500_from_moltbook/";
 const DEFAULT_COMMENT =
@@ -37,26 +46,65 @@ function fail(message, details) {
   process.exit(1);
 }
 
+function cookieExpired(cookie) {
+  if (!cookie || cookie.expires === -1) {
+    return false;
+  }
+  return Number(cookie.expires) > 0 && Date.now() > Number(cookie.expires) * 1000;
+}
+
+function jwtExpiresAt(token) {
+  const segment = token?.split(".")[1];
+  if (!segment) {
+    return undefined;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(segment, "base64url").toString("utf8"));
+    return typeof payload.exp === "number" ? new Date(payload.exp * 1000).toISOString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function jwtExpired(token) {
+  const segment = token?.split(".")[1];
+  if (!segment) {
+    return false;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(segment, "base64url").toString("utf8"));
+    return typeof payload.exp === "number" && Date.now() > payload.exp * 1000;
+  } catch {
+    return false;
+  }
+}
+
 async function loadBearerFromStorage(filePath) {
+  if (process.env.REDDAPI_BEARER?.trim()) {
+    return { bearer: process.env.REDDAPI_BEARER.trim(), source: "env" };
+  }
+
   const raw = await readFile(filePath, "utf8");
   const state = JSON.parse(raw);
   const cookies = Array.isArray(state.cookies) ? state.cookies : [];
-  const tokenV2 = cookies.find((cookie) => cookie.name === "token_v2")?.value;
-  const redditSession = cookies.find((cookie) => cookie.name === "reddit_session")?.value;
-  const bearer = process.env.REDDAPI_BEARER?.trim() || tokenV2 || redditSession;
-  if (!bearer) {
-    fail("No bearer token found.", {
+  const tokenCookie = cookies.find((cookie) => cookie.name === "token_v2");
+  if (!tokenCookie?.value) {
+    fail("No token_v2 cookie in storage state.", {
       storageStatePath: filePath,
-      hint: "Log in with reddit:login or set REDDAPI_BEARER."
+      hint: "Run: npm run reddit:login -w @coti-agent-messaging/outreach-agent"
+    });
+  }
+  if (cookieExpired(tokenCookie) || jwtExpired(tokenCookie.value)) {
+    fail("token_v2 bearer expired.", {
+      storageStatePath: filePath,
+      expiresAt: jwtExpiresAt(tokenCookie.value),
+      hint: "Refresh with: npm run reddit:login -w @coti-agent-messaging/outreach-agent"
     });
   }
   return {
-    bearer,
-    source: process.env.REDDAPI_BEARER?.trim()
-      ? "env"
-      : tokenV2
-        ? "token_v2"
-        : "reddit_session"
+    bearer: tokenCookie.value,
+    source: "token_v2",
+    expiresAt: jwtExpiresAt(tokenCookie.value)
   };
 }
 
@@ -105,44 +153,24 @@ async function main() {
     query: { post_url: postUrl }
   });
 
-  const writeAttempts = [
+  const writeResult = await reddapiRequest("/api/comment", {
+    method: "POST",
+    body: {
+      post_url: postUrl,
+      text: commentText,
+      bearer: bearerInfo.bearer,
+      proxy
+    }
+  });
+  const writeResults = [
     {
       route: "/api/comment",
-      body: {
-        post_url: postUrl,
-        text: commentText,
-        bearer: bearerInfo.bearer,
-        proxy
-      }
-    },
-    {
-      route: "/api/comment",
-      body: {
-        post_url: postUrl,
-        comment: commentText,
-        bearer: bearerInfo.bearer,
-        proxy
-      }
+      bodyKeys: ["post_url", "text", "bearer", "proxy"],
+      status: writeResult.status,
+      ok: writeResult.ok,
+      payload: writeResult.payload
     }
   ];
-
-  const writeResults = [];
-  for (const attempt of writeAttempts) {
-    const result = await reddapiRequest(attempt.route, {
-      method: "POST",
-      body: attempt.body
-    });
-    writeResults.push({
-      route: attempt.route,
-      bodyKeys: Object.keys(attempt.body),
-      status: result.status,
-      ok: result.ok,
-      payload: result.payload
-    });
-    if (writeSucceeded(result)) {
-      break;
-    }
-  }
 
   const verify = await reddapiRequest("/api/scrape_post_comments", {
     query: { post_url: postUrl }
@@ -156,6 +184,7 @@ async function main() {
         ok: posted,
         postUrl,
         bearerSource: bearerInfo.source,
+        bearerExpiresAt: bearerInfo.expiresAt,
         storageStatePath,
         proxyConfigured: Boolean(proxy),
         read: {

@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../coti-sdk-private-messaging"
+		},
+		{
+			"path": "../coti-agent-tool-rental"
 		}
 	],
 	"settings": {}

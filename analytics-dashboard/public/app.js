@@ -159,7 +159,7 @@ function renderAgentRunsPanel(agent) {
                   </div>
                   <div class="agent-run-metrics">
                     <div>${renderRunCounts(run.runCounts, countsScope)}</div>
-                    <div class="subtle">${formatNumber(run.errorCount)} errors · ${formatNumber(run.skipCount)} skipped · ${formatNumber(run.queuedActionJobs ?? 0)} queued</div>
+                    <div class="subtle">${formatNumber(run.errorCount)} errors · ${formatNumber(run.skipCount)} ${run.filteringSummary?.length ? "notes" : "skipped"} · ${formatNumber(run.queuedActionJobs ?? 0)} queued</div>
                   </div>
                 </div>
                 ${
@@ -168,8 +168,13 @@ function renderAgentRunsPanel(agent) {
                     : ""
                 }
                 ${
+                  run.filteringSummary?.length
+                    ? `<div class="run-detail-block"><div class="run-detail-label">Filtering</div>${renderRunDetailList(run.filteringSummary, "No filter breakdown recorded.")}</div>`
+                    : ""
+                }
+                ${
                   run.skipped.length
-                    ? `<div class="run-detail-block"><div class="run-detail-label">Skipped</div>${renderRunDetailList(run.skipped.slice(0, 10), "No skipped actions recorded.")}${run.skipped.length > 10 ? `<div class="run-detail-line subtle">+${run.skipped.length - 10} more</div>` : ""}</div>`
+                    ? `<div class="run-detail-block"><div class="run-detail-label">${run.filteringSummary?.length ? "Notes" : "Skipped"}</div>${renderRunDetailList(run.skipped, run.filteringSummary?.length ? "No run notes recorded." : "No skipped actions recorded.")}</div>`
                     : ""
                 }
                 ${

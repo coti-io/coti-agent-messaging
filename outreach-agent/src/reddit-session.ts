@@ -28,12 +28,8 @@ import {
   chooseRedditActionBundle,
   plannedRedditActionFromCandidate
 } from "./reddit-action-planning.js";
-import { planRedditAction } from "./reddit-policy.js";
-import {
-  DEFAULT_REDDIT_RULES_REGISTRY,
-  DEFAULT_REDDIT_TARGETING,
-  type RedditDuplicateCheckPolicy
-} from "./reddit-outreach.js";
+import { planRedditAction, emptyRedditFilterSummary, resolveRedditPlannerContext, type RedditPlannerFilterSummary } from "./reddit-policy.js";
+import { type RedditDuplicateCheckPolicy } from "./reddit-outreach.js";
 import { redditMemoryEntryCountsTowardPublishedLimits } from "./reddit-outreach.js";
 import type { RedditDecisionMemoryEntry } from "./reddit-memory.js";
 import { createVenueProvider } from "./venue-factory.js";
@@ -61,6 +57,12 @@ export interface RedditSessionReport {
   planner: {
     skipped: string[];
     blockedGateSample: Array<{ id: string; gates: string[] }>;
+    filterSummary?: import("./reddit-policy.js").RedditPlannerFilterSummary;
+    sessionLimits?: string[];
+    pipeline?: {
+      llmDraft: "not_reached" | "failed" | "succeeded";
+      selectionSource?: "llm" | "deterministic_fallback";
+    };
   };
   actionCandidates: Array<{
     id: string;
@@ -168,7 +170,12 @@ async function runRedditPlannerPhase(input: {
   const now = options.now ?? new Date();
   const recentKillReason = findKillSwitch(memory.history);
   if (recentKillReason) {
-    const decision = { skipped: [recentKillReason], candidates: [], plannedCandidates: [] };
+    const decision: ReturnType<typeof planRedditAction> = {
+      skipped: [recentKillReason],
+      candidates: [],
+      plannedCandidates: [],
+      filterSummary: emptyRedditFilterSummary()
+    };
     return {
       generatedAt: now.toISOString(),
       dryRun,
@@ -179,7 +186,12 @@ async function runRedditPlannerPhase(input: {
       actionCandidates: [],
       selectedActionBundle: chooseRedditActionBundle([], maxActions),
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
-      planner: summarizePlanner(decision),
+      planner: summarizePlanner({
+        skipped: decision.skipped,
+        filterSummary: decision.filterSummary,
+        sessionLimits: [recentKillReason],
+        pipeline: { llmDraft: "not_reached" }
+      }),
       decision
     };
   }
@@ -206,10 +218,12 @@ async function runRedditPlannerPhase(input: {
           action: undefined,
           plannedCandidates: [],
           skipped: ["Executed one queued Reddit action instead of planning a new one."],
-          candidates: []
+          candidates: [],
+          filterSummary: emptyRedditFilterSummary()
         },
         planner: summarizePlanner({
-          skipped: ["Executed one queued Reddit action instead of planning a new one."]
+          skipped: ["Executed one queued Reddit action instead of planning a new one."],
+          pipeline: { llmDraft: "not_reached" }
         }),
         outcome: executed.outcome,
         recorded: executed.recorded
@@ -234,11 +248,19 @@ async function runRedditPlannerPhase(input: {
     ownThreadCommentLimit: operating.ingestionOwnThreadCommentLimit,
     discoverySeed: input.discoverySeed ?? parseDiscoverySeedFromEnv()
   });
+  const plannerContext = resolveRedditPlannerContext(
+    input.subreddits?.length
+      ? input.subreddits
+      : operating.targetSubreddits.length > 0
+        ? operating.targetSubreddits
+        : []
+  );
   const decision = planRedditAction({
     items: ingestion.sourceItems,
     history: memory.history,
-    targeting: DEFAULT_REDDIT_TARGETING,
-    registry: DEFAULT_REDDIT_RULES_REGISTRY,
+    targeting: plannerContext.targeting,
+    registry: plannerContext.registry,
+    activeSubreddits: plannerContext.activeSubreddits,
     duplicateCheckPolicy,
     config: {
       maxActionsPerSession: maxActions,
@@ -271,7 +293,12 @@ async function runRedditPlannerPhase(input: {
       actionCandidates: summarizeActionCandidates(gatedActionCandidates),
       selectedActionBundle: emptyBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
-      planner: summarizePlanner(limitedDecision),
+      planner: summarizePlanner({
+        skipped: limitedDecision.skipped,
+        filterSummary: decision.filterSummary,
+        sessionLimits: [dailyLimitReason],
+        pipeline: { llmDraft: "not_reached" }
+      }),
       decision: limitedDecision
     };
   }
@@ -293,7 +320,12 @@ async function runRedditPlannerPhase(input: {
       actionCandidates: summarizeActionCandidates(gatedActionCandidates),
       selectedActionBundle: emptyBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
-      planner: summarizePlanner(cooledDecision),
+      planner: summarizePlanner({
+        skipped: cooledDecision.skipped,
+        filterSummary: decision.filterSummary,
+        sessionLimits: [cooldownReason],
+        pipeline: { llmDraft: "not_reached" }
+      }),
       decision: cooledDecision
     };
   }
@@ -305,10 +337,11 @@ async function runRedditPlannerPhase(input: {
     : undefined;
   const plannedAction = selectedAction ? plannedRedditActionFromCandidate(selectedAction) : undefined;
   if (!plannedAction || maxActions < 1) {
+    const subredditLimitReasons = summarizeRedditSubredditCooldowns(subredditCooldowns, now);
     const emptyDecision = {
       ...decision,
       action: undefined,
-      skipped: [...summarizeRedditSubredditCooldowns(subredditCooldowns, now), ...decision.skipped]
+      skipped: [...subredditLimitReasons, ...decision.skipped]
     };
     return {
       generatedAt: now.toISOString(),
@@ -320,7 +353,12 @@ async function runRedditPlannerPhase(input: {
       actionCandidates: summarizeActionCandidates(gatedActionCandidates),
       selectedActionBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
-      planner: summarizePlanner(emptyDecision),
+      planner: summarizePlanner({
+        skipped: emptyDecision.skipped,
+        filterSummary: decision.filterSummary,
+        sessionLimits: subredditLimitReasons,
+        pipeline: { llmDraft: "not_reached" }
+      }),
       decision: emptyDecision
     };
   }
@@ -337,7 +375,7 @@ async function runRedditPlannerPhase(input: {
     draft = await draftRedditResponse({
       config,
       item: plannedAction.item,
-      targeting: DEFAULT_REDDIT_TARGETING,
+      targeting: plannerContext.targeting,
       actionType: plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
       recentContent: memory.history.slice(-20).map((entry) => entry.content),
       promptVariantId: selectedVariant.variantId,
@@ -364,7 +402,11 @@ async function runRedditPlannerPhase(input: {
       actionCandidates: summarizeActionCandidates(gatedActionCandidates),
       selectedActionBundle,
       queuedActionJobs: summarizeQueuedRedditJobs(memory),
-      planner: summarizePlanner(draftFailedDecision),
+      planner: summarizePlanner({
+        skipped: draftFailedDecision.skipped,
+        filterSummary: decision.filterSummary,
+        pipeline: { llmDraft: "failed" }
+      }),
       decision: draftFailedDecision
     };
   }
@@ -426,7 +468,14 @@ async function runRedditPlannerPhase(input: {
         actionCandidates: summarizeActionCandidates(gatedActionCandidates),
           selectedActionBundle,
           queuedActionJobs: summarizeQueuedRedditJobs(executed.store),
-          planner: summarizePlanner(decision),
+          planner: summarizePlanner({
+            skipped: decision.skipped,
+            filterSummary: decision.filterSummary,
+            pipeline: {
+              llmDraft: "succeeded",
+              selectionSource: selectedVariant.selectionSource
+            }
+          }),
           decision: {
             ...decision,
             action: plannedAction
@@ -487,7 +536,14 @@ async function runRedditPlannerPhase(input: {
     actionCandidates: summarizeActionCandidates(gatedActionCandidates),
     selectedActionBundle,
     queuedActionJobs: dryRun ? summarizeQueuedRedditJobs(memory) : summarizeQueuedRedditJobs({ ...memory, queuedJobs: nextQueuedJobs }),
-    planner: summarizePlanner(decision),
+    planner: summarizePlanner({
+      skipped: decision.skipped,
+      filterSummary: decision.filterSummary,
+      pipeline: {
+        llmDraft: "succeeded",
+        selectionSource: selectedVariant.selectionSource
+      }
+    }),
     decision: {
       ...decision,
       action: plannedAction
@@ -747,7 +803,8 @@ function buildExecutorSessionReport(input: {
       action: undefined,
       plannedCandidates: [],
       candidates: [],
-      skipped: input.skipped
+      skipped: input.skipped,
+      filterSummary: emptyRedditFilterSummary()
     },
     outcome: input.outcome,
     recorded: input.recorded
@@ -920,11 +977,14 @@ function emptyIngestionSummary(): RedditSessionReport["ingestion"] {
   };
 }
 
-function summarizePlanner(decision: {
+function summarizePlanner(input: {
   skipped: string[];
   candidates?: Array<{ id: string }>;
+  filterSummary?: RedditPlannerFilterSummary;
+  sessionLimits?: string[];
+  pipeline?: RedditSessionReport["planner"]["pipeline"];
 }): RedditSessionReport["planner"] {
-  const blockedGateSample = decision.skipped
+  const blockedGateSample = input.skipped
     .filter((entry) => entry.includes("blocked by"))
     .slice(0, 12)
     .map((entry) => {
@@ -942,8 +1002,11 @@ function summarizePlanner(decision: {
       return { id, gates };
     });
   return {
-    skipped: decision.skipped,
-    blockedGateSample
+    skipped: input.skipped,
+    blockedGateSample,
+    filterSummary: input.filterSummary,
+    sessionLimits: input.sessionLimits?.length ? input.sessionLimits : undefined,
+    pipeline: input.pipeline
   };
 }
 

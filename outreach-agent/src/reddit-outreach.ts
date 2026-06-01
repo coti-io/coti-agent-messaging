@@ -439,6 +439,61 @@ export function assertRulesRegistryCoversTargets(
   }
 }
 
+export function mergeRulesRegistries(...registries: readonly RedditRulesRegistry[]): RedditRulesRegistry {
+  const rulesByName = new Map<string, RedditSubredditRule>();
+  for (const registry of registries) {
+    for (const rule of registry.rules) {
+      rulesByName.set(rule.name.toLowerCase(), rule);
+    }
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    rules: [...rulesByName.values()]
+  };
+}
+
+export function resolveRulesRegistryForSubreddits(
+  subredditNames: readonly string[],
+  ...registries: readonly RedditRulesRegistry[]
+): RedditRulesRegistry {
+  const rulesByName = new Map<string, RedditSubredditRule>();
+  for (const registry of registries) {
+    for (const rule of registry.rules) {
+      rulesByName.set(rule.name.toLowerCase(), rule);
+    }
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    rules: subredditNames.map((name) => {
+      const existing = rulesByName.get(name.toLowerCase());
+      if (existing) {
+        return existing;
+      }
+      return {
+        name,
+        risk: "medium",
+        allowedTopics: [
+          "direct answers to technical questions",
+          "architecture tradeoffs",
+          "privacy and coordination explanations"
+        ],
+        disallowedTopics: [
+          "token promotion",
+          "price talk",
+          "unsolicited product links",
+          "first-reply product mentions"
+        ],
+        selfPromotionPolicy: "strict",
+        linkPolicy: "none_in_first_reply",
+        flairRequirements: "Check the live subreddit rules before approving a draft.",
+        modContactNotes: "Configured subreddit without a dedicated rules profile.",
+        requiresManualRuleCheck: true
+      };
+    })
+  };
+}
+
 export function buildRedditReviewQueue(input: {
   items: readonly RedditSourceItem[];
   history?: readonly RedditOutboundMemoryEntry[];

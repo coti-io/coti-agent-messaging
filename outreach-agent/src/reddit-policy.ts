@@ -1,5 +1,7 @@
 import {
   buildRedditReviewQueue,
+  DEFAULT_REDDIT_RULES_REGISTRY,
+  DEFAULT_REDDIT_TARGETING,
   type RedditDuplicateCheckPolicy,
   redditMemoryEntryConsumesTarget,
   type RedditOutboundMemoryEntry,
@@ -7,6 +9,8 @@ import {
   type RedditReviewItem,
   type RedditRulesRegistry,
   type RedditSourceItem,
+  mergeRulesRegistries,
+  resolveRulesRegistryForSubreddits,
   resolveSourceThreadPostId
 } from "./reddit-outreach.js";
 
@@ -25,10 +29,39 @@ export interface RedditPlannedAction {
   nextEligibleAt: string;
 }
 
+export interface RedditPlannerFilterGateCount {
+  gate: string;
+  count: number;
+  category: RedditFilterGateCategory;
+}
+
+export type RedditFilterGateCategory =
+  | "topical_validation"
+  | "intent_validation"
+  | "draft_generation"
+  | "draft_validation"
+  | "duplicate_check"
+  | "rate_limit"
+  | "subreddit_config"
+  | "other";
+
+export interface RedditPlannerFilterSummary {
+  sourceItemCount: number;
+  inTargetSubredditCount: number;
+  outOfTargetSubredditCount: number;
+  reviewedCount: number;
+  blockedCount: number;
+  needsReviewCount: number;
+  plannedCandidateCount: number;
+  blockedByGate: RedditPlannerFilterGateCount[];
+  nonPublicActionCounts: Array<{ action: string; count: number }>;
+}
+
 export interface RedditPlannerResult {
   action?: RedditPlannedAction;
   plannedCandidates: RedditPlannedAction[];
   skipped: string[];
+  filterSummary: RedditPlannerFilterSummary;
   candidates: Array<{
     id: string;
     type: "reply_to_comment" | "comment_on_post";
@@ -94,11 +127,94 @@ export const DEFAULT_REDDIT_OPERATING_RULES: RedditRulesRegistry = {
   }))
 };
 
+export function emptyRedditFilterSummary(): RedditPlannerFilterSummary {
+  return {
+    sourceItemCount: 0,
+    inTargetSubredditCount: 0,
+    outOfTargetSubredditCount: 0,
+    reviewedCount: 0,
+    blockedCount: 0,
+    needsReviewCount: 0,
+    plannedCandidateCount: 0,
+    blockedByGate: [],
+    nonPublicActionCounts: []
+  };
+}
+
+export function resolveRedditPlannerContext(targetSubreddits: readonly string[]): {
+  targeting: RedditOutreachTargeting;
+  registry: RedditRulesRegistry;
+  activeSubreddits: readonly string[];
+} {
+  if (targetSubreddits.length === 0) {
+    return {
+      targeting: DEFAULT_REDDIT_TARGETING,
+      registry: DEFAULT_REDDIT_RULES_REGISTRY,
+      activeSubreddits: []
+    };
+  }
+
+  const configured = targetSubreddits.map((entry) => entry.toLowerCase());
+  const operatingNames = new Set(
+    DEFAULT_REDDIT_OPERATING_TARGETING.targetSubreddits.map((entry) => entry.name.toLowerCase())
+  );
+  const useOperatingProfile = configured.every((name) => operatingNames.has(name));
+  const baseTargeting = useOperatingProfile ? DEFAULT_REDDIT_OPERATING_TARGETING : DEFAULT_REDDIT_TARGETING;
+  const baseRegistry = useOperatingProfile ? DEFAULT_REDDIT_OPERATING_RULES : DEFAULT_REDDIT_RULES_REGISTRY;
+  const missingFromBase = targetSubreddits.filter(
+    (name) => !baseRegistry.rules.some((rule) => rule.name.toLowerCase() === name.toLowerCase())
+  );
+  const registry =
+    missingFromBase.length > 0
+      ? mergeRulesRegistries(
+          baseRegistry,
+          resolveRulesRegistryForSubreddits(missingFromBase, DEFAULT_REDDIT_RULES_REGISTRY, DEFAULT_REDDIT_OPERATING_RULES)
+        )
+      : baseRegistry;
+
+  return {
+    targeting: baseTargeting,
+    registry,
+    activeSubreddits: targetSubreddits
+  };
+}
+
+export function categorizeRedditFilterGate(gateId: string): RedditFilterGateCategory {
+  switch (gateId) {
+    case "discovery_topical_fit":
+      return "topical_validation";
+    case "clear_user_need":
+      return "intent_validation";
+    case "safe_draft_generated":
+      return "draft_generation";
+    case "prompt_profile_safety":
+    case "no_product_or_company_mention":
+    case "no_links":
+    case "no_cta_or_dm_prompt":
+    case "reddit_cta_forbidden":
+      return "draft_validation";
+    case "not_near_duplicate":
+    case "not_redundant_with_thread":
+      return "duplicate_check";
+    case "subreddit_daily_limit":
+    case "global_daily_limit":
+      return "rate_limit";
+    case "subreddit_rules_registered":
+    case "subreddit_not_blocked":
+    case "low_spam_topic_risk":
+    case "low_argument_risk":
+      return "subreddit_config";
+    default:
+      return "other";
+  }
+}
+
 export function planRedditAction(input: {
   items: readonly RedditSourceItem[];
   history?: readonly RedditOutboundMemoryEntry[];
   targeting?: RedditOutreachTargeting;
   registry?: RedditRulesRegistry;
+  activeSubreddits?: readonly string[];
   now?: Date;
   rng?: () => number;
   config?: Partial<RedditPlannerConfig>;
@@ -106,10 +222,21 @@ export function planRedditAction(input: {
 }): RedditPlannerResult {
   const now = input.now ?? new Date();
   const config = { ...DEFAULT_REDDIT_PLANNER_CONFIG, ...input.config };
+  const targeting = input.targeting ?? DEFAULT_REDDIT_OPERATING_TARGETING;
+  const activeSubredditNames = new Set(
+    (input.activeSubreddits?.length
+      ? input.activeSubreddits
+      : targeting.targetSubreddits.map((entry) => entry.name)
+    ).map((entry) => entry.toLowerCase())
+  );
+  const itemsForQueue = input.items.filter((item) =>
+    activeSubredditNames.has(item.subreddit.toLowerCase())
+  );
+  const inTargetSubredditCount = itemsForQueue.length;
   const queue = buildRedditReviewQueue({
-    items: input.items,
+    items: itemsForQueue,
     history: input.history ?? [],
-    targeting: input.targeting ?? DEFAULT_REDDIT_OPERATING_TARGETING,
+    targeting,
     registry: input.registry ?? DEFAULT_REDDIT_OPERATING_RULES,
     duplicateCheckPolicy: input.duplicateCheckPolicy ?? "block_posted_only",
     now
@@ -159,12 +286,60 @@ export function planRedditAction(input: {
     action: plannedCandidates[0],
     plannedCandidates,
     skipped,
+    filterSummary: buildRedditPlannerFilterSummary({
+      sourceItemCount: input.items.length,
+      inTargetSubredditCount,
+      queue,
+      plannedCandidateCount: plannedCandidates.length
+    }),
     candidates: ranked.map((candidate) => ({
       id: candidate.id,
       type: candidate.type,
       score: candidate.score,
       reason: candidate.reason
     }))
+  };
+}
+
+function buildRedditPlannerFilterSummary(input: {
+  sourceItemCount: number;
+  inTargetSubredditCount: number;
+  queue: ReturnType<typeof buildRedditReviewQueue>;
+  plannedCandidateCount: number;
+}): RedditPlannerFilterSummary {
+  const gateCounts = new Map<string, number>();
+  for (const item of input.queue.ignored) {
+    for (const gateId of blockedGateIds(item)) {
+      gateCounts.set(gateId, (gateCounts.get(gateId) ?? 0) + 1);
+    }
+  }
+
+  const nonPublicActionCounts = new Map<string, number>();
+  for (const item of input.queue.items) {
+    if (item.action === "answer_publicly") {
+      continue;
+    }
+    nonPublicActionCounts.set(item.action, (nonPublicActionCounts.get(item.action) ?? 0) + 1);
+  }
+
+  return {
+    sourceItemCount: input.sourceItemCount,
+    inTargetSubredditCount: input.inTargetSubredditCount,
+    outOfTargetSubredditCount: Math.max(0, input.sourceItemCount - input.inTargetSubredditCount),
+    reviewedCount: input.queue.items.length + input.queue.ignored.length,
+    blockedCount: input.queue.ignored.length,
+    needsReviewCount: input.queue.items.length,
+    plannedCandidateCount: input.plannedCandidateCount,
+    blockedByGate: [...gateCounts.entries()]
+      .map(([gate, count]) => ({
+        gate,
+        count,
+        category: categorizeRedditFilterGate(gate)
+      }))
+      .sort((left, right) => right.count - left.count || left.gate.localeCompare(right.gate)),
+    nonPublicActionCounts: [...nonPublicActionCounts.entries()]
+      .map(([action, count]) => ({ action, count }))
+      .sort((left, right) => right.count - left.count || left.action.localeCompare(right.action))
   };
 }
 

@@ -9,22 +9,30 @@ import type { RedditPlannerResult, RedditPlannedAction } from "./reddit-policy.j
 export function buildRedditActionCandidates(
   planner: RedditPlannerResult
 ): ConstrainedActionCandidate[] {
-  return planner.plannedCandidates.map((planned) => ({
-    id: planned.item.id,
-    venue: "reddit",
-    type: planned.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
-    source: inferRedditCandidateSource(planned),
-    score: planned.score,
-    needsContent: true,
-    reason: planned.reason,
-    surface: planned.item.source.subreddit,
-    targetId: planned.item.source.id,
-    title: planned.item.source.title,
-    summary: planned.item.source.body,
-    raw: planned,
-    constraints: [],
-    allowed: true
-  }));
+  return planner.plannedCandidates.map((planned) => {
+    const constraints = planned.item.gates.map((gate) => ({
+      id: gate.id,
+      passed: gate.passed,
+      severity: gate.severity,
+      reason: gate.reason
+    }));
+    return {
+      id: planned.item.id,
+      venue: "reddit",
+      type: planned.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
+      source: inferRedditCandidateSource(planned),
+      score: planned.score,
+      needsContent: true,
+      reason: planned.reason,
+      surface: planned.item.source.subreddit,
+      targetId: planned.item.source.id,
+      title: planned.item.source.title,
+      summary: planned.item.source.body,
+      raw: planned,
+      constraints,
+      allowed: constraints.every((constraint) => constraint.passed || constraint.severity !== "block")
+    };
+  });
 }
 
 export function chooseRedditActionBundle(

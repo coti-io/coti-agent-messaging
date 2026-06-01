@@ -147,6 +147,35 @@ test("reddit planner does not autopublish threads that need clarification first"
   assert.ok(plan.skipped.some((entry) => entry.includes("ask clarifying question")));
 });
 
+test("reddit planner exposes filter summary with gate counts", () => {
+  const items: RedditSourceItem[] = [
+    {
+      id: "post-1",
+      kind: "post",
+      subreddit: "sales",
+      title: "Weekly sales update",
+      body: "Closed three deals this week.",
+      createdUtc: now.getTime() / 1000,
+      commentCount: 4
+    },
+    {
+      id: "post-2",
+      kind: "post",
+      subreddit: "LocalLLaMA",
+      title: "How do you route MCP messages between agents?",
+      body: "Looking for patterns for private agent messaging between tools.",
+      createdUtc: now.getTime() / 1000,
+      commentCount: 8
+    }
+  ];
+
+  const plan = planRedditAction({ items, now, rng: () => 0 });
+  assert.equal(plan.filterSummary.sourceItemCount, 2);
+  assert.equal(plan.filterSummary.inTargetSubredditCount, 1);
+  assert.ok(plan.filterSummary.blockedByGate.length >= 1);
+  assert.ok(plan.filterSummary.blockedByGate.some((entry) => entry.count >= 1));
+});
+
 test("reddit planner applies deterministic jitter window", () => {
   const delay = jitterDelayMs(
     { ...DEFAULT_REDDIT_PLANNER_CONFIG, minDelayMinutes: 10, maxDelayMinutes: 20 },

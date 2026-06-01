@@ -83,6 +83,17 @@ const planner: RedditPlannerResult = {
     }
   ],
   skipped: [],
+  filterSummary: {
+    sourceItemCount: 1,
+    inTargetSubredditCount: 1,
+    outOfTargetSubredditCount: 0,
+    reviewedCount: 1,
+    blockedCount: 0,
+    needsReviewCount: 1,
+    plannedCandidateCount: 1,
+    blockedByGate: [],
+    nonPublicActionCounts: []
+  },
   candidates: [
     {
       id: "item-1",

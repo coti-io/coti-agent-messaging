@@ -55,6 +55,7 @@ export interface AgentHeartbeatRun {
   ingestionSummary?: string;
   activityThisRun?: string;
   countsScope?: "lifetime" | "run";
+  filteringSummary?: string[];
   source: "sqlite" | "jsonl" | "report";
 }
 

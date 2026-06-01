@@ -120,6 +120,219 @@ function buildRunHeadline(performed: readonly string[], skipped: readonly string
   return parts.join(" ");
 }
 
+const REDDIT_BLOCKED_BY_MARKER = ": blocked by ";
+const REDDIT_GATE_LABELS: Record<string, string> = {
+  clear_user_need: "No explicit help intent or operational pain",
+  discovery_topical_fit: "Off-topic for agent-messaging discovery",
+  safe_draft_generated: "No safe explanatory draft",
+  low_argument_risk: "Hostile or bait thread",
+  low_spam_topic_risk: "Spam or promo topic",
+  not_near_duplicate: "Too similar to prior outbound",
+  not_redundant_with_thread: "Too similar to thread comments",
+  subreddit_daily_limit: "Subreddit daily reply cap",
+  global_daily_limit: "Global daily reply cap",
+  prompt_profile_safety: "Draft failed prompt safety checks",
+  no_product_or_company_mention: "Draft mentioned product or company",
+  no_links: "Draft contained links",
+  no_cta_or_dm_prompt: "Draft contained CTA or DM prompt",
+  subreddit_rules_registered: "Missing subreddit rules entry",
+  subreddit_not_blocked: "Subreddit blocked for outreach"
+};
+
+function humanizeRedditGate(gate: string): string {
+  return REDDIT_GATE_LABELS[gate] ?? gate.replaceAll("_", " ");
+}
+
+function isPerItemBlockedSkipLine(line: string): boolean {
+  return line.includes(REDDIT_BLOCKED_BY_MARKER);
+}
+
+function parseBlockedSkipLine(line: string): { id: string; gates: string[] } | undefined {
+  const markerIndex = line.indexOf(REDDIT_BLOCKED_BY_MARKER);
+  if (markerIndex === -1) {
+    return undefined;
+  }
+  const id = line.slice(0, markerIndex).trim();
+  const gates = line
+    .slice(markerIndex + REDDIT_BLOCKED_BY_MARKER.length)
+    .split(",")
+    .map((gate) => gate.trim())
+    .filter(Boolean);
+  if (!id || gates.length === 0) {
+    return undefined;
+  }
+  return { id, gates };
+}
+
+function aggregateGateCountsFromSkipLines(lines: readonly string[]): Array<{ gate: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const line of lines) {
+    const parsed = parseBlockedSkipLine(line);
+    if (!parsed) {
+      continue;
+    }
+    for (const gate of parsed.gates) {
+      counts.set(gate, (counts.get(gate) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([gate, count]) => ({ gate, count }))
+    .sort((left, right) => right.count - left.count || left.gate.localeCompare(right.gate));
+}
+
+function splitRedditSkipLines(lines: readonly string[]): {
+  perItemBlocked: string[];
+  perItemRequires: string[];
+  operational: string[];
+} {
+  const perItemBlocked: string[] = [];
+  const perItemRequires: string[] = [];
+  const operational: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (/^requires /u.test(trimmed) || /: requires /u.test(trimmed)) {
+      perItemRequires.push(trimmed);
+      continue;
+    }
+    if (isPerItemBlockedSkipLine(trimmed)) {
+      perItemBlocked.push(trimmed);
+      continue;
+    }
+    operational.push(trimmed);
+  }
+  return { perItemBlocked, perItemRequires, operational };
+}
+
+function parseRequiresSkipLine(line: string): string | undefined {
+  const marker = ": requires ";
+  const markerIndex = line.indexOf(marker);
+  if (markerIndex === -1) {
+    return undefined;
+  }
+  return line.slice(markerIndex + marker.length).trim().replaceAll("_", " ");
+}
+
+function aggregateRequiresActionCounts(lines: readonly string[]): Array<{ action: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const line of lines) {
+    const action = parseRequiresSkipLine(line);
+    if (!action) {
+      continue;
+    }
+    counts.set(action, (counts.get(action) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([action, count]) => ({ action, count }))
+    .sort((left, right) => right.count - left.count || left.action.localeCompare(right.action));
+}
+
+function extractLlmDraftFailureReason(operational: readonly string[]): string | undefined {
+  for (const line of operational) {
+    const nested = line.match(/after \d+ LLM attempts: (.+)$/u);
+    if (nested?.[1]) {
+      return nested[1].trim();
+    }
+    if (line.startsWith("LLM draft failed: ")) {
+      return line.slice("LLM draft failed: ".length).trim();
+    }
+  }
+  return undefined;
+}
+
+function explainLlmDraftFailure(reason: string | undefined): string {
+  const normalized = reason?.trim() ?? "";
+  if (normalized.includes("hook-style draft must open briefly")) {
+    return "OpenRouter wrote a reply 3 times, but validation rejected each draft: the prompt uses a hook-then-detail layout, so the comment must start with a brief opener and then add concrete helpful detail. Fluff-only or one-liners fail. Nothing was queued or posted.";
+  }
+  if (normalized.includes("too fluffy")) {
+    return "OpenRouter wrote a reply, but validation rejected it as too fluffy — Reddit drafts need concrete operational detail, not generic praise. Nothing was queued or posted.";
+  }
+  if (normalized.includes("exceeds") && normalized.includes("length limit")) {
+    return `OpenRouter wrote a reply, but validation rejected it for length: ${normalized}. Nothing was queued or posted.`;
+  }
+  if (normalized.length > 0) {
+    return `OpenRouter wrote a reply, but validation rejected it: ${normalized}. Nothing was queued or posted.`;
+  }
+  return "OpenRouter wrote a reply, but validation rejected it before queue/post. Nothing was queued or posted.";
+}
+
+function explainRequiresAction(action: string, count: number): string {
+  if (action === "ask clarifying question") {
+    return `${count} thread(s) looked relevant but had no clear question or operational pain — policy says do not public-reply yet (would need a clarifying question first). MVP does not auto-post these; they can reappear on later ingests.`;
+  }
+  if (action === "contact mods") {
+    return `${count} thread(s) need mod contact before outreach — skipped for auto-post.`;
+  }
+  return `${count} thread(s) marked "${action}" — not eligible for auto-post this run.`;
+}
+
+function explainDeferredCandidates(count: number): string {
+  return `${count} other target(s) also passed filters this run but were not chosen — hard cap is 1 action per heartbeat. They are not saved to a queue; each must win the picker again on a future run if still ingested.`;
+}
+
+function buildRedditRunNotes(input: {
+  operational: readonly string[];
+  perItemRequires: readonly string[];
+  deferredCount: number;
+  pipeline?: Record<string, unknown>;
+  filterSummary?: Record<string, unknown>;
+}): string[] {
+  const notes: string[] = [];
+
+  if (input.pipeline?.llmDraft === "failed" || extractLlmDraftFailureReason(input.operational)) {
+    notes.push(explainLlmDraftFailure(extractLlmDraftFailureReason(input.operational)));
+  }
+
+  const requiresFromSummary = parseJsonArray<Record<string, unknown>>(
+    input.filterSummary?.nonPublicActionCounts
+  );
+  const clarifyFromSummary = requiresFromSummary.find(
+    (entry) => asOptionalString(entry.action) === "ask_clarifying_question"
+  );
+  const clarifyCount =
+    Number(clarifyFromSummary?.count ?? 0) ||
+    aggregateRequiresActionCounts(input.perItemRequires).find((entry) => entry.action === "ask clarifying question")
+      ?.count ||
+    0;
+  if (clarifyCount > 0) {
+    notes.push(explainRequiresAction("ask clarifying question", clarifyCount));
+  }
+
+  for (const entry of aggregateRequiresActionCounts(input.perItemRequires)) {
+    if (entry.action === "ask clarifying question") {
+      continue;
+    }
+    notes.push(explainRequiresAction(entry.action, entry.count));
+  }
+
+  if (input.deferredCount > 0) {
+    notes.push(explainDeferredCandidates(input.deferredCount));
+  }
+
+  for (const line of input.operational) {
+    if (/draft generation failed|LLM draft failed/u.test(line)) {
+      continue;
+    }
+    if (/^Deferred \d+/u.test(line)) {
+      continue;
+    }
+    const normalized = line.trim();
+    if (
+      normalized.includes("cooldown") ||
+      normalized.includes("daily") ||
+      normalized.includes("kill switch") ||
+      normalized.includes("Executed one queued")
+    ) {
+      notes.push(normalized);
+    }
+  }
+
+  return uniqueStrings(notes);
+}
+
 function isRedditRuntimeReport(report: Record<string, unknown>): boolean {
   return (
     report.phase === "heartbeat" ||
@@ -132,13 +345,14 @@ function describeRedditCandidate(candidate: Record<string, unknown>): string {
   const type = asOptionalString(candidate.type) ?? "action";
   const id = asOptionalString(candidate.id) ?? "";
   const source = parseJsonRecord(candidate.source);
-  const subreddit = asOptionalString(source?.subreddit);
+  const subreddit = asOptionalString(source?.subreddit) ?? id.split(":")[1];
   const title = asOptionalString(source?.title);
   const target = subreddit ? `r/${subreddit}` : id;
   const blockedBy = parseJsonArray<string>(candidate.blockedBy).map(String);
+  const blockingGates = blockedBy.filter((gate) => !["product_follow_up_requires_explicit_interest", "pm_only_when_needed", "human_review_required"].includes(gate));
   const headline = title ? `${type} on ${target} — "${title}"` : `${type} on ${target}`;
-  if (blockedBy.length > 0) {
-    return `${headline} (blocked: ${blockedBy.join(", ")})`;
+  if (candidate.allowed === false && blockingGates.length > 0) {
+    return `${headline} (blocked: ${blockingGates.map(humanizeRedditGate).join(", ")})`;
   }
   return headline;
 }
@@ -161,10 +375,155 @@ function describeQueuedRedditJob(job: Record<string, unknown>): string {
   return parts.join(" ");
 }
 
+function formatFilterCategory(category: string | undefined): string {
+  return category ? category.replaceAll("_", " ") : "other";
+}
+
+function formatGateBreakdownLine(gate: string, count: number, category?: string): string {
+  const label = humanizeRedditGate(gate);
+  const categorySuffix = category ? ` · ${formatFilterCategory(category)}` : "";
+  return `${count}× ${label}${categorySuffix}`;
+}
+
+function buildRedditFilteringSummary(
+  planner: Record<string, unknown> | undefined,
+  bundle: Record<string, unknown> | undefined,
+  candidates: readonly Record<string, unknown>[],
+  plannerSkipped: readonly string[]
+): string[] {
+  const lines: string[] = [];
+  const filterSummary = parseJsonRecord(planner?.filterSummary);
+  const pipeline = parseJsonRecord(planner?.pipeline);
+  const { perItemBlocked } = splitRedditSkipLines(plannerSkipped);
+
+  if (filterSummary) {
+    const sourceItemCount = Number(filterSummary.sourceItemCount ?? 0);
+    const inTargetSubredditCount = Number(filterSummary.inTargetSubredditCount ?? 0);
+    const outOfTargetSubredditCount = Number(filterSummary.outOfTargetSubredditCount ?? 0);
+    const reviewedCount = Number(filterSummary.reviewedCount ?? 0);
+    const blockedCount = Number(filterSummary.blockedCount ?? 0);
+    const plannedCandidateCount = Number(filterSummary.plannedCandidateCount ?? 0);
+
+    lines.push(
+      `Pipeline: ${sourceItemCount} ingested → ${plannedCandidateCount} passed picker (${blockedCount} blocked, ${reviewedCount} reviewed)`
+    );
+
+    if (outOfTargetSubredditCount > 0 && inTargetSubredditCount === 0) {
+      lines.push("Planner subs did not match ingested subs — check OUTREACH_REDDIT_TARGET_SUBREDDITS.");
+    } else if (outOfTargetSubredditCount > 0) {
+      lines.push(`${outOfTargetSubredditCount} ingested item(s) were outside configured planner subs.`);
+    }
+
+    const blockedByGate = parseJsonArray<Record<string, unknown>>(filterSummary.blockedByGate);
+    if (blockedByGate.length > 0) {
+      lines.push("Block reasons:");
+      for (const entry of blockedByGate.slice(0, 6)) {
+        const gate = asOptionalString(entry.gate);
+        const count = Number(entry.count ?? 0);
+        if (!gate || count <= 0) {
+          continue;
+        }
+        lines.push(`  ${formatGateBreakdownLine(gate, count, asOptionalString(entry.category))}`);
+      }
+    }
+
+    const nonPublicActionCounts = parseJsonArray<Record<string, unknown>>(
+      filterSummary.nonPublicActionCounts
+    );
+    for (const entry of nonPublicActionCounts.slice(0, 3)) {
+      const action = asOptionalString(entry.action);
+      const count = Number(entry.count ?? 0);
+      if (!action || count <= 0) {
+        continue;
+      }
+      if (action === "ask_clarifying_question") {
+        lines.push(`${count} thread(s) need clarifying question before a public reply (see Notes)`);
+      } else {
+        lines.push(`${count} thread(s) marked "${action.replaceAll("_", " ")}" instead of a public reply`);
+      }
+    }
+  } else if (perItemBlocked.length > 0) {
+    lines.push(`Pipeline: ${perItemBlocked.length} item(s) blocked during review`);
+    lines.push("Block reasons:");
+    for (const entry of aggregateGateCountsFromSkipLines(perItemBlocked).slice(0, 6)) {
+      lines.push(`  ${formatGateBreakdownLine(entry.gate, entry.count)}`);
+    }
+  } else if (candidates.length === 0) {
+    lines.push("No items reached the action candidate stage.");
+  }
+
+  for (const limit of parseJsonArray<string>(planner?.sessionLimits).map(String)) {
+    lines.push(`Session limit: ${limit}`);
+  }
+
+  if (pipeline?.llmDraft === "not_reached") {
+    lines.push("LLM: not reached — no target was selected for draft generation.");
+  } else if (pipeline?.llmDraft === "failed") {
+    lines.push("LLM: draft generation ran for the selected target but failed validation (see Notes).");
+  } else if (pipeline?.llmDraft === "succeeded") {
+    const selectionSource = asOptionalString(pipeline.selectionSource);
+    lines.push(`LLM: draft generated${selectionSource ? ` (${selectionSource})` : ""}.`);
+  }
+
+  const rationale = asOptionalString(bundle?.rationale);
+  if (rationale && lines.length === 0) {
+    lines.push(rationale);
+  }
+
+  return uniqueStrings(lines);
+}
+
+function buildRedditRunHeadline(input: {
+  performed: readonly string[];
+  operationalSkipped: readonly string[];
+  filterSummary?: Record<string, unknown>;
+  pipeline?: Record<string, unknown>;
+  bundleRationale?: string;
+}): string {
+  const posted = input.performed.find((entry) => /^(Posted|Recorded|Queued)/u.test(entry));
+  if (posted) {
+    return posted;
+  }
+
+  const selected = input.performed.find((entry) => entry.startsWith("Selected "));
+  const llmFailed = input.pipeline?.llmDraft === "failed";
+  const llmFailure = extractLlmDraftFailureReason(input.operationalSkipped);
+  if (llmFailed || llmFailure) {
+    const target = selected?.match(/on (r\/[^ ]+|post:[^ ]+)/u)?.[1] ?? "selected target";
+    return `Draft rejected for ${target} — OpenRouter reply failed validation`;
+  }
+
+  if (selected) {
+    return selected.replace(/^Selected /u, "Picked ");
+  }
+
+  const blockedCount = Number(input.filterSummary?.blockedCount ?? 0);
+  const reviewedCount = Number(input.filterSummary?.reviewedCount ?? 0);
+  const plannedCandidateCount = Number(input.filterSummary?.plannedCandidateCount ?? 0);
+  if (reviewedCount > 0 && plannedCandidateCount === 0) {
+    return `No action — 0/${reviewedCount} items passed picker`;
+  }
+  if (blockedCount > 0) {
+    return `No action — ${blockedCount} item(s) blocked during review`;
+  }
+
+  if (input.operationalSkipped.length > 0) {
+    return input.operationalSkipped[0]!;
+  }
+
+  if (input.bundleRationale) {
+    return input.bundleRationale;
+  }
+
+  return "No Reddit action this run.";
+}
+
 function extractRedditRunDetails(report: Record<string, unknown>): {
   performed: string[];
   skipped: string[];
+  filteringSummary: string[];
   summary: string;
+  skipCount: number;
   runCounts: EngagementCounts;
   countsScope: "lifetime" | "run";
   activityThisRun?: string;
@@ -174,12 +533,26 @@ function extractRedditRunDetails(report: Record<string, unknown>): {
   const bundle = parseJsonRecord(report.selectedActionBundle);
   const candidates = parseJsonArray<Record<string, unknown>>(report.actionCandidates);
   const queuedJobs = parseJsonArray<Record<string, unknown>>(report.queuedActionJobs);
+  const filterSummary = parseJsonRecord(planner?.filterSummary);
+  const pipeline = parseJsonRecord(planner?.pipeline);
 
-  let skipped = uniqueStrings([
+  const rawPlannerSkipped = uniqueStrings([
     ...parseJsonArray<string>(report.skipped).map(String),
     ...parseJsonArray<string>(planner?.skipped).map(String),
     ...parseJsonArray<string>(ingestion?.skipped).map(String)
   ]);
+  const { perItemBlocked, perItemRequires, operational } = splitRedditSkipLines(rawPlannerSkipped);
+  const filteringSummary = buildRedditFilteringSummary(planner, bundle, candidates, rawPlannerSkipped);
+
+  const rationale = asOptionalString(bundle?.rationale);
+  const deferredIds = parseJsonArray<string>(bundle?.deferredCandidateIds).map(String);
+  const skipped = buildRedditRunNotes({
+    operational,
+    perItemRequires,
+    deferredCount: deferredIds.length,
+    pipeline,
+    filterSummary
+  });
 
   const performed: string[] = [];
   for (const job of queuedJobs) {
@@ -212,42 +585,16 @@ function extractRedditRunDetails(report: Record<string, unknown>): {
     );
   }
 
-  const rationale = asOptionalString(bundle?.rationale);
-  const deferredIds = parseJsonArray<string>(bundle?.deferredCandidateIds).map(String);
   const allowedCount = candidates.filter((candidate) => candidate.allowed === true).length;
-  const blockedCount = candidates.filter((candidate) => candidate.allowed === false).length;
+  const blockedCandidateCount = candidates.filter((candidate) => candidate.allowed === false).length;
 
-  if (rationale) {
-    skipped.push(rationale);
-  }
-  if (deferredIds.length > 0) {
-    skipped.push(`Deferred ${deferredIds.length} candidate(s) to a later run.`);
-  }
-
-  const gateSample = parseJsonArray<Record<string, unknown>>(planner?.blockedGateSample);
-  for (const sample of gateSample.slice(0, 6)) {
-    const id = asOptionalString(sample.id);
-    const gates = parseJsonArray<string>(sample.gates).map(String).join(", ");
-    if (id && gates) {
-      skipped.push(`${id}: blocked by ${gates}`);
-    }
-  }
-
-  if (performed.length === 0 && skipped.length === 0) {
-    if (blockedCount > 0) {
-      const examples = candidates
-        .filter((candidate) => candidate.allowed === false)
-        .slice(0, 2)
-        .map((candidate) => describeRedditCandidate(candidate));
-      skipped.push(
-        `Reviewed ${candidates.length} candidate(s); all blocked${examples.length ? ` (e.g. ${examples.join("; ")})` : ""}.`
-      );
-    } else if (candidates.length === 0) {
+  if (skipped.length === 0 && performed.length === 0 && !filterSummary) {
+    if (blockedCandidateCount > 0) {
+      skipped.push(`Reviewed ${candidates.length} picker candidate(s); all blocked.`);
+    } else if (candidates.length === 0 && perItemBlocked.length === 0) {
       skipped.push("No action candidates were generated this run.");
     } else if (allowedCount > 0) {
-      skipped.push(
-        `${allowedCount} allowed candidate(s) but nothing was queued (check daily caps, cooldowns, or jitter).`
-      );
+      skipped.push(`${allowedCount} allowed candidate(s) but nothing was queued (check daily caps, cooldowns, or jitter).`);
     }
   }
 
@@ -259,20 +606,32 @@ function extractRedditRunDetails(report: Record<string, unknown>): {
       : countPerformedActions(performed);
 
   const activityParts: string[] = [];
-  if (performed.length > 0) {
-    activityParts.push(`${performed.length} action(s) this run`);
+  if (ingestion && typeof ingestion.sourceItemCount === "number") {
+    activityParts.push(`${ingestion.sourceItemCount} source items`);
   }
-  if (queuedJobs.length > 0) {
-    activityParts.push(`${queuedJobs.length} job(s) in queue`);
+  if (filterSummary && typeof filterSummary.plannedCandidateCount === "number") {
+    activityParts.push(`${filterSummary.plannedCandidateCount} passed picker`);
+  } else if (candidates.length > 0) {
+    activityParts.push(`${candidates.length} picker candidate(s)`);
   }
-  if (candidates.length > 0) {
-    activityParts.push(`${candidates.length} candidate(s) reviewed`);
+  if (typeof filterSummary?.blockedCount === "number" && filterSummary.blockedCount > 0) {
+    activityParts.push(`${filterSummary.blockedCount} blocked`);
   }
+
+  const skipCount = skipped.length;
 
   return {
     performed,
     skipped,
-    summary: buildRunHeadline(performed, skipped, asOptionalString(report.summary)),
+    filteringSummary,
+    summary: buildRedditRunHeadline({
+      performed,
+      operationalSkipped: skipped,
+      filterSummary,
+      pipeline,
+      bundleRationale: rationale
+    }),
+    skipCount,
     runCounts,
     countsScope: engagementTotals && Object.keys(engagementTotals).length > 0 ? "lifetime" : "run",
     activityThisRun: activityParts.length > 0 ? activityParts.join(" · ") : undefined
@@ -337,13 +696,14 @@ function normalizeReportRun(
       summary: reddit.summary,
       dryRun: Boolean(report.dryRun ?? report.dry_run),
       errorCount: errors.length || Number(report.error_count) || 0,
-      skipCount: reddit.skipped.length,
+      skipCount: reddit.skipCount,
       runCounts: reddit.runCounts,
       countsScope: reddit.countsScope,
       activityThisRun: reddit.activityThisRun,
       errors,
       skipped: reddit.skipped,
       performed: reddit.performed,
+      filteringSummary: reddit.filteringSummary,
       plannedActions: parseJsonArray<string>(report.plannedActions).map(String),
       queuedActionJobs: queuedActionJobs.length,
       ingestionSummary: ingestionParts.length > 0 ? ingestionParts.join(" · ") : undefined,

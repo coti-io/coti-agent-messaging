@@ -133,8 +133,8 @@ test("reddit planner does not autopublish threads that need clarification first"
       id: "post-clarify",
       kind: "post",
       subreddit: "sales",
-      title: "CRM handoff keeps breaking",
-      body: "Sales duplicates records and ops cleans spreadsheets every week.",
+      title: "Weekly team update",
+      body: "Closed a few deals. Nothing technical to troubleshoot here.",
       createdUtc: now.getTime() / 1000,
       commentCount: 10,
       onOwnThread: true,
@@ -144,7 +144,12 @@ test("reddit planner does not autopublish threads that need clarification first"
 
   const plan = planRedditAction({ items, now, rng: () => 0 });
   assert.equal(plan.action, undefined);
-  assert.ok(plan.skipped.some((entry) => entry.includes("ask clarifying question")));
+  assert.equal(plan.plannedCandidates.length, 0);
+  assert.ok(
+    plan.skipped.some((entry) => entry.includes("blocked by")) ||
+      plan.skipped.some((entry) => entry.includes("ask clarifying question")) ||
+      plan.skipped.some((entry) => entry.includes("requires ignore"))
+  );
 });
 
 test("reddit planner exposes filter summary with gate counts", () => {

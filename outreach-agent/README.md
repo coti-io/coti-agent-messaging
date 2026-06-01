@@ -285,7 +285,10 @@ Operating-agent config:
 
 ```bash
 OUTREACH_REDDIT_READ_CONTROLLER=auto
-OUTREACH_REDDIT_TARGET_SUBREDDITS=sales,SaaS,CustomerSuccess,DigitalMarketing
+# Full pool (~50 subs in code when unset); 5 random subs sampled per heartbeat:
+OUTREACH_REDDIT_TARGET_SUBREDDITS=AI_Agents,LocalLLaMA,LangChain,mcp,ethdev
+OUTREACH_REDDIT_DISCOVERY_SUBS_PER_RUN=5
+OUTREACH_REDDIT_SCAN_LEDGER_TTL_HOURS=48
 OUTREACH_REDDIT_SEARCH_QUERIES=AI agent messaging,MCP agent communication,private agent channel,agent coordination encrypted,agent to agent messaging,LLM agent inbox
 OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT=1
 OUTREACH_REDDIT_MAX_ACTIONS_PER_SESSION=1
@@ -319,9 +322,15 @@ The repo manifest `deploy/agents.json` now includes a dedicated analytics/deploy
 npm run analytics:deploy:rsync
 ```
 
-Discovery reads up to that many **hot threads per session** (comments + post). Set `0` to only re-read threads you already touched in memory.
+Discovery samples **5 random subs per heartbeat** from the configured pool (default ~50 in code). Own-thread participation is always re-checked for new comments/replies.
 
-By default the agent also runs **one subreddit search per target** using agent-messaging queries (`OUTREACH_REDDIT_SEARCH_QUERIES`). Cold discovery threads must match agent/MCP/private-messaging topics **or** reach relevance `>= 8`. Rhetorical title-only questions (e.g. “Anyone else …?”) no longer count as help intent.
+`reddit-memory.json` now includes a **scan ledger**: seen post/comment IDs are filtered in `snapshotsToSourceItems` before planner gates/LLM, so cold threads are not re-reviewed every run. Cold scrapes are skipped for 48h when comment count is unchanged.
+
+List/search use **weighted random pagination** (page 0 ~55%, page 1 ~30%, page 2 ~15%) on the unofficial reader.
+
+By default the agent also runs **one subreddit search per sampled sub** using agent-messaging queries (`OUTREACH_REDDIT_SEARCH_QUERIES`). Cold discovery threads must match agent/MCP/private-messaging topics **or** reach relevance `>= 6`. Rhetorical title-only questions (e.g. “Anyone else …?”) no longer count as help intent.
+
+**LLM triage + selection (Option B, on by default):** before regex gates, the top `OUTREACH_REDDIT_LLM_TRIAGE_MAX_ITEMS` (default 25) source items per active sub get batch-classified (`worthPublicReply`, topical fit, hostility). Survivors feed `planRedditAction`; when multiple write candidates exist, `OUTREACH_REDDIT_LLM_SELECT=true` asks the LLM to pick one instead of score-only ranking. Disable with `OUTREACH_REDDIT_LLM_TRIAGE=false` / `OUTREACH_REDDIT_LLM_SELECT=false`.
 
 Duplicate safety: drafts are compared to prior outbound text (including dry-runs) and to other comments on the same ingested thread.
 

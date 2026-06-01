@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { ActionJob } from "./action-planning.js";
 import type { RedditOutboundMemoryEntry } from "./reddit-outreach.js";
+import type { RedditScanLedgerEntry } from "./reddit-scan-ledger.js";
 
 export interface RedditDecisionMemoryEntry extends RedditOutboundMemoryEntry {
   decisionId?: string;
@@ -20,6 +21,7 @@ export interface RedditMemoryStore {
   generatedAt: string;
   history: RedditDecisionMemoryEntry[];
   queuedJobs?: ActionJob[];
+  scanLedger?: RedditScanLedgerEntry[];
 }
 
 export async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
@@ -42,14 +44,16 @@ export async function loadRedditMemory(filePath: string): Promise<RedditMemorySt
     return {
       generatedAt: parsed.generatedAt ?? new Date().toISOString(),
       history: Array.isArray(parsed.history) ? parsed.history : [],
-      queuedJobs: Array.isArray(parsed.queuedJobs) ? parsed.queuedJobs : []
+      queuedJobs: Array.isArray(parsed.queuedJobs) ? parsed.queuedJobs : [],
+      scanLedger: Array.isArray(parsed.scanLedger) ? parsed.scanLedger : []
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return {
         generatedAt: new Date().toISOString(),
         history: [],
-        queuedJobs: []
+        queuedJobs: [],
+        scanLedger: []
       };
     }
     throw error;

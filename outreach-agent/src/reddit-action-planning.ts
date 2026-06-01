@@ -1,3 +1,4 @@
+import { buildMainLlmProvider, type MoltbookRuntimeConfig } from "./config.js";
 import {
   candidateAllowed,
   type ActionBundleDecision,
@@ -5,6 +6,11 @@ import {
   type ConstrainedActionCandidate
 } from "./action-planning.js";
 import type { RedditPlannerResult, RedditPlannedAction } from "./reddit-policy.js";
+
+interface RedditBundleSelectionResponse {
+  selectedCandidateId: string;
+  rationale?: string;
+}
 
 export function buildRedditActionCandidates(
   planner: RedditPlannerResult
@@ -33,6 +39,83 @@ export function buildRedditActionCandidates(
       allowed: constraints.every((constraint) => constraint.passed || constraint.severity !== "block")
     };
   });
+}
+
+export async function chooseRedditActionBundleWithLlm(input: {
+  config: MoltbookRuntimeConfig;
+  candidates: readonly ConstrainedActionCandidate[];
+  maxActions?: number;
+  fetchImpl?: typeof fetch;
+}): Promise<ActionBundleDecision> {
+  const maxActions = input.maxActions ?? 1;
+  const fallback = chooseRedditActionBundle(input.candidates, maxActions);
+  const allowed = input.candidates.filter((candidate) => candidateAllowed(candidate));
+  if (allowed.length === 0) {
+    return fallback;
+  }
+  if (allowed.length === 1) {
+    return chooseRedditActionBundle(allowed, maxActions);
+  }
+
+  const llmProvider = buildMainLlmProvider(input.config, input.fetchImpl);
+  if (!llmProvider) {
+    return fallback;
+  }
+
+  try {
+    const response = await llmProvider.createJsonCompletion<RedditBundleSelectionResponse>([
+      {
+        role: "system",
+        content: [
+          "You choose the single best Reddit outreach action for this heartbeat.",
+          "Pick the candidate where a public technical reply adds the most value.",
+          "Prefer direct replies to our comments, then own-thread follow-ups, then high-signal discovery threads.",
+          "Avoid low-signal, hostile, or off-topic threads.",
+          'Return strict JSON: { selectedCandidateId, rationale }. selectedCandidateId must match one candidate id exactly.'
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          {
+            candidates: allowed.map((candidate) => ({
+              id: candidate.id,
+              type: candidate.type,
+              source: candidate.source,
+              score: candidate.score,
+              subreddit: candidate.surface,
+              title: candidate.title,
+              summary: candidate.summary?.slice(0, 400),
+              reason: candidate.reason
+            }))
+          },
+          null,
+          2
+        )
+      }
+    ]);
+
+    const selected = allowed.find((candidate) => candidate.id === response.selectedCandidateId);
+    if (!selected) {
+      return fallback;
+    }
+
+    const deferred = allowed
+      .map((candidate) => candidate.id)
+      .filter((candidateId) => candidateId !== selected.id);
+    return {
+      selectedCandidateIds: [selected.id],
+      selectedWriteCandidateId: selected.id,
+      selectedNoContentCandidateIds: [],
+      deferredCandidateIds: deferred,
+      rationale:
+        response.rationale?.trim() ||
+        `LLM selected ${selected.type} on r/${selected.surface} as the best reply target.`,
+      strategy: "llm"
+    };
+  } catch {
+    return fallback;
+  }
 }
 
 export function chooseRedditActionBundle(

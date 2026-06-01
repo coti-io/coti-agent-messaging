@@ -141,7 +141,7 @@ export const DEFAULT_PROMPT_PROFILE: PromptProfile = {
   venueOverrides: {
     reddit: {
       intent: "educate",
-      responseLength: "brief",
+      responseLength: "standard",
       technicalDepth: "simple",
       tone: "operator",
       messageStyle: "curious",
@@ -590,7 +590,7 @@ export function responseLengthInstruction(
       : "";
   switch (responseLength) {
     case "brief":
-      return `Length instruction: keep the whole reply to 2-4 sentences and under ${venue === "reddit" ? 420 : 500} characters.${redditPeerTone} Pick one useful angle; skip exhaustive coverage.`;
+      return `Length instruction: keep the whole reply to 2-4 sentences and under ${venue === "reddit" ? 500 : 500} characters.${redditPeerTone} Pick one useful angle; skip exhaustive coverage.`;
     case "standard":
       return `Length instruction: stay compact; aim for under ${venue === "reddit" ? 650 : 700} characters.${redditPeerTone}`;
     case "detailed":
@@ -605,7 +605,7 @@ export function maxCharsForResponseLength(
   if (venue === "reddit") {
     switch (responseLength) {
       case "brief":
-        return 420;
+        return 500;
       case "standard":
         return 650;
       case "detailed":

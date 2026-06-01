@@ -51,6 +51,7 @@ interface RedditListingChild {
 interface RedditListing {
   data?: {
     children?: RedditListingChild[];
+    after?: string | null;
   };
 }
 
@@ -134,7 +135,7 @@ export class RedditUnofficialClient {
 
   async searchPosts(
     query: string,
-    input: { subreddit?: string; limit?: number } = {}
+    input: { subreddit?: string; limit?: number; pageIndex?: number } = {}
   ): Promise<RedditSearchResult[]> {
     const subreddit = input.subreddit?.trim();
     const url = subreddit
@@ -142,30 +143,48 @@ export class RedditUnofficialClient {
       : new URL("/search", this.oauthBaseUrl());
     url.searchParams.set("q", query);
     url.searchParams.set("sort", "new");
-    url.searchParams.set("limit", String(input.limit ?? 10));
-    url.searchParams.set("raw_json", "1");
     if (subreddit) {
       url.searchParams.set("restrict_sr", "1");
     }
-
-    const listing = await this.fetchAuthenticatedJson<RedditListing>(url);
-    return redditListingToSearchResults(listing, subreddit);
+    return this.fetchListingAtPage(url, input.limit ?? 10, input.pageIndex ?? 0, subreddit);
   }
 
   async listSubredditPosts(
     subreddit: string,
-    input: { sort?: RedditUnofficialListingSort; limit?: number } = {}
+    input: { sort?: RedditUnofficialListingSort; limit?: number; pageIndex?: number } = {}
   ): Promise<RedditSearchResult[]> {
     const sort = input.sort ?? "hot";
     const url = new URL(
       `/r/${encodeURIComponent(subreddit)}/${sort}`,
       this.oauthBaseUrl()
     );
-    url.searchParams.set("limit", String(input.limit ?? 10));
-    url.searchParams.set("raw_json", "1");
+    return this.fetchListingAtPage(url, input.limit ?? 10, input.pageIndex ?? 0, subreddit);
+  }
 
-    const listing = await this.fetchAuthenticatedJson<RedditListing>(url);
-    return redditListingToSearchResults(listing, subreddit);
+  private async fetchListingAtPage(
+    url: URL,
+    limit: number,
+    pageIndex: number,
+    targetSubreddit?: string
+  ): Promise<RedditSearchResult[]> {
+    let after: string | undefined;
+    let listing: RedditListing | undefined;
+    for (let page = 0; page <= Math.max(0, pageIndex); page += 1) {
+      const pageUrl = new URL(url);
+      pageUrl.searchParams.set("limit", String(limit));
+      pageUrl.searchParams.set("raw_json", "1");
+      if (after) {
+        pageUrl.searchParams.set("after", after);
+      } else {
+        pageUrl.searchParams.delete("after");
+      }
+      listing = await this.fetchAuthenticatedJson<RedditListing>(pageUrl);
+      after = listing.data?.after ?? undefined;
+      if (page === pageIndex || !after) {
+        break;
+      }
+    }
+    return redditListingToSearchResults(listing ?? { data: { children: [] } }, targetSubreddit);
   }
 
   async scrapeThread(postUrl: string, limit = 100): Promise<RedditThreadState> {

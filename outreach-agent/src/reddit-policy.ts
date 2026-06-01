@@ -9,6 +9,7 @@ import {
   type RedditReviewItem,
   type RedditRulesRegistry,
   type RedditSourceItem,
+  type RedditSourceTriageResult,
   mergeRulesRegistries,
   resolveRulesRegistryForSubreddits,
   resolveSourceThreadPostId
@@ -182,6 +183,7 @@ export function resolveRedditPlannerContext(targetSubreddits: readonly string[])
 export function categorizeRedditFilterGate(gateId: string): RedditFilterGateCategory {
   switch (gateId) {
     case "discovery_topical_fit":
+    case "reddit_llm_triage":
       return "topical_validation";
     case "clear_user_need":
       return "intent_validation";
@@ -215,6 +217,7 @@ export function planRedditAction(input: {
   targeting?: RedditOutreachTargeting;
   registry?: RedditRulesRegistry;
   activeSubreddits?: readonly string[];
+  triageByItemId?: ReadonlyMap<string, RedditSourceTriageResult>;
   now?: Date;
   rng?: () => number;
   config?: Partial<RedditPlannerConfig>;
@@ -239,6 +242,7 @@ export function planRedditAction(input: {
     targeting,
     registry: input.registry ?? DEFAULT_REDDIT_OPERATING_RULES,
     duplicateCheckPolicy: input.duplicateCheckPolicy ?? "block_posted_only",
+    triageByItemId: input.triageByItemId,
     now
   });
   const history = input.history ?? [];

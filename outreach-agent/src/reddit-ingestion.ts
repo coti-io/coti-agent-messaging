@@ -14,6 +14,7 @@ import {
   type RedditThreadState
 } from "./reddit-controller.js";
 import {
+  DEFAULT_REDDIT_DISCOVERY_POOL,
   getDefaultRedditDiscoverySubredditNames,
   RedditReadOnlyClient,
   redditMemoryEntryConsumesTarget,
@@ -21,6 +22,18 @@ import {
   type RedditOutboundMemoryEntry,
   type RedditSourceItem
 } from "./reddit-outreach.js";
+import {
+  buildScanLedgerMap,
+  collectScanLedgerExcludePostIds,
+  getScanLedgerEntry,
+  isCommentSeenInLedger,
+  isPostBodySeenInLedger,
+  mergeScanLedgerUpdates,
+  pruneScanLedger,
+  shouldSkipColdDiscoveryRead,
+  threadHasNewCommentsSinceLedger,
+  type RedditScanLedgerEntry
+} from "./reddit-scan-ledger.js";
 
 /** @deprecated Use getDefaultRedditDiscoverySubredditNames() */
 export const DEFAULT_REDDIT_OPERATING_SUBREDDITS = getDefaultRedditDiscoverySubredditNames();
@@ -66,6 +79,12 @@ export type DiscoveryPickStrategy = "stochastic" | "top_score";
 export interface RedditIngestionInput {
   config: MoltbookRuntimeConfig;
   subreddits?: readonly string[];
+  /** When unset, samples discoverySubsPerRun from the operating pool. */
+  subredditPool?: readonly string[];
+  discoverySubsPerRun?: number;
+  scanLedger?: readonly RedditScanLedgerEntry[];
+  scanLedgerTtlHours?: number;
+  scanLedgerMaxEntries?: number;
   queries?: readonly string[];
   history?: readonly RedditOutboundMemoryEntry[];
   limitPerSubreddit?: number;
@@ -93,10 +112,15 @@ export interface RedditIngestionListingSortRecord {
 }
 
 export interface RedditIngestionDiagnostics {
+  discoverySubredditPool: string[];
+  sampledSubreddits: string[];
   subreddits: string[];
   discoverySearchQueries: string[];
   discoveryListingSorts: RedditIngestionListingSortRecord[];
+  discoveryListingPages: number[];
+  discoverySearchPages: number[];
   excludedThreadPostIds: string[];
+  scanLedgerSkippedScrapes: number;
   discoveryPickStrategy: DiscoveryPickStrategy;
   browserHeadless: boolean;
   readViaBrowser: boolean;
@@ -112,30 +136,51 @@ export interface RedditIngestionResult {
   ownThreadTargets: number;
   ownThreadSnapshots: number;
   discoveryThreadSnapshots: number;
+  sampledSubreddits: string[];
+  scanLedger: RedditScanLedgerEntry[];
   diagnostics: RedditIngestionDiagnostics;
 }
 
 export async function ingestRedditState(input: RedditIngestionInput): Promise<RedditIngestionResult> {
   const capturedAt = new Date().toISOString();
+  const now = new Date(capturedAt);
+  const operating = getRedditOperatingAgentConfig(input.config);
+  const discoveryPool =
+    input.subredditPool ??
+    (operating.discoverySubredditPool.length > 0
+      ? operating.discoverySubredditPool
+      : [...DEFAULT_REDDIT_DISCOVERY_POOL]);
+  const subsPerRun = input.discoverySubsPerRun ?? operating.discoverySubsPerRun;
+  const discoveryRng = createDiscoveryRng(input.discoverySeed);
   const subreddits = input.subreddits?.length
     ? [...input.subreddits]
-    : defaultSubreddits(input.config);
-  const operating = getRedditOperatingAgentConfig(input.config);
+    : sampleDiscoverySubreddits(discoveryPool, subsPerRun, discoveryRng);
   const queries = input.queries ?? operating.searchQueries;
   const source = input.source ?? "auto";
   const history = input.history ?? [];
+  const scanLedgerEntries = input.scanLedger ?? [];
+  const scanLedgerTtlHours = input.scanLedgerTtlHours ?? operating.scanLedgerTtlHours;
+  const scanLedgerMaxEntries = input.scanLedgerMaxEntries ?? operating.scanLedgerMaxEntries;
+  const scanLedgerMap = buildScanLedgerMap(scanLedgerEntries);
   const limits = resolveIngestionLimits(input, operating);
   const skipped: string[] = [];
   const ownThreadTargets = collectOwnThreadTargets(history);
 
-  const discoveryRng = createDiscoveryRng(input.discoverySeed);
-  const discoveryExcludePostIds = collectDiscoveryExcludePostIds(history);
+  const discoveryExcludePostIds = new Set([
+    ...collectDiscoveryExcludePostIds(history),
+    ...collectScanLedgerExcludePostIds(scanLedgerEntries, now, scanLedgerTtlHours)
+  ]);
   const discoveryPickStrategy = input.discoveryPickStrategy ?? "stochastic";
   const diagnostics: RedditIngestionDiagnostics = {
+    discoverySubredditPool: [...discoveryPool],
+    sampledSubreddits: [...subreddits],
     subreddits: [...subreddits],
     discoverySearchQueries: [],
     discoveryListingSorts: [],
+    discoveryListingPages: [],
+    discoverySearchPages: [],
     excludedThreadPostIds: [...discoveryExcludePostIds],
+    scanLedgerSkippedScrapes: 0,
     discoveryPickStrategy,
     browserHeadless: isRedditBrowserHeadless(),
     readViaBrowser: false,
@@ -151,7 +196,10 @@ export async function ingestRedditState(input: RedditIngestionInput): Promise<Re
     random: discoveryRng,
     excludePostIds: discoveryExcludePostIds,
     pickStrategy: discoveryPickStrategy,
-    diagnostics
+    diagnostics,
+    scanLedgerMap,
+    scanLedgerTtlHours,
+    now
   };
   const snapshots =
     ingestionBackend === "browser"
@@ -204,16 +252,50 @@ export async function ingestRedditState(input: RedditIngestionInput): Promise<Re
     subredditCount: subreddits.length,
     discoveryThreadSnapshots
   });
+  const scanLedger = pruneScanLedger(
+    mergeScanLedgerUpdates(scanLedgerEntries, deduped, capturedAt),
+    scanLedgerMaxEntries
+  );
+
   return {
     capturedAt,
     snapshots: deduped,
-    sourceItems: snapshotsToSourceItems(deduped, history, { venueAccountId: agent.venueAccountId }),
+    sourceItems: snapshotsToSourceItems(deduped, history, {
+      venueAccountId: agent.venueAccountId,
+      scanLedgerMap
+    }),
     skipped,
     ownThreadTargets: ownThreadTargets.length,
     ownThreadSnapshots: deduped.filter((snapshot) => snapshot.ownThread).length,
     discoveryThreadSnapshots,
+    sampledSubreddits: [...subreddits],
+    scanLedger,
     diagnostics
   };
+}
+
+export function sampleDiscoverySubreddits(
+  pool: readonly string[],
+  count: number,
+  random: () => number = Math.random
+): string[] {
+  const unique = [...new Set(pool.map((entry) => entry.trim()).filter(Boolean))];
+  if (unique.length === 0) {
+    return [];
+  }
+  return shuffleWithRng(unique, random).slice(0, Math.min(Math.max(0, count), unique.length));
+}
+
+/** Weighted toward newest listings: page 0 = 55%, page 1 = 30%, page 2 = 15%. */
+export function pickListingPageIndex(random: () => number = Math.random): number {
+  const roll = random();
+  if (roll < 0.55) {
+    return 0;
+  }
+  if (roll < 0.85) {
+    return 1;
+  }
+  return 2;
 }
 
 function defaultSubreddits(config: MoltbookRuntimeConfig): string[] {
@@ -222,9 +304,11 @@ function defaultSubreddits(config: MoltbookRuntimeConfig): string[] {
     return agent.allowedSurfaces;
   }
   const operating = getRedditOperatingAgentConfig(config);
-  return operating.targetSubreddits.length > 0
-    ? operating.targetSubreddits
-    : getDefaultRedditDiscoverySubredditNames();
+  const pool =
+    operating.discoverySubredditPool.length > 0
+      ? operating.discoverySubredditPool
+      : [...DEFAULT_REDDIT_DISCOVERY_POOL];
+  return sampleDiscoverySubreddits(pool, operating.discoverySubsPerRun, Math.random);
 }
 
 function isRedditBrowserHeadless(): boolean {
@@ -524,6 +608,17 @@ interface DiscoveryIngestionOptions {
   excludePostIds: ReadonlySet<string>;
   pickStrategy: DiscoveryPickStrategy;
   diagnostics: RedditIngestionDiagnostics;
+  scanLedgerMap: ReadonlyMap<string, RedditScanLedgerEntry>;
+  scanLedgerTtlHours: number;
+  now: Date;
+}
+
+function shouldSkipDiscoveryThreadScrape(
+  result: RedditSearchResult,
+  discovery: DiscoveryIngestionOptions
+): boolean {
+  const entry = getScanLedgerEntry(discovery.scanLedgerMap, result.subreddit, result.id);
+  return shouldSkipColdDiscoveryRead(entry, discovery.now, discovery.scanLedgerTtlHours, result.commentCount);
 }
 
 function resolveIngestionBackend(
@@ -638,6 +733,11 @@ async function ingestViaReddapi(
     if (readPostIds.has(key)) {
       continue;
     }
+    if (shouldSkipDiscoveryThreadScrape(result, discovery)) {
+      discovery.diagnostics.scanLedgerSkippedScrapes += 1;
+      skipped.push(`scan ledger skip discovery ${result.id}`);
+      continue;
+    }
     readPostIds.add(key);
     const postUrl =
       result.url ??
@@ -727,12 +827,15 @@ async function ingestViaUnofficial(
 
   for (const subreddit of shuffleWithRng(subreddits, discovery.random)) {
     const listingSort = selectDiscoveryListingSort(discovery.random);
+    const listingPage = pickListingPageIndex(discovery.random);
     discovery.diagnostics.discoveryListingSorts.push({ subreddit, sort: listingSort });
+    discovery.diagnostics.discoveryListingPages.push(listingPage);
     try {
       results.push(
         ...(await client.listSubredditPosts(subreddit, {
           sort: listingSort,
-          limit: limits.listLimit
+          limit: limits.listLimit,
+          pageIndex: listingPage
         }))
       );
     } catch (error) {
@@ -740,11 +843,14 @@ async function ingestViaUnofficial(
     }
 
     for (const query of searchQueries) {
+      const searchPage = pickListingPageIndex(discovery.random);
+      discovery.diagnostics.discoverySearchPages.push(searchPage);
       try {
         results.push(
           ...(await client.searchPosts(query, {
             subreddit,
-            limit: Math.max(limits.listLimit, 10)
+            limit: limits.listLimit,
+            pageIndex: searchPage
           }))
         );
       } catch (error) {
@@ -760,6 +866,11 @@ async function ingestViaUnofficial(
   })) {
     const key = `${result.subreddit}:${result.id}`;
     if (readPostIds.has(key)) {
+      continue;
+    }
+    if (shouldSkipDiscoveryThreadScrape(result, discovery)) {
+      discovery.diagnostics.scanLedgerSkippedScrapes += 1;
+      skipped.push(`scan ledger skip discovery ${result.id}`);
       continue;
     }
     readPostIds.add(key);
@@ -863,7 +974,7 @@ async function ingestViaBrowser(
           query,
           sort: "new",
           time: "month",
-          limit: Math.min(3, limits.listLimit)
+          limit: limits.listLimit
         }, context);
         if (searched.type === "search_subreddit") {
           results.push(...searched.items);
@@ -881,6 +992,11 @@ async function ingestViaBrowser(
   })) {
     const key = `${result.subreddit}:${result.id}`;
     if (readPostIds.has(key)) {
+      continue;
+    }
+    if (shouldSkipDiscoveryThreadScrape(result, discovery)) {
+      discovery.diagnostics.scanLedgerSkippedScrapes += 1;
+      skipped.push(`scan ledger skip discovery ${result.id}`);
       continue;
     }
     readPostIds.add(key);
@@ -999,7 +1115,7 @@ async function ingestViaApi(
     }
     for (const query of searchQueries) {
       try {
-        items.push(...await client.searchSubreddit(subreddit, query, Math.min(3, limits.listLimit)));
+        items.push(...await client.searchSubreddit(subreddit, query, limits.listLimit));
       } catch (error) {
         skipped.push(`api search r/${subreddit} "${query}": ${formatError(error)}`);
       }
@@ -1030,6 +1146,17 @@ async function ingestViaApi(
     if (ownThreadTargets.some((target) => target.postId === item.id)) {
       continue;
     }
+    const candidate: RedditSearchResult = {
+      id: item.id,
+      subreddit: item.subreddit,
+      title: item.title ?? "",
+      commentCount: item.commentCount
+    };
+    if (shouldSkipDiscoveryThreadScrape(candidate, discovery)) {
+      discovery.diagnostics.scanLedgerSkippedScrapes += 1;
+      skipped.push(`scan ledger skip discovery ${item.id}`);
+      continue;
+    }
     snapshots.push({
       thread: sourceItemToThreadState(item),
       source: "api",
@@ -1044,7 +1171,7 @@ async function ingestViaApi(
 export function snapshotsToSourceItems(
   snapshots: readonly RedditConversationSnapshot[],
   history: readonly RedditOutboundMemoryEntry[] = [],
-  options: { venueAccountId?: string } = {}
+  options: { venueAccountId?: string; scanLedgerMap?: ReadonlyMap<string, RedditScanLedgerEntry> } = {}
 ): RedditSourceItem[] {
   const alreadyTouched = new Set(
     history
@@ -1064,12 +1191,19 @@ export function snapshotsToSourceItems(
   const items: RedditSourceItem[] = [];
   for (const snapshot of snapshots) {
     const thread = snapshot.thread;
+    const ledgerEntry = options.scanLedgerMap
+      ? getScanLedgerEntry(options.scanLedgerMap, thread.subreddit, thread.id)
+      : undefined;
+    const hasNewComments = threadHasNewCommentsSinceLedger(ledgerEntry, thread.commentCount);
     const onOwnThread = snapshot.ownThread === true || ownThreadPostIds.has(thread.id);
     const minCommentBody = onOwnThread ? MIN_COMMENT_BODY_OWN_THREAD : MIN_COMMENT_BODY_DISCOVERY;
     const commentById = indexCommentsById(thread.comments);
 
     for (const comment of flattenComments(thread.comments)) {
       if (alreadyTouched.has(comment.id)) {
+        continue;
+      }
+      if (options.scanLedgerMap && isCommentSeenInLedger(ledgerEntry, comment.id)) {
         continue;
       }
       if (isOwnAuthoredComment(comment.author, ownAuthors)) {
@@ -1098,21 +1232,27 @@ export function snapshotsToSourceItems(
     }
 
     if (!alreadyTouched.has(thread.id)) {
-      items.push({
-        id: thread.id,
-        kind: "post",
-        subreddit: thread.subreddit,
-        title: thread.title,
-        body: thread.body,
-        author: thread.author,
-        permalink: thread.permalink,
-        url: thread.url,
-        createdUtc: thread.createdUtc,
-        score: thread.score,
-        commentCount: thread.commentCount,
-        onOwnThread,
-        threadPostId: thread.id
-      });
+      const skipPostBody =
+        options.scanLedgerMap &&
+        isPostBodySeenInLedger(ledgerEntry, hasNewComments) &&
+        !onOwnThread;
+      if (!skipPostBody) {
+        items.push({
+          id: thread.id,
+          kind: "post",
+          subreddit: thread.subreddit,
+          title: thread.title,
+          body: thread.body,
+          author: thread.author,
+          permalink: thread.permalink,
+          url: thread.url,
+          createdUtc: thread.createdUtc,
+          score: thread.score,
+          commentCount: thread.commentCount,
+          onOwnThread,
+          threadPostId: thread.id
+        });
+      }
     }
   }
   return dedupeSourceItems(items);

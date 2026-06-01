@@ -97,6 +97,13 @@ test(
         controller: "unofficial"
       },
       redditOperating: {
+        discoverySubredditPool: ["AI_Agents"],
+        discoverySubsPerRun: 1,
+        scanLedgerTtlHours: 48,
+        scanLedgerMaxEntries: 2000,
+        llmTriageEnabled: false,
+        llmTriageMaxItems: 25,
+        llmSelectEnabled: false,
         targetSubreddits: ["AI_Agents"],
         searchQueries: ["unused"],
         ingestionListLimit: 5,
@@ -152,6 +159,13 @@ test(
         controller: "unofficial"
       },
       redditOperating: {
+        discoverySubredditPool: ["test"],
+        discoverySubsPerRun: 1,
+        scanLedgerTtlHours: 48,
+        scanLedgerMaxEntries: 2000,
+        llmTriageEnabled: false,
+        llmTriageMaxItems: 25,
+        llmSelectEnabled: false,
         targetSubreddits: ["test"],
         searchQueries: ["hello"],
         ingestionListLimit: 3,

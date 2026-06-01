@@ -26,8 +26,10 @@ import {
 import {
   buildRedditActionCandidates,
   chooseRedditActionBundle,
+  chooseRedditActionBundleWithLlm,
   plannedRedditActionFromCandidate
 } from "./reddit-action-planning.js";
+import { triageRedditSourceItems } from "./reddit-triage.js";
 import { planRedditAction, emptyRedditFilterSummary, resolveRedditPlannerContext, type RedditPlannerFilterSummary } from "./reddit-policy.js";
 import { type RedditDuplicateCheckPolicy } from "./reddit-outreach.js";
 import { redditMemoryEntryCountsTowardPublishedLimits } from "./reddit-outreach.js";
@@ -166,7 +168,7 @@ async function runRedditPlannerPhase(input: {
   const dryRun = input.dryRun ?? operating.dryRunDefault;
   const duplicateCheckPolicy = resolveRedditSessionDuplicateCheckPolicy(dryRun);
   const maxActions = input.maxActions ?? operating.maxActionsPerSession;
-  const memory = await loadRedditMemory(operating.memoryPath);
+  let memory = await loadRedditMemory(operating.memoryPath);
   const now = options.now ?? new Date();
   const recentKillReason = findKillSwitch(memory.history);
   if (recentKillReason) {
@@ -233,12 +235,12 @@ async function runRedditPlannerPhase(input: {
 
   const ingestion = input.ingestion ?? await ingestRedditState({
     config,
-    subreddits:
-      input.subreddits?.length
-        ? input.subreddits
-        : operating.targetSubreddits.length > 0
-          ? operating.targetSubreddits
-          : undefined,
+    subreddits: input.subreddits?.length ? input.subreddits : undefined,
+    subredditPool: operating.discoverySubredditPool,
+    discoverySubsPerRun: operating.discoverySubsPerRun,
+    scanLedger: memory.scanLedger ?? [],
+    scanLedgerTtlHours: operating.scanLedgerTtlHours,
+    scanLedgerMaxEntries: operating.scanLedgerMaxEntries,
     history: memory.history,
     source: operating.readController,
     limitPerSubreddit: operating.ingestionListLimit,
@@ -248,19 +250,32 @@ async function runRedditPlannerPhase(input: {
     ownThreadCommentLimit: operating.ingestionOwnThreadCommentLimit,
     discoverySeed: input.discoverySeed ?? parseDiscoverySeedFromEnv()
   });
+  memory = { ...memory, scanLedger: ingestion.scanLedger };
   const plannerContext = resolveRedditPlannerContext(
     input.subreddits?.length
       ? input.subreddits
-      : operating.targetSubreddits.length > 0
-        ? operating.targetSubreddits
+      : ingestion.sampledSubreddits.length > 0
+        ? ingestion.sampledSubreddits
         : []
   );
+  const triageBatch = operating.llmTriageEnabled
+    ? await triageRedditSourceItems({
+        config,
+        items: ingestion.sourceItems,
+        targeting: plannerContext.targeting,
+        activeSubredditNames: plannerContext.activeSubreddits,
+        maxItems: operating.llmTriageMaxItems,
+        fetchImpl: input.fetchImpl,
+        now
+      })
+    : undefined;
   const decision = planRedditAction({
     items: ingestion.sourceItems,
     history: memory.history,
     targeting: plannerContext.targeting,
     registry: plannerContext.registry,
     activeSubreddits: plannerContext.activeSubreddits,
+    triageByItemId: triageBatch?.byItemId,
     duplicateCheckPolicy,
     config: {
       maxActionsPerSession: maxActions,
@@ -268,6 +283,11 @@ async function runRedditPlannerPhase(input: {
       maxDelayMinutes: operating.maxJitterMinutes
     }
   });
+  if (triageBatch) {
+    decision.skipped.unshift(
+      `LLM triage: ${triageBatch.triagedCount} items (${triageBatch.providerLabel ?? "unknown"}); ${triageBatch.skippedCount} not triaged (regex-only).`
+    );
+  }
   const actionCandidates = buildRedditActionCandidates(decision);
   const subredditCooldowns = findRedditSubredditCooldowns(memory.history, now);
   const gatedActionCandidates =
@@ -330,7 +350,15 @@ async function runRedditPlannerPhase(input: {
     };
   }
 
-  const selectedActionBundle = chooseRedditActionBundle(gatedActionCandidates, maxActions);
+  const selectedActionBundle =
+    operating.llmSelectEnabled && gatedActionCandidates.length > 0
+      ? await chooseRedditActionBundleWithLlm({
+          config,
+          candidates: gatedActionCandidates,
+          maxActions,
+          fetchImpl: input.fetchImpl
+        })
+      : chooseRedditActionBundle(gatedActionCandidates, maxActions);
 
   const selectedAction = selectedActionBundle.selectedWriteCandidateId
     ? gatedActionCandidates.find((candidate) => candidate.id === selectedActionBundle.selectedWriteCandidateId)
@@ -357,7 +385,11 @@ async function runRedditPlannerPhase(input: {
         skipped: emptyDecision.skipped,
         filterSummary: decision.filterSummary,
         sessionLimits: subredditLimitReasons,
-        pipeline: { llmDraft: "not_reached" }
+        pipeline: {
+          llmDraft: "not_reached",
+          selectionSource:
+            selectedActionBundle.strategy === "llm" ? "llm" : "deterministic_fallback"
+        }
       }),
       decision: emptyDecision
     };
@@ -405,7 +437,11 @@ async function runRedditPlannerPhase(input: {
       planner: summarizePlanner({
         skipped: draftFailedDecision.skipped,
         filterSummary: decision.filterSummary,
-        pipeline: { llmDraft: "failed" }
+        pipeline: {
+          llmDraft: "failed",
+          selectionSource:
+            selectedActionBundle.strategy === "llm" ? "llm" : "deterministic_fallback"
+        }
       }),
       decision: draftFailedDecision
     };
@@ -541,7 +577,10 @@ async function runRedditPlannerPhase(input: {
       filterSummary: decision.filterSummary,
       pipeline: {
         llmDraft: "succeeded",
-        selectionSource: selectedVariant.selectionSource
+        selectionSource:
+          selectedActionBundle.strategy === "llm"
+            ? "llm"
+            : selectedVariant.selectionSource ?? "deterministic_fallback"
       }
     }),
     decision: {
@@ -964,10 +1003,15 @@ function emptyIngestionSummary(): RedditSessionReport["ingestion"] {
     discoveryThreadSnapshots: 0,
     skipped: [],
     diagnostics: {
+      discoverySubredditPool: [],
+      sampledSubreddits: [],
       subreddits: [],
       discoverySearchQueries: [],
       discoveryListingSorts: [],
+      discoveryListingPages: [],
+      discoverySearchPages: [],
       excludedThreadPostIds: [],
+      scanLedgerSkippedScrapes: 0,
       discoveryPickStrategy: "stochastic",
       browserHeadless: false,
       readViaBrowser: false,

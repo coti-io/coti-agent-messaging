@@ -95,6 +95,13 @@ function createConfig(memoryPath: string): MoltbookRuntimeConfig {
       }
     },
     redditOperating: {
+      discoverySubredditPool: ["AI_Agents"],
+      discoverySubsPerRun: 1,
+      scanLedgerTtlHours: 48,
+      scanLedgerMaxEntries: 2000,
+      llmTriageEnabled: false,
+      llmTriageMaxItems: 25,
+      llmSelectEnabled: false,
       targetSubreddits: ["AI_Agents"],
       searchQueries: ["CRM messy data"],
       ingestionListLimit: 5,
@@ -120,11 +127,18 @@ const ingestion: RedditIngestionResult = {
   ownThreadTargets: 0,
   ownThreadSnapshots: 0,
   discoveryThreadSnapshots: 0,
+  sampledSubreddits: ["AI_Agents"],
+  scanLedger: [],
   diagnostics: {
+    discoverySubredditPool: ["AI_Agents"],
+    sampledSubreddits: ["AI_Agents"],
     subreddits: ["AI_Agents"],
     discoverySearchQueries: [],
     discoveryListingSorts: [],
+    discoveryListingPages: [],
+    discoverySearchPages: [],
     excludedThreadPostIds: [],
+    scanLedgerSkippedScrapes: 0,
     discoveryPickStrategy: "stochastic",
     browserHeadless: false,
     readViaBrowser: false,
@@ -522,20 +536,8 @@ test("reddit session enforces the daily live action cap", async () => {
     firstReply: true
   });
   config.redditOperating = {
-    targetSubreddits: [...config.redditOperating!.targetSubreddits],
-    searchQueries: [...config.redditOperating!.searchQueries],
-    ingestionListLimit: config.redditOperating!.ingestionListLimit,
-    ingestionMaxOwnThreadReads: config.redditOperating!.ingestionMaxOwnThreadReads,
-    ingestionMaxDiscoveryThreadReads: config.redditOperating!.ingestionMaxDiscoveryThreadReads,
-    ingestionOwnThreadCommentLimit: config.redditOperating!.ingestionOwnThreadCommentLimit,
-    ingestionMaxSearchesPerSubreddit: config.redditOperating!.ingestionMaxSearchesPerSubreddit,
-    maxActionsPerSession: config.redditOperating!.maxActionsPerSession,
-    maxActionsPerDay: 1,
-    minJitterMinutes: config.redditOperating!.minJitterMinutes,
-    maxJitterMinutes: config.redditOperating!.maxJitterMinutes,
-    readController: config.redditOperating!.readController,
-    dryRunDefault: config.redditOperating!.dryRunDefault,
-    memoryPath: config.redditOperating!.memoryPath
+    ...config.redditOperating!,
+    maxActionsPerDay: 1
   };
 
   const report = await runRedditSession({

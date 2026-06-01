@@ -13,23 +13,33 @@ import {
   resolveRedditTargetUrl,
   parseRedditThreadUrl,
   pickThreadReadCandidates,
+  pickListingPageIndex,
+  sampleDiscoverySubreddits,
   selectDiscoverySearchQueries,
   snapshotsToSourceItems
 } from "../src/reddit-ingestion.js";
 import { buildRedditOperatingAgentConfig, resolveRedditSearchQueries } from "../src/config.js";
-import { getDefaultRedditDiscoverySubredditNames } from "../src/reddit-outreach.js";
+import { DEFAULT_REDDIT_DISCOVERY_POOL } from "../src/reddit-outreach.js";
 import type { RedditSearchResult } from "../src/reddit-controller.js";
 import type { RedditConversationSnapshot } from "../src/reddit-controller.js";
 
-test("reddit operating config defaults discovery subs to agent-primary list", () => {
+test("reddit operating config defaults discovery pool to ~50 subs and samples 5", () => {
   const previous = process.env.OUTREACH_REDDIT_TARGET_SUBREDDITS;
+  const previousPerRun = process.env.OUTREACH_REDDIT_DISCOVERY_SUBS_PER_RUN;
   delete process.env.OUTREACH_REDDIT_TARGET_SUBREDDITS;
+  delete process.env.OUTREACH_REDDIT_DISCOVERY_SUBS_PER_RUN;
   try {
     const operating = buildRedditOperatingAgentConfig("/tmp/outreach-agent");
-    assert.deepEqual(operating.targetSubreddits, getDefaultRedditDiscoverySubredditNames());
+    assert.deepEqual(operating.discoverySubredditPool, [...DEFAULT_REDDIT_DISCOVERY_POOL]);
+    assert.equal(operating.discoverySubsPerRun, 5);
     assert.equal(operating.targetSubreddits.includes("sales"), false);
     assert.equal(operating.targetSubreddits.includes("AI_Agents"), true);
   } finally {
+    if (previousPerRun === undefined) {
+      delete process.env.OUTREACH_REDDIT_DISCOVERY_SUBS_PER_RUN;
+    } else {
+      process.env.OUTREACH_REDDIT_DISCOVERY_SUBS_PER_RUN = previousPerRun;
+    }
     if (previous === undefined) {
       delete process.env.OUTREACH_REDDIT_TARGET_SUBREDDITS;
     } else {
@@ -421,4 +431,22 @@ test("reddit ingestion skips already-touched source targets", () => {
     }
   ]);
   assert.deepEqual(items.map((item) => item.id), ["post-1"]);
+});
+
+test("sampleDiscoverySubreddits returns unique subs capped at count", () => {
+  const pool = ["a", "b", "c", "d", "e", "f"];
+  const rng = createDiscoveryRng(42);
+  const sampled = sampleDiscoverySubreddits(pool, 5, rng);
+  assert.equal(sampled.length, 5);
+  assert.equal(new Set(sampled).size, 5);
+});
+
+test("pickListingPageIndex favors early pages with seeded rng", () => {
+  const rng = createDiscoveryRng(99);
+  const counts = [0, 0, 0];
+  for (let index = 0; index < 200; index += 1) {
+    counts[pickListingPageIndex(rng)]! += 1;
+  }
+  assert.equal(counts[0]! > counts[1]!, true);
+  assert.equal(counts[1]! > counts[2]!, true);
 });

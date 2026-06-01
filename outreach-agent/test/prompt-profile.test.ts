@@ -60,7 +60,7 @@ test("default Reddit prompt profile biases toward useful public answers", () => 
   assert.equal(resolved.parameters.layout, "short_hook_then_detail");
   assert.equal(resolved.parameters.technicalDepth, "simple");
   assert.equal(resolved.parameters.productSpecificity, "generic_category");
-  assert.match(promptProfileToPromptText(resolved), /under 420 characters/i);
+  assert.match(promptProfileToPromptText(resolved), /under 500 characters/i);
 });
 
 test("reddit variant list includes a brief peer reply candidate", () => {

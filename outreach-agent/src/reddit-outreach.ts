@@ -17,6 +17,79 @@ import {
 
 export type RedditRiskLevel = "low" | "medium" | "high" | "blocked";
 
+export type RedditTriageHelpIntent =
+  | "explicit_question"
+  | "operational_pain"
+  | "discussion"
+  | "none";
+
+export type RedditTriageTopicalFit = "strong" | "weak" | "none";
+
+export interface RedditSourceTriageResult {
+  relevant: boolean;
+  helpIntent: RedditTriageHelpIntent;
+  topicalFit: RedditTriageTopicalFit;
+  hostileOrBait: boolean;
+  worthPublicReply: boolean;
+  confidence: number;
+  reason: string;
+  source: "llm" | "regex_fallback";
+}
+
+export function redditSourceReviewId(source: Pick<RedditSourceItem, "kind" | "subreddit" | "id">): string {
+  return `${source.kind}:${source.subreddit}:${source.id}`;
+}
+
+export function buildRedditTriageSignals(input: {
+  source: RedditSourceItem;
+  triage?: RedditSourceTriageResult;
+  now: Date;
+}): {
+  hasExplicitIntent: boolean;
+  hasPainSignal: boolean;
+  topicalMatch: boolean;
+  passesDiscoveryFit: boolean;
+  relevanceScore: number;
+} {
+  const text = sourceText(input.source);
+  const discoveryThread = input.source.onOwnThread !== true;
+  let hasExplicitIntent = hasExplicitHelpIntent(input.source);
+  let hasPainSignal = hasOperationalPain(text);
+  let topicalMatch = hasAgentMessagingTopicMatch(text);
+  const relevanceScore = scoreRedditSourceRelevance(input.source, text, input.now);
+  let passesDiscoveryFit =
+    !discoveryThread || topicalMatch || relevanceScore >= DISCOVERY_MIN_RELEVANCE_SCORE;
+
+  if (!input.triage) {
+    return { hasExplicitIntent, hasPainSignal, topicalMatch, passesDiscoveryFit, relevanceScore };
+  }
+
+  if (input.triage.hostileOrBait || !input.triage.relevant || !input.triage.worthPublicReply) {
+    return {
+      hasExplicitIntent: false,
+      hasPainSignal: false,
+      topicalMatch: false,
+      passesDiscoveryFit: false,
+      relevanceScore
+    };
+  }
+
+  if (input.triage.helpIntent === "explicit_question" || input.triage.helpIntent === "discussion") {
+    hasExplicitIntent = true;
+  }
+  if (input.triage.helpIntent === "operational_pain") {
+    hasPainSignal = true;
+  }
+  if (input.triage.topicalFit === "strong" || input.triage.topicalFit === "weak") {
+    topicalMatch = true;
+  }
+  if (!discoveryThread || input.triage.topicalFit !== "none") {
+    passesDiscoveryFit = true;
+  }
+
+  return { hasExplicitIntent, hasPainSignal, topicalMatch, passesDiscoveryFit, relevanceScore };
+}
+
 export interface RedditTargetSubreddit {
   name: string;
   audience: string;
@@ -201,18 +274,36 @@ const RHETORICAL_TITLE_PATTERNS = [
   /^who else\b/i
 ] as const;
 
-export const DISCOVERY_MIN_RELEVANCE_SCORE = 8;
+export const DISCOVERY_MIN_RELEVANCE_SCORE = 6;
 
 export const AGENT_MESSAGING_TOPIC_PATTERNS = [
   /\bai agents?\b/i,
   /\bmcp\b/i,
+  /\blangchain\b/i,
+  /\bollama\b/i,
+  /\bautogen\b/i,
+  /\bcrewai\b/i,
+  /\bagentic\b/i,
   /\bprivate (?:message|messaging|channel|inbox)\b/i,
   /\bagent(?:s)?\s+(?:coordination|communication|messaging)\b/i,
   /\bagent(?:-|\s)?to(?:-|\s)?agent\b/i,
   /\bencrypted?(?:\s+)?(?:message|messaging|channel)\b/i,
   /\bagent(?:s)?\s+sdk\b/i,
   /\bllm agents?\b/i,
-  /\bmulti[- ]?agent\b/i
+  /\bmulti[- ]?agent\b/i,
+  /\btool[- ]?call(?:ing)?\b/i,
+  /\bfunction[- ]?call(?:ing)?\b/i,
+  /\borchestrat(?:e|ion|ing)\b/i,
+  /\bopenai api\b/i,
+  /\bwebhook\b/i,
+  /\bmessage queue\b/i,
+  /\b(?:^|\s)rag(?:\s|$)/i
+] as const;
+
+const SUBSTANTIVE_DISCUSSION_PATTERNS = [
+  /\b(?:building|built|implement(?:ed|ing)?|integrat(?:ed|ing)?|deploy(?:ed|ing)?)\b/i,
+  /\b(?:architecture|approach|pattern|workflow|stack)\b/i,
+  /\b(?:looking at|evaluating|comparing|switching to)\b/i
 ] as const;
 
 const LOW_INTENT_PATTERNS = [
@@ -243,12 +334,8 @@ const OPERATIONAL_PAIN_PATTERNS = [
 const ARGUMENT_OR_HOSTILITY_PATTERNS = [
   /\bidiot\b/i,
   /\bstupid\b/i,
-  /\btrash\b/i,
-  /\bscam\b/i,
-  /\bbot\b/i,
   /\bshill\b/i,
   /\bastroturf\b/i,
-  /\brant\b/i,
   /\bflame(?:war)?\b/i,
   /\bfight me\b/i,
   /\bunpopular opinion\b/i,
@@ -367,6 +454,62 @@ export const DEFAULT_REDDIT_TARGETING: RedditOutreachTargeting = {
     }
   ]
 };
+
+/** Full discovery pool (~50). Sampled per heartbeat via OUTREACH_REDDIT_DISCOVERY_SUBS_PER_RUN. */
+export const DEFAULT_REDDIT_DISCOVERY_POOL: readonly string[] = [
+  "AI_Agents",
+  "LocalLLaMA",
+  "LangChain",
+  "mcp",
+  "AutoGPT",
+  "LLMDevs",
+  "PromptEngineering",
+  "ChatGPTCoding",
+  "OpenAI",
+  "singularity",
+  "ArtificialInteligence",
+  "MachineLearning",
+  "learnmachinelearning",
+  "programming",
+  "softwareengineering",
+  "devops",
+  "selfhosted",
+  "homelab",
+  "kubernetes",
+  "docker",
+  "node",
+  "typescript",
+  "python",
+  "golang",
+  "rust",
+  "SideProject",
+  "SaaS",
+  "indiehackers",
+  "startups",
+  "ethdev",
+  "solidity",
+  "ethereum",
+  "web3",
+  "CryptoTechnology",
+  "defi",
+  "0xProject",
+  "privacy",
+  "cryptography",
+  "netsec",
+  "compsci",
+  "datascience",
+  "sysadmin",
+  "distributedsystems",
+  "n8n",
+  "automation",
+  "Rag",
+  "ollama",
+  "ClaudeAI",
+  "cursor",
+  "agents",
+  "buildinpublic",
+  "Entrepreneur"
+] as const;
 
 /** Primary agent-messaging subs used when OUTREACH_REDDIT_TARGET_SUBREDDITS is unset. */
 export function getDefaultRedditDiscoverySubredditNames(
@@ -502,6 +645,7 @@ export function buildRedditReviewQueue(input: {
   promptProfile?: PromptProfile;
   promptProfileId?: string;
   duplicateCheckPolicy?: RedditDuplicateCheckPolicy;
+  triageByItemId?: ReadonlyMap<string, RedditSourceTriageResult>;
   now?: Date;
 }): RedditReviewQueue {
   const targeting = input.targeting ?? DEFAULT_REDDIT_TARGETING;
@@ -527,7 +671,8 @@ export function buildRedditReviewQueue(input: {
         input.promptProfile,
         input.promptProfileId,
         input.items,
-        input.duplicateCheckPolicy ?? "block_posted_only"
+        input.duplicateCheckPolicy ?? "block_posted_only",
+        input.triageByItemId?.get(`${item.kind}:${item.subreddit}:${item.id}`)
       )
     )
     .sort((left, right) => {
@@ -613,7 +758,8 @@ function buildReviewItem(
   promptProfile: PromptProfile | undefined,
   promptProfileId: string | undefined,
   allItems: readonly RedditSourceItem[],
-  duplicateCheckPolicy: RedditDuplicateCheckPolicy
+  duplicateCheckPolicy: RedditDuplicateCheckPolicy,
+  triage?: RedditSourceTriageResult
 ): RedditReviewItem {
   const rule = findRule(registry, source.subreddit);
   const text = sourceText(source);
@@ -624,8 +770,9 @@ function buildReviewItem(
     profileId: promptProfileId
   });
   validatePromptProfile(resolvedPromptProfile);
-  const hasPainSignal = hasOperationalPain(text);
-  const hasExplicitIntent = hasExplicitHelpIntent(source);
+  const signals = buildRedditTriageSignals({ source, triage, now });
+  const hasPainSignal = signals.hasPainSignal;
+  const hasExplicitIntent = signals.hasExplicitIntent;
   const needsHelp = hasExplicitIntent || hasPainSignal;
   const explicitProductInterest = hasExplicitProductInterest(text, targeting.productAliases);
   const privateMessageAssessment = assessPrivateMessageEscalation({ text });
@@ -635,15 +782,11 @@ function buildReviewItem(
     explicitInterest: explicitProductInterest,
     publicValueDeliveredFirst
   });
-  const relevanceScore = scoreRelevance(source, text, now);
+  const relevanceScore = signals.relevanceScore;
   const riskScore = scoreRisk(source, rule, text, now);
-  const topicalMatch = hasAgentMessagingTopicMatch(text);
+  const topicalMatch = signals.topicalMatch;
   const discoveryThread = source.onOwnThread !== true;
-  const passesDiscoveryFit = passesDiscoveryTopicalFit({
-    discoveryThread,
-    topicalMatch,
-    relevanceScore
-  });
+  const passesDiscoveryFit = signals.passesDiscoveryFit;
   const draft =
     relevanceScore >= 5 && needsHelp && passesDiscoveryFit
       ? buildExplanatoryDraft(source, resolvedPromptProfile.parameters.layout)
@@ -668,14 +811,15 @@ function buildReviewItem(
       topicalMatch,
       relevanceScore,
       passesDiscoveryFit
-    }
+    },
+    triage
   );
   const blocked = gates.some((gate) => gate.severity === "block" && !gate.passed);
 
   return {
     id: `${source.kind}:${source.subreddit}:${source.id}`,
     source,
-    action: chooseAction(source, relevanceScore, hasExplicitIntent, rule),
+    action: chooseAction(source, relevanceScore, hasExplicitIntent, hasPainSignal, topicalMatch, rule),
     status: blocked ? "blocked" : "needs_human_review",
     relevanceScore,
     riskScore,
@@ -711,6 +855,8 @@ function chooseAction(
   source: RedditSourceItem,
   relevanceScore: number,
   hasExplicitIntent: boolean,
+  hasPainSignal: boolean,
+  topicalMatch: boolean,
   rule: RedditSubredditRule | undefined
 ): RedditReviewItem["action"] {
   if (!rule || rule.risk === "blocked") {
@@ -721,7 +867,11 @@ function chooseAction(
     return "ignore";
   }
 
-  if (!hasExplicitIntent) {
+  const canAnswerPublicly =
+    hasExplicitIntent ||
+    hasPainSignal ||
+    (topicalMatch && relevanceScore >= DISCOVERY_MIN_RELEVANCE_SCORE);
+  if (!canAnswerPublicly) {
     return "ask_clarifying_question";
   }
 
@@ -757,7 +907,8 @@ function buildGates(
     topicalMatch: false,
     relevanceScore: 0,
     passesDiscoveryFit: true
-  }
+  },
+  triage?: RedditSourceTriageResult
 ): RedditReviewGate[] {
   const threadPostId = resolveSourceThreadPostId(source);
   const similar = draft
@@ -826,10 +977,22 @@ function buildGates(
     },
     {
       id: "low_argument_risk",
-      passed: !hasArgumentativeConflict(sourceText(source)),
+      passed: triage ? !triage.hostileOrBait : !hasArgumentativeConflict(sourceText(source)),
       severity: "block",
-      reason: "Skip hostile, bait, rant, or accusation-heavy threads."
+      reason: triage?.hostileOrBait
+        ? "LLM triage flagged hostile or bait thread."
+        : "Skip hostile, bait, rant, or accusation-heavy threads."
     },
+    ...(triage
+      ? [
+          {
+            id: "reddit_llm_triage",
+            passed: triage.worthPublicReply && triage.relevant,
+            severity: "block" as const,
+            reason: triage.reason
+          }
+        ]
+      : []),
     {
       id: "safe_draft_generated",
       passed: Boolean(draft),
@@ -1228,20 +1391,25 @@ function parseFlexibleSource(input: unknown, fallbackKind: RedditSourceItem["kin
   ];
 }
 
-function scoreRelevance(source: RedditSourceItem, text: string, now: Date): number {
+export function scoreRedditSourceRelevance(source: RedditSourceItem, text: string, now: Date): number {
   const terms: Array<[RegExp, number]> = [
     [/\bai agents?\b/i, 4],
     [/\bagents?\b/i, 2],
     [/\bmcp\b/i, 4],
+    [/\blangchain\b/i, 3],
+    [/\bollama\b/i, 2],
     [/\bsdk\b/i, 3],
     [/\bprivacy\b/i, 3],
     [/\bprivate\b/i, 3],
     [/\bencrypt(?:ed|ion)?\b/i, 3],
     [/\bmessage|messaging|inbox\b/i, 2],
     [/\bcoordination|coordinate\b/i, 3],
+    [/\borchestrat(?:e|ion|ing)\b/i, 2],
+    [/\btool[- ]?call(?:ing)?\b/i, 2],
     [/\bwallet|signing|onchain|smart contract\b/i, 2],
     [/\btool(?:ing|s)?\b/i, 1],
-    [/\bruntime|workflow|automation\b/i, 1]
+    [/\bruntime|workflow|automation\b/i, 1],
+    [/\bmulti[- ]?agent\b/i, 2]
   ];
 
   const positive = terms.reduce((score, [pattern, weight]) => {
@@ -1309,6 +1477,9 @@ function buildExplanatoryDraft(source: RedditSourceItem, layout: LayoutVariant):
   if (layout === "problem_solution") {
     return [`Problem: ${sentences[0]}`, `Solution: ${sentences[1]}`, sentences[2]].join(" ");
   }
+  if (layout === "short_hook_then_detail") {
+    return `Fair point. ${sentences.join(" ")}`;
+  }
   return sentences.join(" ");
 }
 
@@ -1364,6 +1535,15 @@ export function hasExplicitHelpIntent(source: RedditSourceItem): boolean {
       return true;
     }
     if (/\?/.test(body)) {
+      return true;
+    }
+    if (
+      body.length >= 48 &&
+      (hasAgentMessagingTopicMatch(body) || hasOperationalPain(body))
+    ) {
+      return true;
+    }
+    if (body.length >= 72 && SUBSTANTIVE_DISCUSSION_PATTERNS.some((pattern) => pattern.test(body))) {
       return true;
     }
     return false;

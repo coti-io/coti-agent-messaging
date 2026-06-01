@@ -24,7 +24,14 @@ import {
   DEFAULT_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT,
   DEFAULT_REDDIT_OPERATING_SEARCH_QUERIES
 } from "./reddit-ingestion.js";
-import { getDefaultRedditDiscoverySubredditNames } from "./reddit-outreach.js";
+import {
+  DEFAULT_REDDIT_DISCOVERY_POOL,
+  getDefaultRedditDiscoverySubredditNames
+} from "./reddit-outreach.js";
+import {
+  DEFAULT_SCAN_LEDGER_MAX_ENTRIES,
+  DEFAULT_SCAN_LEDGER_TTL_HOURS
+} from "./reddit-scan-ledger.js";
 import type { OutreachAgentConfig, OutreachAgentMode, OutreachVenueId } from "./venue.js";
 
 export interface MoltbookStoredCredentials {
@@ -94,6 +101,15 @@ export interface RedditControllerConfig {
 }
 
 export interface RedditOperatingAgentConfig {
+  /** Full subreddit pool for discovery sampling. */
+  discoverySubredditPool: string[];
+  /** How many subs to hit per heartbeat (random sample from pool). */
+  discoverySubsPerRun: number;
+  scanLedgerTtlHours: number;
+  scanLedgerMaxEntries: number;
+  llmTriageEnabled: boolean;
+  llmTriageMaxItems: number;
+  llmSelectEnabled: boolean;
   targetSubreddits: string[];
   searchQueries: string[];
   ingestionListLimit: number;
@@ -689,11 +705,25 @@ export function resolveRedditSearchQueries(raw?: string): string[] {
 
 export function buildRedditOperatingAgentConfig(packageRoot: string): RedditOperatingAgentConfig {
   const configuredSubreddits = parseCsv(process.env.OUTREACH_REDDIT_TARGET_SUBREDDITS);
+  const discoverySubredditPool =
+    configuredSubreddits.length > 0
+      ? configuredSubreddits
+      : [...DEFAULT_REDDIT_DISCOVERY_POOL];
   return {
-    targetSubreddits:
-      configuredSubreddits.length > 0
-        ? configuredSubreddits
-        : getDefaultRedditDiscoverySubredditNames(),
+    discoverySubredditPool,
+    discoverySubsPerRun: parseNumber(process.env.OUTREACH_REDDIT_DISCOVERY_SUBS_PER_RUN, 5),
+    scanLedgerTtlHours: parseNumber(
+      process.env.OUTREACH_REDDIT_SCAN_LEDGER_TTL_HOURS,
+      DEFAULT_SCAN_LEDGER_TTL_HOURS
+    ),
+    scanLedgerMaxEntries: parseNumber(
+      process.env.OUTREACH_REDDIT_SCAN_LEDGER_MAX_ENTRIES,
+      DEFAULT_SCAN_LEDGER_MAX_ENTRIES
+    ),
+    llmTriageEnabled: parseBoolean(process.env.OUTREACH_REDDIT_LLM_TRIAGE, true),
+    llmTriageMaxItems: parseNumber(process.env.OUTREACH_REDDIT_LLM_TRIAGE_MAX_ITEMS, 25),
+    llmSelectEnabled: parseBoolean(process.env.OUTREACH_REDDIT_LLM_SELECT, true),
+    targetSubreddits: discoverySubredditPool,
     searchQueries: resolveRedditSearchQueries(process.env.OUTREACH_REDDIT_SEARCH_QUERIES),
     ingestionListLimit: parseNumber(process.env.OUTREACH_REDDIT_INGESTION_LIST_LIMIT, 5),
     ingestionMaxOwnThreadReads: parseNonNegativeNumber(

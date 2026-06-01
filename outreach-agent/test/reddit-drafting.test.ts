@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 
 import {
   RedditDraftGenerationError,
+  buildRedditDraftValidationSpec,
   draftRedditResponse,
+  redditDraftValidationSpecToPromptText,
   validateRedditDraft
 } from "../src/reddit-drafting.js";
 import { DEFAULT_REDDIT_TARGETING, type RedditReviewItem } from "../src/reddit-outreach.js";
@@ -74,6 +76,30 @@ function createMockLlmProvider(responses: string[]): JsonLlmProvider {
   };
 }
 
+test("buildRedditDraftValidationSpec mirrors enforceable draft rules", () => {
+  const profile = resolvePromptProfile({
+    venue: "reddit",
+    actionType: "comment_on_post",
+    parameterOverrides: {
+      responseLength: "standard",
+      layout: "short_hook_then_detail",
+      humor: "none"
+    }
+  });
+  const spec = buildRedditDraftValidationSpec({
+    profile,
+    productAliases: ["coti", "web4"],
+    maxChars: 650
+  });
+  assert.equal(spec.maxCharacters, 650);
+  assert.deepEqual(spec.forbiddenProductAliases, ["coti", "web4"]);
+  assert.ok(spec.layoutRules.some((rule) => rule.includes("650")));
+  assert.ok(spec.layoutRules.some((rule) => rule.includes("hook")));
+  const prompt = redditDraftValidationSpecToPromptText(spec);
+  assert.match(prompt, /hookThenSubstanceLayout/);
+  assert.match(prompt, /coti, web4/);
+});
+
 test("draftRedditResponse requires an LLM provider", async () => {
   await assert.rejects(
     () =>
@@ -135,5 +161,63 @@ test("validateRedditDraft rejects standalone fluff", () => {
   assert.throws(
     () => validateRedditDraft("great point", DEFAULT_REDDIT_TARGETING.productAliases, profile),
     /too fluffy/
+  );
+});
+
+test("validateRedditDraft accepts hook layout without whitelist opener", () => {
+  const profile = resolvePromptProfile({
+    venue: "reddit",
+    actionType: "reply_to_activity",
+    parameterOverrides: {
+      responseLength: "brief",
+      layout: "short_hook_then_detail",
+      humor: "none"
+    }
+  });
+  const draft =
+    "Local creds are fine for a single desktop agent. The pain starts when you share one MCP host across tools: you need scoped tokens, rotation, and a clear boundary so one compromised client cannot reuse another tool's OAuth grant.";
+  assert.doesNotThrow(() =>
+    validateRedditDraft(draft, DEFAULT_REDDIT_TARGETING.productAliases, profile)
+  );
+});
+
+test("draftRedditResponse trims over-length draft when retries stay too long", async () => {
+  const over =
+    "Fair point. " +
+    `${"For local agent stacks, keep inference separate from tool-auth: scoped credentials, retries, and audit history matter when one bad grant can poison the runtime. ".repeat(4)}` +
+    "That split is boring but it stops the usual failure mode where every agent decision becomes ad-hoc shell glue.";
+  assert.ok(over.length > 500);
+  const draft = await draftRedditResponse({
+    config: createConfig(createMockLlmProvider([over, over, over])),
+    item: createReviewItem(),
+    targeting: DEFAULT_REDDIT_TARGETING,
+    actionType: "comment_on_post",
+    promptParameterOverrides: {
+      responseLength: "brief",
+      layout: "short_hook_then_detail",
+      humor: "none"
+    }
+  });
+  assert.ok(draft.content.length <= 500);
+});
+
+test("validateRedditDraft rejects hook-only one-liner for short_hook_then_detail", () => {
+  const profile = resolvePromptProfile({
+    venue: "reddit",
+    actionType: "comment_on_post",
+    parameterOverrides: {
+      responseLength: "brief",
+      layout: "short_hook_then_detail",
+      humor: "none"
+    }
+  });
+  assert.throws(
+    () =>
+      validateRedditDraft(
+        "Fair point. Totally agree with this thread.",
+        DEFAULT_REDDIT_TARGETING.productAliases,
+        profile
+      ),
+    /hook-style|substance|fluffy/i
   );
 });

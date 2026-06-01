@@ -72,8 +72,8 @@ test("review queue accepts operational pain even before a direct how-to question
   const source: RedditSourceItem = {
     id: "thread-pain",
     kind: "post",
-    subreddit: "devops",
-    title: "Our CRM handoff is broken and the workflow is still manual",
+    subreddit: "mcp",
+    title: "Our agent handoff is broken and the workflow is still manual",
     body: "Sales keeps duplicating records and ops is cleaning spreadsheets every day.",
     commentCount: 16,
     createdUtc: Math.floor(new Date("2026-05-07T08:00:00.000Z").getTime() / 1000),
@@ -86,7 +86,7 @@ test("review queue accepts operational pain even before a direct how-to question
   });
 
   assert.equal(queue.items.length, 1);
-  assert.equal(queue.items[0]?.action, "ask_clarifying_question");
+  assert.equal(queue.items[0]?.action, "answer_publicly");
   assert.match(queue.items[0]?.whyRelevant ?? "", /operational pain/i);
 });
 
@@ -206,6 +206,19 @@ test("review queue blocks near-duplicate drafted outbound on the same thread", (
     queue.ignored[0]?.gates.some((gate) => gate.id === "not_near_duplicate" && !gate.passed),
     true
   );
+});
+
+test("substantive agent-messaging comment without question mark counts as help intent", () => {
+  const source: RedditSourceItem = {
+    id: "comment-1",
+    kind: "comment",
+    subreddit: "mcp",
+    title: "MCP gateway patterns",
+    body:
+      "We are building a private MCP channel for multi-agent coordination and encrypted agent-to-agent messaging between services."
+  };
+
+  assert.equal(hasExplicitHelpIntent(source), true);
 });
 
 test("rhetorical title question alone does not count as help intent", () => {

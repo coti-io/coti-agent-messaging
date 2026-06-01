@@ -1,6 +1,7 @@
 import sqlite3 from "sqlite3";
 
 import type {
+  AgentHeartbeatRun,
   AttributionConversionRates,
   AttributionRefDetail,
   AttributionSummary,
@@ -213,6 +214,194 @@ export interface SqliteAgentSnapshot {
 
 interface SnapshotStateRow extends SqliteRow {
   snapshot_json?: string;
+}
+
+function parseJsonArray<T>(value: unknown): T[] {
+  if (Array.isArray(value)) {
+    return value as T[];
+  }
+  if (typeof value !== "string" || value.length === 0) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function normalizeRunErrors(value: unknown): Array<{ phase?: string; message: string }> {
+  return parseJsonArray<unknown>(value)
+    .map((entry) => {
+      if (typeof entry === "string") {
+        return { message: entry };
+      }
+      if (entry && typeof entry === "object") {
+        const record = entry as Record<string, unknown>;
+        const message = asOptionalString(record.message) ?? JSON.stringify(record);
+        return {
+          phase: asOptionalString(record.phase),
+          message
+        };
+      }
+      return undefined;
+    })
+    .filter((entry): entry is { phase?: string; message: string } => Boolean(entry));
+}
+
+function countPerformedActions(performed: readonly string[]): EngagementCounts {
+  const counts = emptyCounts();
+  for (const entry of performed) {
+    const normalized = entry.toLowerCase();
+    if (normalized.includes("post")) {
+      counts.posts += 1;
+    } else if (normalized.includes("comment")) {
+      counts.comments += 1;
+    } else if (normalized.includes("reply")) {
+      counts.replies += 1;
+    } else if (normalized.includes("upvote")) {
+      counts.upvotes += 1;
+    } else if (normalized.includes("follow")) {
+      counts.follows += 1;
+    }
+  }
+  return normalizeCounts(counts);
+}
+
+function countGroupedEvents(rows: Array<{ event_type: string; count: number }>): EngagementCounts {
+  const counts = emptyCounts();
+  for (const row of rows) {
+    const key = countKey(String(row.event_type));
+    if (key) {
+      counts[key] += Number(row.count) || 0;
+    }
+  }
+  return normalizeCounts(counts);
+}
+
+export async function readRecentHeartbeatRunsFromSqlite(
+  databasePath: string,
+  limit = 5
+): Promise<AgentHeartbeatRun[]> {
+  let db: SqliteDatabase | undefined;
+  try {
+    db = await SqliteDatabase.open(databasePath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("SQLITE_CANTOPEN")) {
+      return [];
+    }
+    throw error;
+  }
+
+  try {
+    const tableRow = await db.get<{ count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'heartbeat_runs'
+    `);
+    if ((Number(tableRow?.count) || 0) === 0) {
+      return [];
+    }
+
+    const rows = await db.all<Record<string, unknown>>(
+      `
+        SELECT
+          run_id,
+          started_at,
+          finished_at,
+          status,
+          summary,
+          dry_run,
+          error_count,
+          skip_count,
+          planned_actions_json,
+          performed_json,
+          skipped_json,
+          errors_json,
+          engagement_summary_json
+        FROM heartbeat_runs
+        ORDER BY COALESCE(finished_at, started_at) DESC
+        LIMIT ?
+      `,
+      [limit]
+    );
+
+    const runs: AgentHeartbeatRun[] = [];
+    for (const row of rows) {
+      const runId = asOptionalString(row.run_id);
+      const startedAt = asOptionalString(row.started_at);
+      if (!runId || !startedAt) {
+        continue;
+      }
+
+      const performed = parseJsonArray<string>(row.performed_json).map(String);
+      const skipped = parseJsonArray<string>(row.skipped_json).map(String);
+      const errors = normalizeRunErrors(row.errors_json);
+      const engagementSummary = parseJsonRecord(row.engagement_summary_json);
+      const engagementTotals = parseJsonRecord(engagementSummary?.total);
+
+      let runCounts =
+        engagementTotals && Object.keys(engagementTotals).length > 0
+          ? normalizeCounts(engagementTotals as Partial<EngagementCounts>)
+          : countPerformedActions(performed);
+
+      const eventRows = await db.all<{ event_type: string; count: number }>(
+        `
+          SELECT event_type, COUNT(*) AS count
+          FROM engagement_events
+          WHERE run_id = ?
+          GROUP BY event_type
+        `,
+        [runId]
+      );
+      const countsScope: "lifetime" | "run" =
+        eventRows.length > 0
+          ? "run"
+          : engagementTotals && Object.keys(engagementTotals).length > 0
+            ? "lifetime"
+            : "run";
+      if (eventRows.length > 0) {
+        runCounts = countGroupedEvents(eventRows);
+      }
+
+      const summaryParts: string[] = [];
+      if (performed.length > 0) {
+        summaryParts.push(performed.join(" "));
+      }
+      if (skipped.length > 0) {
+        summaryParts.push(`Skipped: ${skipped.join("; ")}`);
+      }
+
+      runs.push({
+        runId,
+        startedAt,
+        finishedAt: asOptionalString(row.finished_at),
+        status: asOptionalString(row.status) ?? "unknown",
+        summary:
+          asOptionalString(row.summary) ??
+          (summaryParts.length > 0 ? summaryParts.join(" ") : undefined),
+        dryRun: Number(row.dry_run) !== 0,
+        errorCount: Number(row.error_count) || errors.length,
+        skipCount: Number(row.skip_count) || skipped.length,
+        runCounts,
+        countsScope,
+        errors,
+        skipped,
+        performed,
+        plannedActions: parseJsonArray<string>(row.planned_actions_json).map(String),
+        source: "sqlite"
+      });
+    }
+    return runs;
+  } finally {
+    await db.close();
+  }
 }
 
 export async function readSqliteAgentSnapshot(

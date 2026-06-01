@@ -31,6 +31,7 @@ for agent in data.get("agents", []):
     if not agent.get("envFile"):
         raise SystemExit(f"Agent {agent['agentId']} needs envFile")
     agent.setdefault("displayName", agent["agentId"])
+    agent.setdefault("runtimeKind", "moltbook")
     agent.setdefault("serviceName", f"moltbook-outreach-{agent['agentId']}")
     agent.setdefault("executorServiceName", f"{agent['serviceName']}-executor")
 
@@ -62,6 +63,8 @@ DASHBOARD_HOST="$(value dashboard.host)"
 DASHBOARD_PORT="$(value dashboard.port)"
 REMOTE_INSTALL_STAMP_PATH="$DEPLOY_PATH/.runtime-deps-stamp"
 DASHBOARD_ENV_FILE="$(value dashboard.envFile)"
+LOCAL_REDDIT_STORAGE_STATE="${MOLTBOOK_ANALYTICS_DEPLOY_REDDIT_STORAGE_STATE:-$SCRIPT_DIR/outreach-agent/.browser/reddit-storage-state.json}"
+REMOTE_REDDIT_STORAGE_STATE="$REMOTE_REPO_DIR/outreach-agent/.browser/reddit-storage-state.json"
 
 RSYNC_OPTS=(-az --compress --human-readable --delete)
 
@@ -94,7 +97,16 @@ rsync "${RSYNC_OPTS[@]}" \
   "$SCRIPT_DIR/" \
   "$SSH_HOST:$REMOTE_REPO_DIR/"
 
-MANIFEST_JSON="$MANIFEST_JSON" MANIFEST_DIR="$(dirname "$MANIFEST_PATH")" python3 - <<'PY' | while IFS=$'\t' read -r agent_id metadata_json env_file remote_runtime_dir remote_env_file; do
+if [[ -f "$LOCAL_REDDIT_STORAGE_STATE" ]]; then
+  ssh "$SSH_HOST" "mkdir -p '$(dirname "$REMOTE_REDDIT_STORAGE_STATE")'"
+  rsync -az -e "ssh" "$LOCAL_REDDIT_STORAGE_STATE" "$SSH_HOST:$REMOTE_REDDIT_STORAGE_STATE"
+else
+  echo "Skipping Reddit storage-state sync; file not found: $LOCAL_REDDIT_STORAGE_STATE"
+fi
+
+agent_provision_plan="$(mktemp)"
+trap 'rm -f "$agent_provision_plan"' EXIT
+MANIFEST_JSON="$MANIFEST_JSON" MANIFEST_DIR="$(dirname "$MANIFEST_PATH")" python3 - <<'PY' >"$agent_provision_plan"
 import json
 import os
 from pathlib import Path
@@ -112,17 +124,27 @@ for agent in data.get("agents", []):
         "description": agent.get("description"),
         "serviceName": agent["serviceName"],
         "profileUrl": agent.get("profileUrl"),
-        "walletAddress": agent.get("walletAddress")
+        "walletAddress": agent.get("walletAddress"),
     }
+    metadata = dict(
+        (key, value) for key, value in metadata.items() if value is not None
+    )
     runtime_dir = agent.get("runtimeDir", f"{deploy_path}/agents/{agent['agentId']}/.runtime")
     remote_env_file = agent.get("remoteEnvFile", f"{deploy_path}/agents/{agent['agentId']}/.env")
+    metadata_json = json.dumps(metadata, separators=(",", ":"))
     print(
-        f"{agent['agentId']}\t{json.dumps(metadata)}\t{env_file}\t{runtime_dir}\t{remote_env_file}"
+        f"{agent['agentId']}\t{metadata_json}\t{env_file}\t{runtime_dir}\t{remote_env_file}\t{agent.get('runtimeKind', 'moltbook')}",
+        flush=True,
     )
 PY
+
+agent_provision_failures=0
+while IFS=$'\t' read -r agent_id metadata_json env_file remote_runtime_dir remote_env_file runtime_kind; do
+  [[ -n "$agent_id" ]] || continue
   if [[ ! -f "$env_file" ]]; then
     echo "Missing env file for $agent_id: $env_file" >&2
-    exit 1
+    agent_provision_failures=1
+    continue
   fi
   remote_agent_dir="$AGENTS_ROOT/$agent_id"
   remote_agent_runtime_link="$remote_agent_dir/.runtime"
@@ -131,9 +153,17 @@ PY
   printf '%s\n' "$metadata_json" | ssh "$SSH_HOST" "cat > '$remote_agent_dir/agent.json'"
   rsync -az -e "ssh" "$env_file" "$SSH_HOST:$remote_env_file"
   if [[ "$remote_runtime_dir" != "$remote_agent_runtime_link" ]]; then
-    ssh "$SSH_HOST" "if [ -e '$remote_agent_runtime_link' ] && [ ! -L '$remote_agent_runtime_link' ]; then echo 'Refusing to replace existing non-symlink path: $remote_agent_runtime_link' >&2; exit 1; fi; ln -sfn '$remote_runtime_dir' '$remote_agent_runtime_link'"
+    if ! ssh "$SSH_HOST" "if [ -e '$remote_agent_runtime_link' ] && [ ! -L '$remote_agent_runtime_link' ]; then echo 'Refusing to replace existing non-symlink path: $remote_agent_runtime_link' >&2; exit 1; fi; ln -sfn '$remote_runtime_dir' '$remote_agent_runtime_link'"; then
+      echo "Failed to link runtime dir for $agent_id: $remote_agent_runtime_link -> $remote_runtime_dir" >&2
+      agent_provision_failures=1
+    fi
   fi
-done
+done <"$agent_provision_plan"
+
+if [[ "$agent_provision_failures" -ne 0 ]]; then
+  echo "One or more agent provisioning steps failed." >&2
+  exit 1
+fi
 
 DASHBOARD_ENV_SOURCE="$DASHBOARD_ENV_FILE" MANIFEST_DIR="$(dirname "$MANIFEST_PATH")" python3 - <<'PY' > /tmp/moltbook-dashboard.env
 import os
@@ -250,24 +280,48 @@ fi
 
 remote_user="$USER"
 
-python3 - <<'PY' | while IFS=$'\t' read -r agent_id service_name executor_service_name runtime_dir remote_env_file; do
+python3 - <<'PY' | while IFS=$'\t' read -r agent_id service_name executor_service_name runtime_dir remote_env_file runtime_kind; do
 import json
 import os
 deploy_path = json.loads(os.environ["MANIFEST_JSON"])["deployPath"]
 for agent in json.loads(os.environ["MANIFEST_JSON"]).get("agents", []):
     runtime_dir = agent.get("runtimeDir", f"{deploy_path}/agents/{agent['agentId']}/.runtime")
     remote_env_file = agent.get("remoteEnvFile", f"{deploy_path}/agents/{agent['agentId']}/.env")
-    print(f"{agent['agentId']}\t{agent['serviceName']}\t{agent['executorServiceName']}\t{runtime_dir}\t{remote_env_file}")
+    print(f"{agent['agentId']}\t{agent['serviceName']}\t{agent['executorServiceName']}\t{runtime_dir}\t{remote_env_file}\t{agent.get('runtimeKind', 'moltbook')}")
 PY
+  state_path="$runtime_dir/state.json"
+  heartbeat_report_path="$runtime_dir/last-heartbeat.json"
+  heartbeat_description="Moltbook outreach heartbeat"
+  heartbeat_command="heartbeat"
+  heartbeat_run_label="heartbeat"
+  executor_description="Moltbook outreach executor"
+  executor_command="executor"
+  executor_run_label="executor"
+  venue="moltbook"
+  if [[ "$runtime_kind" == "reddit" ]]; then
+    heartbeat_description="Reddit outreach heartbeat"
+    heartbeat_command="reddit-heartbeat --live --once --max-actions 1"
+    heartbeat_run_label="reddit heartbeat"
+    executor_description="Reddit outreach executor"
+    executor_command="reddit-executor --live"
+    executor_run_label="reddit executor"
+    venue="reddit"
+  fi
   install_template \
     "$REMOTE_REPO_DIR/outreach-agent/deploy/systemd/moltbook-outreach-heartbeat.service" \
     "/tmp/${service_name}.service" \
+    "__DESCRIPTION__" "$heartbeat_description" \
     "__REMOTE_USER__" "$remote_user" \
     "__PACKAGE_DIR__" "$REMOTE_REPO_DIR/outreach-agent" \
     "__RUNTIME_DIR__" "$runtime_dir" \
     "__ENV_FILE__" "$remote_env_file" \
     "__LOCK_FILE__" "$runtime_dir/heartbeat.lock" \
     "__SERVICE_NAME__" "$service_name" \
+    "__VENUE__" "$venue" \
+    "__STATE_PATH__" "$state_path" \
+    "__HEARTBEAT_REPORT_PATH__" "$heartbeat_report_path" \
+    "__COMMAND__" "$heartbeat_command" \
+    "__RUN_LABEL__" "$heartbeat_run_label" \
     "__AGENT_ID__" "$agent_id"
   sudo -n mv "/tmp/${service_name}.service" "/etc/systemd/system/${service_name}.service"
 
@@ -280,12 +334,18 @@ PY
   install_template \
     "$REMOTE_REPO_DIR/outreach-agent/deploy/systemd/moltbook-outreach-executor.service" \
     "/tmp/${executor_service_name}.service" \
+    "__DESCRIPTION__" "$executor_description" \
     "__REMOTE_USER__" "$remote_user" \
     "__PACKAGE_DIR__" "$REMOTE_REPO_DIR/outreach-agent" \
     "__RUNTIME_DIR__" "$runtime_dir" \
     "__ENV_FILE__" "$remote_env_file" \
     "__LOCK_FILE__" "$runtime_dir/heartbeat.lock" \
     "__SERVICE_NAME__" "$executor_service_name" \
+    "__VENUE__" "$venue" \
+    "__STATE_PATH__" "$state_path" \
+    "__HEARTBEAT_REPORT_PATH__" "$heartbeat_report_path" \
+    "__COMMAND__" "$executor_command" \
+    "__RUN_LABEL__" "$executor_run_label" \
     "__AGENT_ID__" "$agent_id"
   sudo -n mv "/tmp/${executor_service_name}.service" "/etc/systemd/system/${executor_service_name}.service"
 

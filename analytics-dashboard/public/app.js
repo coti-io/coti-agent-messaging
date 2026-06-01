@@ -48,6 +48,14 @@ function agentNameMarkup(agent) {
   return `<div class="agent-name"><a href="${escapeHtml(agent.profileUrl)}" target="_blank" rel="noreferrer">${name}</a></div>`;
 }
 
+function agentIdMarkup(agent) {
+  const agentId = escapeHtml(agent.agentId);
+  if (!agent.profileUrl) {
+    return `<div class="agent-id">${agentId}</div>`;
+  }
+  return `<div class="agent-id"><a href="${escapeHtml(agent.profileUrl)}" target="_blank" rel="noreferrer" class="agent-id-link">${agentId}</a></div>`;
+}
+
 function card(label, value, detail = "") {
   return `
     <article class="card">
@@ -72,6 +80,151 @@ function renderEngagementCards(summary) {
   ].join("");
 }
 
+const expandedAgentIds = new Set();
+
+function runStatusClass(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "ok") {
+    return "";
+  }
+  if (normalized === "failed" || normalized === "degraded") {
+    return "warn";
+  }
+  return "warn";
+}
+
+function renderRunCounts(counts, scope = "lifetime") {
+  const prefix = scope === "lifetime" ? "Lifetime: " : "This run: ";
+  return `${prefix}${formatNumber(counts.posts)} posts · ${formatNumber(counts.comments)} comments · ${formatNumber(counts.replies)} replies`;
+}
+
+function formatRunIdDisplay(run) {
+  if (!run.runId) {
+    return "";
+  }
+  return String(run.runId).replace(/^(heartbeat|executor):/, "");
+}
+
+function renderRunDetailList(items, emptyLabel) {
+  if (!items.length) {
+    return `<div class="run-detail-line subtle">${emptyLabel}</div>`;
+  }
+  return items
+    .map((item) => `<div class="run-detail-line">${escapeHtml(item)}</div>`)
+    .join("");
+}
+
+function renderRunErrors(errors) {
+  if (!errors.length) {
+    return `<div class="run-detail-line subtle">No errors recorded.</div>`;
+  }
+  return errors
+    .map((error) => {
+      const phase = error.phase ? `${error.phase}: ` : "";
+      return `<div class="run-detail-line run-detail-error">${escapeHtml(`${phase}${error.message}`)}</div>`;
+    })
+    .join("");
+}
+
+function renderAgentRunsPanel(agent) {
+  const runs = Array.isArray(agent.recentRuns) ? agent.recentRuns : [];
+  if (!runs.length) {
+    return `<div class="agent-runs-panel subtle">No run history yet. Heartbeat reports will appear after the next successful run.</div>`;
+  }
+
+  return `
+    <div class="agent-runs-panel">
+      <div class="agent-runs-heading">Last ${runs.length} run${runs.length === 1 ? "" : "s"}</div>
+      <div class="agent-runs-list">
+        ${runs
+          .map((run) => {
+            const dryRunLabel = run.dryRun ? " · dry-run" : "";
+            const runIdLine = formatRunIdDisplay(run);
+            const countsScope = run.countsScope === "run" ? "run" : "lifetime";
+            return `
+              <article class="agent-run-card">
+                <div class="agent-run-card-head">
+                  <div class="agent-run-main">
+                    <div class="agent-run-title">
+                      <span class="badge ${badgeClass(run.status === "ok")} ${runStatusClass(run.status)}">${escapeHtml(run.status)}</span>
+                      <span class="agent-run-time">${formatTime(run.finishedAt ?? run.startedAt)}</span>
+                    </div>
+                    ${runIdLine ? `<div class="agent-run-id subtle">${escapeHtml(runIdLine)}${escapeHtml(dryRunLabel)}</div>` : ""}
+                    <div class="agent-run-summary">${escapeHtml(run.summary || "No summary recorded.")}</div>
+                    ${
+                      run.activityThisRun
+                        ? `<div class="agent-run-activity subtle">${escapeHtml(run.activityThisRun)}</div>`
+                        : ""
+                    }
+                  </div>
+                  <div class="agent-run-metrics">
+                    <div>${renderRunCounts(run.runCounts, countsScope)}</div>
+                    <div class="subtle">${formatNumber(run.errorCount)} errors · ${formatNumber(run.skipCount)} skipped · ${formatNumber(run.queuedActionJobs ?? 0)} queued</div>
+                  </div>
+                </div>
+                ${
+                  run.performed.length
+                    ? `<div class="run-detail-block"><div class="run-detail-label">Performed</div>${renderRunDetailList(run.performed, "No performed actions recorded.")}</div>`
+                    : ""
+                }
+                ${
+                  run.skipped.length
+                    ? `<div class="run-detail-block"><div class="run-detail-label">Skipped</div>${renderRunDetailList(run.skipped.slice(0, 10), "No skipped actions recorded.")}${run.skipped.length > 10 ? `<div class="run-detail-line subtle">+${run.skipped.length - 10} more</div>` : ""}</div>`
+                    : ""
+                }
+                ${
+                  run.errors.length
+                    ? `<div class="run-detail-block"><div class="run-detail-label">Errors</div>${renderRunErrors(run.errors)}</div>`
+                    : ""
+                }
+                ${
+                  run.ingestionSummary
+                    ? `<div class="run-detail-block"><div class="run-detail-label">Ingestion</div><div class="run-detail-line">${escapeHtml(run.ingestionSummary)}</div></div>`
+                    : ""
+                }
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+function toggleAgentRuns(agentId) {
+  if (expandedAgentIds.has(agentId)) {
+    expandedAgentIds.delete(agentId);
+  } else {
+    expandedAgentIds.add(agentId);
+  }
+  const detailRow = document.querySelector(`tr.agent-runs-row[data-agent-id="${agentId}"]`);
+  const mainRow = document.querySelector(`tr.agent-row[data-agent-id="${agentId}"]`);
+  if (!detailRow || !mainRow) {
+    return;
+  }
+  const expanded = expandedAgentIds.has(agentId);
+  detailRow.hidden = !expanded;
+  mainRow.classList.toggle("expanded", expanded);
+  mainRow.setAttribute("aria-expanded", expanded ? "true" : "false");
+}
+
+function bindAgentRowHandlers() {
+  document.querySelectorAll("tr.agent-row[data-agent-id]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("a")) {
+        return;
+      }
+      toggleAgentRuns(row.dataset.agentId);
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggleAgentRuns(row.dataset.agentId);
+      }
+    });
+  });
+}
+
 function renderAgents(agents) {
   const root = document.getElementById("agents-table");
   if (!agents.length) {
@@ -79,16 +232,30 @@ function renderAgents(agents) {
     return;
   }
 
+  const knownIds = new Set(agents.map((agent) => agent.agentId));
+  for (const agentId of [...expandedAgentIds]) {
+    if (!knownIds.has(agentId)) {
+      expandedAgentIds.delete(agentId);
+    }
+  }
+
   root.innerHTML = agents
-    .map((agent) => {
+    .flatMap((agent) => {
       const summary = agent.engagementSummary;
       const schedulerFresh = agent.schedulerHealth === "fresh";
       const lastRunOk = agent.latestStatus === "ok";
-      return `
-        <tr>
+      const expanded = expandedAgentIds.has(agent.agentId);
+      return [
+        `
+        <tr class="agent-row ${expanded ? "expanded" : ""}" data-agent-id="${escapeHtml(agent.agentId)}" tabindex="0" role="button" aria-expanded="${expanded ? "true" : "false"}">
           <td>
-            ${agentNameMarkup(agent)}
-            <div class="agent-id">${agent.agentId}</div>
+            <div class="agent-row-label">
+              <span class="agent-expand-indicator" aria-hidden="true">${expanded ? "▼" : "▶"}</span>
+              <div>
+                ${agentNameMarkup(agent)}
+                ${agentIdMarkup(agent)}
+              </div>
+            </div>
           </td>
           <td><span class="badge ${badgeClass(schedulerFresh)}">${agent.schedulerHealth || "unknown"}</span></td>
           <td><span class="badge ${badgeClass(lastRunOk)}">${agent.latestStatus || "unknown"}</span></td>
@@ -97,11 +264,19 @@ function renderAgents(agents) {
           <td>${formatNumber(summary.windows.lastWeek.total)}</td>
           <td>${formatNumber(summary.total.total)}</td>
           <td>${formatNumber(agent.pendingWrites)}</td>
-          <td>${formatTime(agent.lastSuccessfulHeartbeatAt)}</td>
+          <td>${formatTime(agent.lastSuccessfulHeartbeatAt ?? agent.lastHeartbeatAt)}</td>
         </tr>
-      `;
+        `,
+        `
+        <tr class="agent-runs-row" data-agent-id="${escapeHtml(agent.agentId)}" ${expanded ? "" : "hidden"}>
+          <td colspan="9">${renderAgentRunsPanel(agent)}</td>
+        </tr>
+        `
+      ];
     })
     .join("");
+
+  bindAgentRowHandlers();
 }
 
 function renderCoti(coti) {
@@ -370,7 +545,7 @@ function renderPromptRotation(agents) {
           <div class="rotation-agent-header">
             <div>
               ${agentNameMarkup(agent)}
-              <div class="agent-id">${escapeHtml(agent.agentId)}</div>
+              ${agentIdMarkup(agent)}
             </div>
             <div class="prompt-chips">
               ${promptChip("scope", prompt.currentScopeKey)}
@@ -428,7 +603,7 @@ function renderContent(agents, attribution) {
           <tr>
             <td>
               ${agentNameMarkup(agent)}
-              <div class="agent-id">${escapeHtml(agent.agentId)}</div>
+              ${agentIdMarkup(agent)}
             </td>
             <td>
               <div class="agent-name">${escapeHtml(prompt.promptVariantLabel || prompt.promptVariantId || "n/a")}</div>

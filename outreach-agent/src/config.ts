@@ -178,6 +178,10 @@ export function resolveRedditMemoryPath(rawPath?: string): string {
   const agentRoot = getOutreachAgentRoot();
   const configured = rawPath?.trim();
   if (!configured) {
+    const runtimeDir = getOptionalEnv("OUTREACH_RUNTIME_DIR");
+    if (runtimeDir) {
+      return path.join(resolveHomePath(runtimeDir), "reddit-memory.json");
+    }
     return path.join(agentRoot, ".data", "reddit-memory.json");
   }
   if (path.isAbsolute(configured)) {
@@ -192,6 +196,10 @@ function defaultRedditBrowserBridgeDir(packageRoot: string): string {
 }
 
 function defaultRedditMemoryPath(packageRoot: string): string {
+  const runtimeDir = getOptionalEnv("OUTREACH_RUNTIME_DIR");
+  if (runtimeDir) {
+    return path.join(resolveHomePath(runtimeDir), "reddit-memory.json");
+  }
   return path.join(packageRoot, ".data", "reddit-memory.json");
 }
 

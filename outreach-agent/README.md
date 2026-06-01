@@ -42,7 +42,7 @@ node outreach-agent/dist/src/index.js heartbeat
 
 ## Deploy To `grant`
 
-The package includes `outreach-agent/deploy-rsync.sh`, which deploys a repo subset to the SSH config host `grant`, syncs a local env file, builds the outreach workspace on the server, and installs a `systemd` timer that runs one heartbeat every 5 minutes.
+The package includes `outreach-agent/deploy-rsync.sh`, which deploys a repo subset to the SSH config host `grant`, syncs a local env file, copies `outreach-agent/.browser/reddit-storage-state.json` when present, builds the outreach workspace on the server, and installs a `systemd` timer that runs one heartbeat every 5 minutes.
 
 Default remote settings:
 
@@ -74,6 +74,7 @@ Optional deploy env vars:
 ```bash
 export MOLTBOOK_OUTREACH_DEPLOY_PATH=/home/ubuntu/outreach-agent
 export MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE=/absolute/path/to/outreach-agent.env
+export MOLTBOOK_OUTREACH_DEPLOY_REDDIT_STORAGE_STATE=/absolute/path/to/reddit-storage-state.json
 export MOLTBOOK_OUTREACH_DEPLOY_DELETE=1
 ```
 
@@ -227,10 +228,13 @@ npm run reddit:scan -w @coti-agent-messaging/outreach-agent -- --input reddit-ex
 npm run reddit:evaluate -w @coti-agent-messaging/outreach-agent -- --history outreach-agent/.data/reddit-outbound-history.json
 npm run reddit:publish -w @coti-agent-messaging/outreach-agent -- --input outreach-agent/.data/reddit-action.json
 npm run reddit:login -w @coti-agent-messaging/outreach-agent
+npm run reddit:login:grant -w @coti-agent-messaging/outreach-agent
 npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
 npm run reddit:browser:install:deps -w @coti-agent-messaging/outreach-agent
 npm run reddit:session:dry-run -w @coti-agent-messaging/outreach-agent
 npm run reddit:session -w @coti-agent-messaging/outreach-agent
+npm run reddit:heartbeat -w @coti-agent-messaging/outreach-agent
+npm run reddit:executor -w @coti-agent-messaging/outreach-agent
 npm run reddit:docker:build -w @coti-agent-messaging/outreach-agent
 npm run reddit:docker:worker -w @coti-agent-messaging/outreach-agent
 npm run reddit:docker:session:dry-run -w @coti-agent-messaging/outreach-agent
@@ -263,7 +267,19 @@ Controller behavior:
 - `api`: submits `create_post`, `comment_on_post`, and `reply_to_comment` through Reddit OAuth using `REDDIT_ACCESS_TOKEN` and `REDDIT_USER_AGENT`
 - `browser`: writes publish requests into `outreach-agent/.bridge/reddit-browser/requests` and waits for a matching response file in `responses`; the bundled `reddit-browser-worker` command fulfills those requests through Playwright and returns remote ids/URLs
 
-`reddit-session` is the autonomous operating loop. In dry-run mode it reads Reddit state, ranks candidate comments/posts, drafts a validated zero-marketing reply, writes memory, and prints a decision report without publishing. In live mode (`reddit:session`) it publishes at most one reply/comment through the selected controller, then records the outcome in `OUTREACH_REDDIT_MEMORY_PATH`.
+`reddit-session` remains the convenience single-command loop for local/manual use. For Grant or any anti-bot deployment, use the split runtime instead:
+
+- `reddit-heartbeat`: ingest + decide + queue a delayed write
+- `reddit-executor`: execute queued Reddit writes only after `notBefore`
+
+When `OUTREACH_RUNTIME_DIR` is set, the Reddit runtime writes its Grant-friendly artifacts into that directory:
+
+- `state.json`
+- `last-heartbeat.json`
+- `reddit-memory.json`
+- `prompt-rotation.json`
+
+That keeps analytics discovery compatible without faking a Moltbook runtime.
 
 Operating-agent config:
 
@@ -279,6 +295,28 @@ OUTREACH_REDDIT_MAX_JITTER_MINUTES=67
 OUTREACH_REDDIT_SESSION_DRY_RUN=true
 OUTREACH_REDDIT_MEMORY_PATH=.data/reddit-memory.json
 OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS=4
+```
+
+For Grant, prefer:
+
+```bash
+OUTREACH_RUNTIME_DIR=/home/ubuntu/coti-agent-messaging/runtime/reddit-unofficial-api
+OUTREACH_REDDIT_CONTROLLER=unofficial
+OUTREACH_REDDIT_READ_CONTROLLER=unofficial
+OUTREACH_REDDIT_SESSION_DRY_RUN=false
+```
+
+Then run the split services instead of `reddit-session`:
+
+```bash
+npm run reddit:heartbeat -w @coti-agent-messaging/outreach-agent
+npm run reddit:executor -w @coti-agent-messaging/outreach-agent
+```
+
+The repo manifest `deploy/agents.json` now includes a dedicated analytics/deploy entry for `reddit-unofficial-api` / `Reddit Outreach`. Deploy that stack with:
+
+```bash
+npm run analytics:deploy:rsync
 ```
 
 Discovery reads up to that many **hot threads per session** (comments + post). Set `0` to only re-read threads you already touched in memory.
@@ -302,6 +340,18 @@ npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
 ```
 
 `reddit:login` opens a visible Playwright browser, lets you log in manually, checks `/api/me.json` to confirm the session is authenticated, and saves the Playwright storage state to the configured path. Copy that file to the server if you want the browser worker there to reuse the same session.
+
+`reddit:login:grant` does the same login bootstrap and then immediately syncs the refreshed `reddit-storage-state.json` to `grant`. By default it pushes to both:
+
+- `/home/ubuntu/outreach-agent/outreach-agent/.browser/reddit-storage-state.json`
+- `/home/ubuntu/coti-agent-messaging/repo/outreach-agent/.browser/reddit-storage-state.json`
+
+Override those targets with:
+
+```bash
+export MOLTBOOK_OUTREACH_REMOTE_REDDIT_STORAGE_STATE_PATH=/custom/remote/path/reddit-storage-state.json
+export MOLTBOOK_ANALYTICS_REMOTE_REDDIT_STORAGE_STATE_PATH=/custom/analytics/path/reddit-storage-state.json
+```
 
 Reddit blocks headless browser automation ("network security"). Browser login and `reddit:browser-worker` default to a visible Playwright window; set `OUTREACH_REDDIT_BROWSER_HEADLESS=true` or `OUTREACH_REDDIT_BROWSER_LOGIN_HEADLESS=true` only if you explicitly want headless. On WSL, set `DISPLAY=:0` so the browser can open on your Windows desktop.
 

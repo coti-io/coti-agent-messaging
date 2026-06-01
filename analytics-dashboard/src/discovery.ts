@@ -3,8 +3,44 @@ import path from "node:path";
 
 import { extractRecentPublishedFromState } from "./content";
 import { summarizeEngagements } from "./engagements";
+import { loadAgentRecentRuns } from "./runs";
 import { readSqliteAgentSnapshot } from "./storage";
+import type { SqliteAgentSnapshot } from "./storage";
 import type { AgentCurrentPrompt, AgentMetadata, AgentRuntimePaths, DiscoveredAgent } from "./types";
+
+const HEARTBEAT_FRESHNESS_MS = 15 * 60 * 1_000;
+
+function resolveSchedulerHealth(
+  heartbeatAt: string | undefined,
+  now: Date
+): DiscoveredAgent["schedulerHealth"] {
+  if (!heartbeatAt) {
+    return "unknown";
+  }
+  const timestamp = Date.parse(heartbeatAt);
+  if (Number.isNaN(timestamp)) {
+    return "unknown";
+  }
+  return now.getTime() - timestamp <= HEARTBEAT_FRESHNESS_MS ? "fresh" : "stale";
+}
+
+function resolveHeartbeatAt(
+  sqliteSnapshot: SqliteAgentSnapshot | undefined,
+  state: Record<string, unknown> | undefined,
+  report: Record<string, unknown> | undefined
+): string | undefined {
+  const reportPhase = report?.phase;
+  const reportHeartbeatTime =
+    reportPhase === "executor"
+      ? undefined
+      : asOptionalString(report?.finishedAt) ?? asOptionalString(report?.startedAt);
+
+  return (
+    sqliteSnapshot?.lastHeartbeatAt ??
+    asOptionalString(state?.lastHeartbeatAt) ??
+    reportHeartbeatTime
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -262,6 +298,39 @@ function sanitizeServiceName(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/g, "-");
 }
 
+function redditProfileUrlFromAccountId(accountId: string): string {
+  return `https://www.reddit.com/user/${encodeURIComponent(accountId)}`;
+}
+
+async function resolveProfileUrl(
+  paths: AgentRuntimePaths,
+  metadata: AgentMetadata,
+  state: Record<string, unknown> | undefined
+): Promise<string | undefined> {
+  if (metadata.profileUrl) {
+    return metadata.profileUrl;
+  }
+
+  const stateAccountId = asOptionalString(state?.venueAccountId);
+  if (stateAccountId) {
+    return redditProfileUrlFromAccountId(stateAccountId);
+  }
+
+  try {
+    const envRaw = await readFile(paths.envPath, "utf8");
+    const accountId = parseEnvFile(envRaw).OUTREACH_VENUE_ACCOUNT_ID?.trim();
+    if (accountId) {
+      return redditProfileUrlFromAccountId(accountId);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  return undefined;
+}
+
 function normalizeMetadata(agentDir: string, parsed: Record<string, unknown> | undefined): AgentMetadata {
   const fallbackId = path.basename(agentDir);
   const agentId = asOptionalString(parsed?.agentId) ?? fallbackId;
@@ -316,10 +385,14 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       readJson(paths.reportPath),
       readCurrentPrompt(paths, agentRoot)
     ]);
-    const metadata = normalizeMetadata(agentDir, metadataJson.value);
+    let metadata = normalizeMetadata(agentDir, metadataJson.value);
     const normalizedPaths =
       metadata.agentId === entry ? paths : buildPaths(agentRoot, metadata.agentId);
     const state = stateJson.value;
+    const profileUrl = await resolveProfileUrl(normalizedPaths, metadata, state);
+    if (profileUrl) {
+      metadata = { ...metadata, profileUrl };
+    }
     const report = reportJson.value;
     let sqliteSnapshot;
     try {
@@ -342,6 +415,11 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
     const skipped =
       sqliteSnapshot?.latestSkipped ?? (Array.isArray(report?.skipped) ? report.skipped.length : 0);
 
+    const recentRuns = await loadAgentRecentRuns(normalizedPaths, report, 5);
+    const lastHeartbeatAt = resolveHeartbeatAt(sqliteSnapshot, state, report);
+    const schedulerHealth =
+      sqliteSnapshot?.schedulerHealth ?? resolveSchedulerHealth(lastHeartbeatAt, now);
+
     agents.push({
       metadata,
       paths: normalizedPaths,
@@ -352,14 +430,11 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       state,
       report,
       engagementSummary,
-      lastHeartbeatAt:
-        sqliteSnapshot?.lastHeartbeatAt ??
-        asOptionalString(state?.lastHeartbeatAt) ??
-        asOptionalString(report?.finishedAt),
+      lastHeartbeatAt,
       lastPostAt: asOptionalString(state?.lastPostAt),
       lastCommentAt: asOptionalString(state?.lastCommentAt),
       pendingWrites,
-      schedulerHealth: sqliteSnapshot?.schedulerHealth ?? "unknown",
+      schedulerHealth,
       lastSuccessfulHeartbeatAt:
         sqliteSnapshot?.lastSuccessfulHeartbeatAt ??
         (asOptionalString(report?.status) === "ok" ? asOptionalString(report?.finishedAt) : undefined),
@@ -369,7 +444,8 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       latestErrors: errors,
       latestSkipped: skipped,
       currentPrompt,
-      recentPublished: extractRecentPublishedFromState(state)
+      recentPublished: extractRecentPublishedFromState(state),
+      recentRuns
     });
   }
 

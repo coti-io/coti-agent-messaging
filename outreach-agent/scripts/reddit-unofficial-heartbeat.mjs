@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Run live reddit-session iterations via unofficial oauth transport.
+ * Run live Reddit heartbeat iterations via unofficial oauth transport.
  * Reddit planner only supports comment_on_post + reply_to_comment (no create_post).
  *
  * Usage:
@@ -35,11 +35,11 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function runSession(env) {
+function runHeartbeat(env) {
   return new Promise((resolve) => {
     const child = spawn(
       "node",
-      ["dist/src/index.js", "reddit-session", "--live", "--once", "--max-actions", "1"],
+      ["dist/src/index.js", "reddit-heartbeat", "--live", "--once", "--max-actions", "1"],
       {
         cwd: packageRoot,
         env: { ...process.env, ...env },
@@ -162,17 +162,14 @@ async function main() {
     const runStartedAt = new Date().toISOString();
     const rotatedQuery = discoveryQueries[(runIndex - 1) % discoveryQueries.length] ?? discoveryQueries[0];
     console.log(`\n--- Run ${runIndex}/${runs} @ ${runStartedAt} ---`);
-    console.log(`unofficial ingest+post; query="${rotatedQuery}" seed=${batchDiscoverySeed + runIndex}`);
+    console.log(`unofficial ingest+decide; query="${rotatedQuery}" seed=${batchDiscoverySeed + runIndex}`);
 
-    const { code, stdout, stderr } = await runSession({
+    const { code, stdout, stderr } = await runHeartbeat({
       OUTREACH_AGENT_VENUE: "reddit",
       OUTREACH_AGENT_MODE: "approved_autopost",
       OUTREACH_REDDIT_CONTROLLER: "unofficial",
       OUTREACH_REDDIT_READ_CONTROLLER: "unofficial",
       OUTREACH_REDDIT_SESSION_DRY_RUN: "false",
-      OUTREACH_REDDIT_PUBLISH_IMMEDIATELY: "true",
-      OUTREACH_REDDIT_MIN_JITTER_MINUTES: "0",
-      OUTREACH_REDDIT_MAX_JITTER_MINUTES: "1",
       OUTREACH_REDDIT_MAX_ACTIONS_PER_DAY: "12",
       OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS: "4",
       OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT: "1",

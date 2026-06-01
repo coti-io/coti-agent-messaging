@@ -5,7 +5,7 @@ import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 
 import { appendRedditMemory, loadRedditMemory, pruneDraftedRedditMemory } from "../src/reddit-memory.js";
-import { runRedditSession } from "../src/reddit-session.js";
+import { runRedditExecutor, runRedditSession } from "../src/reddit-session.js";
 import type { MoltbookRuntimeConfig } from "../src/config.js";
 import type { JsonLlmProvider } from "../src/llm-client.js";
 import type { RedditIngestionResult } from "../src/reddit-ingestion.js";
@@ -219,11 +219,14 @@ test("reddit session dry-run emits decision report and records draft without pub
 test("reddit session live mode publishes at most one action and records outcome", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-live-"));
   const memoryPath = path.join(tempDir, "memory.json");
+  const queuedAt = new Date("2026-05-19T09:00:00.000Z");
   const published: VenueAction[] = [];
   const firstReport = await runRedditSession({
     config: createConfig(memoryPath),
     ingestion,
     dryRun: false,
+    now: queuedAt,
+    rng: () => 0,
     publishAction: async (action) => {
       published.push(action);
       return {
@@ -244,10 +247,10 @@ test("reddit session live mode publishes at most one action and records outcome"
   assert.equal(firstReport.queuedActionJobs.length, 1);
   assert.equal(firstReport.selectedActionBundle?.selectedWriteCandidateId, "comment:AI_Agents:comment-1");
 
-  const report = await runRedditSession({
+  const report = await runRedditExecutor({
     config: createConfig(memoryPath),
-    ingestion,
     dryRun: false,
+    now: new Date(queuedAt.getTime() + 6 * 60_000),
     fetchImpl: async (input) => {
       const url = new URL(input instanceof URL ? input.toString() : String(input));
       assert.equal(url.pathname, "/r/AI_Agents/comments/post-1.json");
@@ -288,10 +291,13 @@ test("reddit session live mode publishes at most one action and records outcome"
 test("reddit session marks a published reply as spam filtered when it is not publicly visible", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-hidden-"));
   const memoryPath = path.join(tempDir, "memory.json");
+  const queuedAt = new Date("2026-05-19T09:00:00.000Z");
   await runRedditSession({
     config: createConfig(memoryPath),
     ingestion,
     dryRun: false,
+    now: queuedAt,
+    rng: () => 0,
     publishAction: async (action) => ({
       id: "queued-hidden",
       venue: "reddit",
@@ -304,10 +310,10 @@ test("reddit session marks a published reply as spam filtered when it is not pub
     })
   });
 
-  const report = await runRedditSession({
+  const report = await runRedditExecutor({
     config: createConfig(memoryPath),
-    ingestion,
     dryRun: false,
+    now: new Date(queuedAt.getTime() + 6 * 60_000),
     fetchImpl: async () => new Response(JSON.stringify(createPublicThreadListing("post-1", []))),
     publishAction: async (action) => ({
       id: "outcome-hidden",
@@ -357,6 +363,7 @@ test("reddit session uses softer prompt params after a hidden reply in the same 
 test("reddit session live can publish after batch prune clears prior dry-run draft", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-reuse-"));
   const memoryPath = path.join(tempDir, "memory.json");
+  const queuedAt = new Date("2026-05-19T09:00:00.000Z");
   await runRedditSession({
     config: createConfig(memoryPath),
     ingestion,
@@ -375,6 +382,8 @@ test("reddit session live can publish after batch prune clears prior dry-run dra
     config: createConfig(memoryPath),
     ingestion,
     dryRun: false,
+    now: queuedAt,
+    rng: () => 0,
     publishAction: async (action) => {
       published.push(action);
       return {
@@ -392,10 +401,10 @@ test("reddit session live can publish after batch prune clears prior dry-run dra
   assert.equal(published.length, 0);
   assert.equal(queued.queuedActionJobs.length, 1);
 
-  const report = await runRedditSession({
+  const report = await runRedditExecutor({
     config: createConfig(memoryPath),
-    ingestion,
     dryRun: false,
+    now: new Date(queuedAt.getTime() + 6 * 60_000),
     publishAction: async (action) => {
       published.push(action);
       return {

@@ -218,6 +218,142 @@ th {
   font-size: 12px;
 }
 
+.agent-id-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.agent-id-link:hover {
+  text-decoration: underline;
+}
+
+tr.agent-row {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+tr.agent-row:hover,
+tr.agent-row.expanded {
+  background: rgba(114, 228, 255, 0.06);
+}
+
+tr.agent-row:focus-visible {
+  outline: 2px solid rgba(114, 228, 255, 0.45);
+  outline-offset: -2px;
+}
+
+.agent-row-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.agent-expand-indicator {
+  flex: none;
+  margin-top: 4px;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+tr.agent-runs-row td {
+  padding-top: 0;
+  background: rgba(8, 17, 31, 0.35);
+}
+
+.agent-runs-panel {
+  padding: 4px 0 14px 22px;
+}
+
+.agent-runs-heading {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-runs-list {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-run-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(8, 17, 31, 0.45);
+}
+
+.agent-run-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.agent-run-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-run-time {
+  font-weight: 650;
+}
+
+.agent-run-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-run-id {
+  margin-top: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.agent-run-summary {
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.agent-run-activity {
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.agent-run-metrics {
+  min-width: 220px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.run-detail-block {
+  margin-top: 10px;
+}
+
+.run-detail-label {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.run-detail-line {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.run-detail-error {
+  color: var(--warn);
+}
+
 .content-meta {
   margin-top: 6px;
   color: var(--muted);

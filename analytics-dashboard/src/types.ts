@@ -36,6 +36,28 @@ export interface AgentRuntimePaths {
   reportPath: string;
 }
 
+export interface AgentHeartbeatRun {
+  runId: string;
+  phase?: "heartbeat" | "executor";
+  startedAt: string;
+  finishedAt?: string;
+  status: string;
+  summary?: string;
+  dryRun?: boolean;
+  errorCount: number;
+  skipCount: number;
+  runCounts: EngagementCounts;
+  errors: Array<{ phase?: string; message: string }>;
+  skipped: string[];
+  performed: string[];
+  plannedActions: string[];
+  queuedActionJobs?: number;
+  ingestionSummary?: string;
+  activityThisRun?: string;
+  countsScope?: "lifetime" | "run";
+  source: "sqlite" | "jsonl" | "report";
+}
+
 export interface DiscoveredAgent {
   metadata: AgentMetadata;
   paths: AgentRuntimePaths;
@@ -59,6 +81,7 @@ export interface DiscoveredAgent {
   latestSkipped: number;
   currentPrompt?: AgentCurrentPrompt;
   recentPublished?: AgentRecentPublished[];
+  recentRuns: AgentHeartbeatRun[];
 }
 
 export interface AgentRecentPublished {

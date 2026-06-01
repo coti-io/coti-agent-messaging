@@ -22,6 +22,13 @@ export interface RedditMemoryStore {
   queuedJobs?: ActionJob[];
 }
 
+export async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.tmp-${process.pid}`;
+  await writeFile(tempPath, JSON.stringify(value, null, 2), "utf8");
+  await rename(tempPath, filePath);
+}
+
 export async function loadRedditMemory(filePath: string): Promise<RedditMemoryStore> {
   try {
     const raw = await readFile(filePath, "utf8");
@@ -50,13 +57,10 @@ export async function loadRedditMemory(filePath: string): Promise<RedditMemorySt
 }
 
 export async function saveRedditMemory(filePath: string, store: RedditMemoryStore): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.tmp-${process.pid}`;
-  await writeFile(tempPath, JSON.stringify({
+  await writeJsonAtomic(filePath, {
     ...store,
     generatedAt: new Date().toISOString()
-  }, null, 2), "utf8");
-  await rename(tempPath, filePath);
+  });
 }
 
 /** Drop ephemeral dry-run rows; posted/removed/etc. history is kept. */

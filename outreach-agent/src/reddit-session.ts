@@ -1,7 +1,14 @@
+import { readFile } from "node:fs/promises";
+
 import { getOutreachAgentConfig, getRedditControllerConfig, getRedditOperatingAgentConfig, loadRuntimeConfig } from "./config.js";
-import { createActionJob, type ActionJob } from "./action-planning.js";
+import { appendHeartbeatRunHistory } from "./heartbeat-run-history.js";
+import { computeActionJobNotBefore, createActionJob, type ActionJob, type ConstrainedActionCandidate, type ActionConstraint } from "./action-planning.js";
 import { draftRedditResponse } from "./reddit-drafting.js";
-import { recordPromptRotationAction, selectPromptVariant } from "./prompt-rotation.js";
+import {
+  recordPromptRotationAction,
+  selectPromptVariant,
+  type PromptRotationHistoryEntry
+} from "./prompt-rotation.js";
 import {
   ingestRedditState,
   parseRedditThreadUrl,
@@ -9,7 +16,13 @@ import {
   resolveRedditTargetUrl
 } from "./reddit-ingestion.js";
 import { enqueueActionJobs, removeActionJob, summarizeActionJobs } from "./job-queue.js";
-import { appendRedditMemory, loadRedditMemory, saveRedditMemory, type RedditMemoryStore } from "./reddit-memory.js";
+import {
+  appendRedditMemory,
+  loadRedditMemory,
+  saveRedditMemory,
+  writeJsonAtomic,
+  type RedditMemoryStore
+} from "./reddit-memory.js";
 import {
   buildRedditActionCandidates,
   chooseRedditActionBundle,
@@ -28,7 +41,6 @@ import type { VenueAction, VenueOutcome } from "./venue.js";
 import type { MoltbookRuntimeConfig } from "./config.js";
 import type { RedditIngestionDiagnostics, RedditIngestionResult } from "./reddit-ingestion.js";
 import { verifyPublicRedditCommentVisibility } from "./reddit-visibility-verification.js";
-import type { ConstrainedActionCandidate, ActionConstraint } from "./action-planning.js";
 import type { PromptParameterSet } from "./prompt-profile.js";
 
 export interface RedditSessionReport {
@@ -83,6 +95,32 @@ export interface RedditSessionReport {
   recorded?: RedditDecisionMemoryEntry;
 }
 
+interface RedditPlannerPhaseOptions {
+  executeDueJobsFirst: boolean;
+  allowImmediatePublish: boolean;
+  now?: Date;
+  rng?: () => number;
+}
+
+interface RedditRuntimeReport {
+  runId: string;
+  phase: "heartbeat" | "executor";
+  startedAt: string;
+  finishedAt: string;
+  status: "ok" | "failed";
+  summary: string;
+  dryRun: boolean;
+  skipped: string[];
+  errors: Array<{ phase: string; message: string }>;
+  actionCandidates: RedditSessionReport["actionCandidates"];
+  selectedActionBundle?: RedditSessionReport["selectedActionBundle"];
+  queuedActionJobs: RedditSessionReport["queuedActionJobs"];
+  ingestion: RedditSessionReport["ingestion"];
+  planner: RedditSessionReport["planner"];
+  outcome?: VenueOutcome;
+  recorded?: RedditDecisionMemoryEntry;
+}
+
 export async function runRedditSession(input: {
   config?: MoltbookRuntimeConfig;
   dryRun?: boolean;
@@ -93,7 +131,30 @@ export async function runRedditSession(input: {
   ingestion?: RedditIngestionResult;
   discoverySeed?: number;
   publishAction?: (action: VenueAction) => Promise<VenueOutcome>;
+  now?: Date;
+  rng?: () => number;
 } = {}): Promise<RedditSessionReport> {
+  return await runRedditPlannerPhase(input, {
+    executeDueJobsFirst: true,
+    allowImmediatePublish: shouldPublishQueuedActionImmediately(),
+    now: input.now,
+    rng: input.rng
+  });
+}
+
+async function runRedditPlannerPhase(input: {
+  config?: MoltbookRuntimeConfig;
+  dryRun?: boolean;
+  maxActions?: number;
+  subreddits?: readonly string[];
+  once?: boolean;
+  fetchImpl?: typeof fetch;
+  ingestion?: RedditIngestionResult;
+  discoverySeed?: number;
+  publishAction?: (action: VenueAction) => Promise<VenueOutcome>;
+  now?: Date;
+  rng?: () => number;
+}, options: RedditPlannerPhaseOptions): Promise<RedditSessionReport> {
   const config = input.config ?? await loadRuntimeConfig({ requireVenue: true });
   const agent = getOutreachAgentConfig(config);
   if (agent.venue !== "reddit") {
@@ -104,7 +165,7 @@ export async function runRedditSession(input: {
   const duplicateCheckPolicy = resolveRedditSessionDuplicateCheckPolicy(dryRun);
   const maxActions = input.maxActions ?? operating.maxActionsPerSession;
   const memory = await loadRedditMemory(operating.memoryPath);
-  const now = new Date();
+  const now = options.now ?? new Date();
   const recentKillReason = findKillSwitch(memory.history);
   if (recentKillReason) {
     const decision = { skipped: [recentKillReason], candidates: [], plannedCandidates: [] };
@@ -123,7 +184,7 @@ export async function runRedditSession(input: {
     };
   }
 
-  if (!dryRun) {
+  if (!dryRun && options.executeDueJobsFirst) {
     const executed = await executeQueuedRedditJob(memory, {
       config,
       publishAction: input.publishAction,
@@ -334,14 +395,19 @@ export async function runRedditSession(input: {
         },
         candidateId: plannedAction.item.id,
         sourceDecisionId: plannedAction.item.id,
-        notBefore: now.toISOString()
+        notBefore: computeActionJobNotBefore({
+          now,
+          order: 0,
+          needsContent: true,
+          rng: options.rng
+        })
       })
     ]).slice(-1);
     await saveRedditMemory(operating.memoryPath, {
       ...memory,
       queuedJobs: nextQueuedJobs
     });
-    if (shouldPublishQueuedActionImmediately()) {
+    if (options.allowImmediatePublish) {
       const storeAfterQueue = await loadRedditMemory(operating.memoryPath);
       const executed = await executeQueuedRedditJob(storeAfterQueue, {
         config,
@@ -430,6 +496,383 @@ export async function runRedditSession(input: {
     outcome,
     recorded: dryRun ? recorded : undefined
   };
+}
+
+export async function runRedditHeartbeat(input: {
+  config?: MoltbookRuntimeConfig;
+  dryRun?: boolean;
+  maxActions?: number;
+  subreddits?: readonly string[];
+  once?: boolean;
+  fetchImpl?: typeof fetch;
+  ingestion?: RedditIngestionResult;
+  discoverySeed?: number;
+  publishAction?: (action: VenueAction) => Promise<VenueOutcome>;
+  now?: Date;
+  rng?: () => number;
+} = {}): Promise<RedditSessionReport> {
+  const config = input.config ?? await loadRuntimeConfig({ requireVenue: true });
+  const startedAt = new Date().toISOString();
+  try {
+    const report = await runRedditPlannerPhase(
+      {
+        ...input,
+        config
+      },
+      {
+        executeDueJobsFirst: false,
+        allowImmediatePublish: false,
+        now: input.now,
+        rng: input.rng
+      }
+    );
+    await persistRedditRuntimeSnapshot(config, {
+      phase: "heartbeat",
+      finishedAt: report.generatedAt,
+      status: "ok"
+    });
+    await persistRedditHeartbeatReport(
+      config,
+      buildRedditRuntimeReport({
+        phase: "heartbeat",
+        startedAt,
+        finishedAt: report.generatedAt,
+        dryRun: report.dryRun,
+        report,
+        status: "ok",
+        skipped: [],
+        errors: []
+      })
+    );
+    return report;
+  } catch (error) {
+    const finishedAt = new Date().toISOString();
+    await persistRedditRuntimeSnapshot(config, {
+      phase: "heartbeat",
+      finishedAt,
+      status: "failed"
+    }).catch(() => undefined);
+    await persistRedditHeartbeatReport(
+      config,
+      buildRedditRuntimeReport({
+        phase: "heartbeat",
+        startedAt,
+        finishedAt,
+        dryRun: input.dryRun ?? getRedditOperatingAgentConfig(config).dryRunDefault,
+        report: undefined,
+        status: "failed",
+        skipped: [],
+        errors: [
+          {
+            phase: "heartbeat",
+            message: error instanceof Error ? error.message : String(error)
+          }
+        ]
+      })
+    ).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function runRedditExecutor(input: {
+  config?: MoltbookRuntimeConfig;
+  dryRun?: boolean;
+  fetchImpl?: typeof fetch;
+  publishAction?: (action: VenueAction) => Promise<VenueOutcome>;
+  now?: Date;
+} = {}): Promise<RedditSessionReport> {
+  const config = input.config ?? await loadRuntimeConfig({ requireVenue: true });
+  const agent = getOutreachAgentConfig(config);
+  if (agent.venue !== "reddit") {
+    throw new Error("reddit-executor requires OUTREACH_AGENT_VENUE=reddit.");
+  }
+  const operating = getRedditOperatingAgentConfig(config);
+  const dryRun = input.dryRun ?? operating.dryRunDefault;
+  const now = input.now ?? new Date();
+
+  if (dryRun) {
+    const store = await loadRedditMemory(operating.memoryPath);
+    const report = buildExecutorSessionReport({
+      now,
+      dryRun,
+      operating,
+      store,
+      skipped: ["Reddit executor skipped because dry-run mode is enabled."]
+    });
+    await persistRedditRuntimeSnapshot(config, {
+      phase: "executor",
+      finishedAt: report.generatedAt,
+      status: "ok"
+    });
+    return report;
+  }
+
+  try {
+    const store = await loadRedditMemory(operating.memoryPath);
+    const executed = await executeQueuedRedditJob(store, {
+      config,
+      publishAction: input.publishAction,
+      now,
+      fetchImpl: input.fetchImpl
+    });
+    const nextStore = executed?.store ?? store;
+    const report = buildExecutorSessionReport({
+      now,
+      dryRun,
+      operating,
+      store: nextStore,
+      outcome: executed?.outcome,
+      recorded: executed?.recorded,
+      skipped: executed ? ["Executed one queued Reddit action."] : ["No queued Reddit actions were due."]
+    });
+    await persistRedditRuntimeSnapshot(config, {
+      phase: "executor",
+      finishedAt: report.generatedAt,
+      status: "ok"
+    });
+    return report;
+  } catch (error) {
+    const finishedAt = new Date().toISOString();
+    await persistRedditRuntimeSnapshot(config, {
+      phase: "executor",
+      finishedAt,
+      status: "failed"
+    }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function persistRedditHeartbeatReport(
+  config: MoltbookRuntimeConfig,
+  report: RedditRuntimeReport
+): Promise<void> {
+  const operating = getRedditOperatingAgentConfig(config);
+  const store = await loadRedditMemory(operating.memoryPath);
+  const engagementSummary = summarizeRedditHistory(store.history, new Date(report.finishedAt));
+  const enrichedReport = {
+    ...report,
+    engagementSummary
+  };
+  await writeJsonAtomic(config.heartbeatReportPath, enrichedReport);
+  await appendHeartbeatRunHistory(config.heartbeatReportPath, enrichedReport);
+}
+
+async function persistRedditRuntimeSnapshot(
+  config: MoltbookRuntimeConfig,
+  input: {
+    phase: "heartbeat" | "executor";
+    finishedAt: string;
+    status: "ok" | "failed";
+  }
+): Promise<void> {
+  const operating = getRedditOperatingAgentConfig(config);
+  const controller = getRedditControllerConfig(config);
+  const store = await loadRedditMemory(operating.memoryPath);
+  const previousState = await readOptionalJsonRecord(config.statePath);
+  const engagementSummary = summarizeRedditHistory(store.history, new Date(input.finishedAt));
+  const recentGeneratedArtifacts = store.history
+    .filter((entry) => entry.status === "posted" || entry.status === "spam_filtered")
+    .slice(-20)
+    .map((entry) => ({
+      id: entry.id,
+      type: entry.kind,
+      createdAt: entry.createdAt,
+      title: entry.kind === "post" ? entry.targetTitle : undefined,
+      content: entry.content,
+      targetSummary: entry.targetSummary ?? entry.targetTitle,
+      promptProfileId: entry.promptProfileId,
+      promptVariantId: entry.promptVariantId,
+      promptVariantRationale: entry.promptVariantRationale,
+      promptParameters: entry.promptParameters,
+      layout: entry.layout,
+      outreachRef: entry.remoteContentUrl
+        ? {
+            remoteContentUrl: entry.remoteContentUrl
+          }
+        : undefined
+    }));
+  const latestComment = [...store.history]
+    .filter((entry) => isRedditPublishedHistoryEntry(entry) && (entry.kind === "comment" || entry.kind === "reply"))
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
+  const latestPost = [...store.history]
+    .filter((entry) => isRedditPublishedHistoryEntry(entry) && entry.kind === "post")
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
+
+  await writeJsonAtomic(config.statePath, {
+    ...previousState,
+    generatedAt: input.finishedAt,
+    venue: "reddit",
+    controller: controller.controller,
+    readSource: operating.readController,
+    memoryPath: operating.memoryPath,
+    queuedActionJobs: store.queuedJobs ?? [],
+    engagementEvents: buildRedditEngagementEvents(store.history),
+    engagementTotals: engagementSummary.total,
+    recentGeneratedArtifacts,
+    lastCommentAt: latestComment?.createdAt,
+    lastPostAt: latestPost?.createdAt,
+    ...(input.phase === "heartbeat"
+      ? {
+          lastHeartbeatAt: input.finishedAt,
+          latestStatus: input.status
+        }
+      : {
+          lastExecutorAt: input.finishedAt,
+          lastExecutorStatus: input.status
+        })
+  });
+}
+
+function buildExecutorSessionReport(input: {
+  now: Date;
+  dryRun: boolean;
+  operating: ReturnType<typeof getRedditOperatingAgentConfig>;
+  store: RedditMemoryStore;
+  outcome?: VenueOutcome;
+  recorded?: RedditDecisionMemoryEntry;
+  skipped: string[];
+}): RedditSessionReport {
+  return {
+    generatedAt: input.now.toISOString(),
+    dryRun: input.dryRun,
+    duplicateCheckPolicy: resolveRedditSessionDuplicateCheckPolicy(input.dryRun),
+    readSource: input.operating.readController,
+    memoryPath: input.operating.memoryPath,
+    ingestion: emptyIngestionSummary(),
+    planner: summarizePlanner({ skipped: input.skipped }),
+    actionCandidates: [],
+    selectedActionBundle: chooseRedditActionBundle([], 1),
+    queuedActionJobs: summarizeQueuedRedditJobs(input.store),
+    decision: {
+      action: undefined,
+      plannedCandidates: [],
+      candidates: [],
+      skipped: input.skipped
+    },
+    outcome: input.outcome,
+    recorded: input.recorded
+  };
+}
+
+function buildRedditRuntimeReport(input: {
+  phase: "heartbeat" | "executor";
+  startedAt: string;
+  finishedAt: string;
+  dryRun: boolean;
+  report?: RedditSessionReport;
+  status: "ok" | "failed";
+  skipped: string[];
+  errors: Array<{ phase: string; message: string }>;
+}): RedditRuntimeReport {
+  const baseReport = input.report;
+  const skipped = [
+    ...(baseReport?.decision.skipped ?? []),
+    ...input.skipped
+  ];
+  return {
+    runId: `${input.phase}:${input.finishedAt}:${process.pid}`,
+    phase: input.phase,
+    startedAt: input.startedAt,
+    finishedAt: input.finishedAt,
+    status: input.status,
+    summary: summarizeRedditRuntimeReport(input.phase, input.status, skipped, input.errors),
+    dryRun: input.dryRun,
+    skipped,
+    errors: input.errors,
+    actionCandidates: baseReport?.actionCandidates ?? [],
+    selectedActionBundle: baseReport?.selectedActionBundle,
+    queuedActionJobs: baseReport?.queuedActionJobs ?? [],
+    ingestion: baseReport?.ingestion ?? emptyIngestionSummary(),
+    planner: baseReport?.planner ?? summarizePlanner({ skipped }),
+    outcome: baseReport?.outcome,
+    recorded: baseReport?.recorded
+  };
+}
+
+function summarizeRedditRuntimeReport(
+  phase: "heartbeat" | "executor",
+  status: "ok" | "failed",
+  skipped: readonly string[],
+  errors: ReadonlyArray<{ phase: string; message: string }>
+): string {
+  if (status === "failed") {
+    return `${phase.toUpperCase()}_FAILED - ${errors[0]?.message ?? "unknown error"}`;
+  }
+  if (skipped.length === 0) {
+    return `${phase.toUpperCase()}_OK - Reddit runtime idle.`;
+  }
+  return `${phase.toUpperCase()}_OK - ${skipped.join(" ")}`;
+}
+
+async function readOptionalJsonRecord(filePath: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const raw = await readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function buildRedditEngagementEvents(history: readonly RedditDecisionMemoryEntry[]) {
+  return history
+    .filter((entry) => isRedditPublishedHistoryEntry(entry))
+    .map((entry) => ({
+      type: entry.kind,
+      createdAt: entry.createdAt
+    }));
+}
+
+function summarizeRedditHistory(history: readonly RedditDecisionMemoryEntry[], now: Date) {
+  const countsSince = (durationMs: number) => countRedditKinds(
+    history.filter((entry) => {
+      if (!isRedditPublishedHistoryEntry(entry)) {
+        return false;
+      }
+      const createdAt = Date.parse(entry.createdAt);
+      return !Number.isNaN(createdAt) && now.getTime() - createdAt <= durationMs;
+    })
+  );
+  return {
+    generatedAt: now.toISOString(),
+    windows: {
+      last2Hours: countsSince(2 * 60 * 60 * 1_000),
+      lastDay: countsSince(24 * 60 * 60 * 1_000),
+      lastWeek: countsSince(7 * 24 * 60 * 60 * 1_000)
+    },
+    total: countRedditKinds(history.filter((entry) => isRedditPublishedHistoryEntry(entry)))
+  };
+}
+
+function countRedditKinds(history: readonly RedditDecisionMemoryEntry[]) {
+  const counts = {
+    posts: 0,
+    comments: 0,
+    replies: 0,
+    upvotes: 0,
+    follows: 0,
+    total: 0
+  };
+  for (const entry of history) {
+    if (entry.kind === "post") {
+      counts.posts += 1;
+    } else if (entry.kind === "comment") {
+      counts.comments += 1;
+    } else if (entry.kind === "reply") {
+      counts.replies += 1;
+    }
+  }
+  counts.total = counts.posts + counts.comments + counts.replies;
+  return counts;
+}
+
+function isRedditPublishedHistoryEntry(entry: RedditDecisionMemoryEntry): boolean {
+  return entry.status !== "drafted" && entry.action !== "skipped";
 }
 
 function resolveRedditSessionDuplicateCheckPolicy(dryRun: boolean): RedditDuplicateCheckPolicy {
@@ -542,6 +985,102 @@ function summarizeQueuedRedditJobs(store: Pick<RedditMemoryStore, "queuedJobs">)
   return summarizeActionJobs(store.queuedJobs ?? []);
 }
 
+type QueuedRedditWriteMetadata = {
+  kind: "queued_reddit_write";
+  plannedAction: NonNullable<ReturnType<typeof planRedditAction>["action"]>;
+  promptProfileId?: string;
+  promptParameters?: RedditDecisionMemoryEntry["promptParameters"];
+  layout?: RedditDecisionMemoryEntry["layout"];
+  promptVariantId?: string;
+  promptVariantLabel?: string;
+  promptVariantRationale?: string;
+  rotateAfterActions?: number;
+  reusedExisting?: boolean;
+  selectionSource?: "llm" | "deterministic_fallback";
+  selectionDebugPath?: string;
+  scopeKey?: "reddit:create_post" | "reddit:comment_on_post" | "reddit:reply_to_activity";
+};
+
+function buildRedditPromptRotationEntry(
+  metadata: QueuedRedditWriteMetadata,
+  createdAt: string,
+  status: string,
+  overrides: Partial<PromptRotationHistoryEntry> = {}
+): PromptRotationHistoryEntry {
+  return {
+    id: overrides.id ?? `reddit:${metadata.plannedAction.item.id}:${status}`,
+    venue: "reddit",
+    actionType:
+      metadata.plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
+    scopeKey: metadata.scopeKey,
+    createdAt,
+    status,
+    promptProfileId: metadata.promptProfileId,
+    promptVariantId: metadata.promptVariantId,
+    promptVariantLabel: metadata.promptVariantLabel,
+    promptParameters: metadata.promptParameters,
+    layout: metadata.layout,
+    messageStyle: metadata.promptParameters?.messageStyle,
+    technicalDepth: metadata.promptParameters?.technicalDepth,
+    tone: metadata.promptParameters?.tone,
+    creativity: metadata.promptParameters?.creativity,
+    selectionSource: metadata.selectionSource,
+    rotateAfterActions: metadata.rotateAfterActions,
+    selectionRationale: metadata.promptVariantRationale,
+    correlationId: metadata.plannedAction.item.id,
+    debugInputPath: metadata.selectionDebugPath,
+    ...overrides
+  };
+}
+
+async function recordRedditPromptRotationFailure(
+  config: MoltbookRuntimeConfig,
+  metadata: QueuedRedditWriteMetadata,
+  now: Date
+): Promise<void> {
+  if (!metadata.promptVariantId) {
+    return;
+  }
+  await recordPromptRotationAction({
+    config,
+    eventType: "failed",
+    entry: buildRedditPromptRotationEntry(metadata, now.toISOString(), "failed")
+  });
+}
+
+async function recordRedditPromptRotationPublished(
+  config: MoltbookRuntimeConfig,
+  metadata: QueuedRedditWriteMetadata,
+  recorded: RedditDecisionMemoryEntry,
+  now: Date
+): Promise<void> {
+  if (!metadata.promptVariantId) {
+    return;
+  }
+  await recordPromptRotationAction({
+    config,
+    eventType: "published",
+    selection: {
+      variantId: metadata.promptVariantId,
+      label: metadata.promptVariantLabel,
+      rationale: metadata.promptVariantRationale ?? "",
+      rotateAfterActions: metadata.rotateAfterActions ?? 10,
+      reusedExisting: metadata.reusedExisting ?? true,
+      selectionSource: metadata.selectionSource,
+      selectedAt: now.toISOString(),
+      selectionDebugPath: metadata.selectionDebugPath
+    },
+    entry: buildRedditPromptRotationEntry(metadata, recorded.createdAt, recorded.status ?? "posted", {
+      id: `reddit:${recorded.id}`,
+      promptVariantId: recorded.promptVariantId,
+      promptParameters: recorded.promptParameters,
+      layout: recorded.layout,
+      clickCount: recorded.clickCount,
+      privateMessageCount: recorded.privateMessageCount
+    })
+  });
+}
+
 async function executeQueuedRedditJob(
   store: RedditMemoryStore,
   input: {
@@ -557,58 +1096,14 @@ async function executeQueuedRedditJob(
   if (!queuedJob) {
     return undefined;
   }
-  const metadata = queuedJob.payload.raw as {
-    kind: "queued_reddit_write";
-    plannedAction: NonNullable<ReturnType<typeof planRedditAction>["action"]>;
-    promptProfileId?: string;
-    promptParameters?: RedditDecisionMemoryEntry["promptParameters"];
-    layout?: RedditDecisionMemoryEntry["layout"];
-    promptVariantId?: string;
-    promptVariantLabel?: string;
-    promptVariantRationale?: string;
-    rotateAfterActions?: number;
-    reusedExisting?: boolean;
-    selectionSource?: "llm" | "deterministic_fallback";
-    selectionDebugPath?: string;
-    scopeKey?: "reddit:create_post" | "reddit:comment_on_post" | "reddit:reply_to_activity";
-  };
+  const metadata = queuedJob.payload.raw as QueuedRedditWriteMetadata;
   let outcome: VenueOutcome;
   try {
     outcome = input.publishAction
       ? await input.publishAction(queuedJob.payload)
       : await createVenueProvider(input.config).publishAction(queuedJob.payload);
   } catch (error) {
-    if (metadata.promptVariantId) {
-      await recordPromptRotationAction({
-        config: input.config,
-        eventType: "failed",
-        entry: {
-          id: `reddit:${metadata.plannedAction.item.id}:failed`,
-          venue: "reddit",
-          actionType:
-            metadata.plannedAction.type === "reply_to_comment"
-              ? "reply_to_activity"
-              : "comment_on_post",
-          scopeKey: metadata.scopeKey,
-          createdAt: input.now.toISOString(),
-          status: "failed",
-          promptProfileId: metadata.promptProfileId,
-          promptVariantId: metadata.promptVariantId,
-          promptVariantLabel: metadata.promptVariantLabel,
-          promptParameters: metadata.promptParameters,
-          layout: metadata.layout,
-          messageStyle: metadata.promptParameters?.messageStyle,
-          technicalDepth: metadata.promptParameters?.technicalDepth,
-          tone: metadata.promptParameters?.tone,
-          creativity: metadata.promptParameters?.creativity,
-          selectionSource: metadata.selectionSource,
-          rotateAfterActions: metadata.rotateAfterActions,
-          selectionRationale: metadata.promptVariantRationale,
-          correlationId: metadata.plannedAction.item.id,
-          debugInputPath: metadata.selectionDebugPath
-        }
-      }).catch(() => undefined);
-    }
+    await recordRedditPromptRotationFailure(input.config, metadata, input.now).catch(() => undefined);
     throw error;
   }
   const operating = getRedditOperatingAgentConfig(input.config);
@@ -664,46 +1159,7 @@ async function executeQueuedRedditJob(
     queuedJobs: removeActionJob(store.queuedJobs ?? [], queuedJob.id)
   };
   await saveRedditMemory(operating.memoryPath, nextStore);
-  if (metadata.promptVariantId) {
-    await recordPromptRotationAction({
-      config: input.config,
-      eventType: "published",
-      selection: {
-        variantId: metadata.promptVariantId,
-        label: metadata.promptVariantLabel,
-        rationale: metadata.promptVariantRationale ?? "",
-        rotateAfterActions: metadata.rotateAfterActions ?? 10,
-        reusedExisting: metadata.reusedExisting ?? true,
-        selectionSource: metadata.selectionSource,
-        selectedAt: input.now.toISOString(),
-        selectionDebugPath: metadata.selectionDebugPath
-      },
-      entry: {
-        id: `reddit:${recorded.id}`,
-        venue: "reddit",
-        actionType: metadata.plannedAction.type === "reply_to_comment" ? "reply_to_activity" : "comment_on_post",
-        scopeKey: metadata.scopeKey,
-        createdAt: recorded.createdAt,
-        status: recorded.status,
-        promptProfileId: recorded.promptProfileId,
-        promptVariantId: recorded.promptVariantId,
-        promptVariantLabel: metadata.promptVariantLabel,
-        promptParameters: recorded.promptParameters,
-        layout: recorded.layout,
-        messageStyle: recorded.promptParameters?.messageStyle,
-        technicalDepth: recorded.promptParameters?.technicalDepth,
-        tone: recorded.promptParameters?.tone,
-        creativity: recorded.promptParameters?.creativity,
-        clickCount: recorded.clickCount,
-        privateMessageCount: recorded.privateMessageCount,
-        selectionSource: metadata.selectionSource,
-        rotateAfterActions: metadata.rotateAfterActions,
-        selectionRationale: metadata.promptVariantRationale,
-        correlationId: metadata.plannedAction.item.id,
-        debugInputPath: metadata.selectionDebugPath
-      }
-    });
-  }
+  await recordRedditPromptRotationPublished(input.config, metadata, recorded, input.now);
   return {
     store: nextStore,
     outcome,
@@ -937,6 +1393,25 @@ export async function runRedditSessionCli(): Promise<void> {
     maxActions: Number.isFinite(maxActions) && maxActions >= 0 ? maxActions : 1,
     subreddits,
     once: hasFlag("--once")
+  });
+  console.log(JSON.stringify(report, null, 2));
+}
+
+export async function runRedditHeartbeatCli(): Promise<void> {
+  const subreddits = getArg("--subreddits")?.split(",").map((entry) => entry.trim()).filter(Boolean);
+  const maxActions = Number(getArg("--max-actions") ?? "1");
+  const report = await runRedditHeartbeat({
+    dryRun: hasFlag("--dry-run") ? true : hasFlag("--live") ? false : undefined,
+    maxActions: Number.isFinite(maxActions) && maxActions >= 0 ? maxActions : 1,
+    subreddits,
+    once: hasFlag("--once")
+  });
+  console.log(JSON.stringify(report, null, 2));
+}
+
+export async function runRedditExecutorCli(): Promise<void> {
+  const report = await runRedditExecutor({
+    dryRun: hasFlag("--dry-run") ? true : hasFlag("--live") ? false : undefined
   });
   console.log(JSON.stringify(report, null, 2));
 }

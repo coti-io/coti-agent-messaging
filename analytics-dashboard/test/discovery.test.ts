@@ -112,6 +112,54 @@ test("discoverAgents reads agent metadata, state, and heartbeat report", async (
     assert.equal(agents[0]?.currentPrompt?.promptVariantId, "operator-qa-practical");
     assert.equal(agents[0]?.currentPrompt?.messageStyle, "informative");
     assert.equal(agents[0]?.currentPrompt?.actionsSinceRotation, 3);
+    assert.equal(agents[0]?.schedulerHealth, "fresh");
+    assert.equal(agents[0]?.lastHeartbeatAt, "2026-05-04T12:00:00.000Z");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("discoverAgents derives scheduler health from json heartbeat timestamps without sqlite", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "analytics-discovery-reddit-"));
+  const agentDir = path.join(tempDir, "reddit-agent");
+  const runtimeDir = path.join(agentDir, ".runtime");
+
+  await mkdir(runtimeDir, { recursive: true });
+  await writeFile(
+    path.join(agentDir, "agent.json"),
+    JSON.stringify({
+      agentId: "reddit-agent",
+      displayName: "Reddit Agent",
+      serviceName: "reddit-agent-heartbeat"
+    }),
+    "utf8"
+  );
+  await writeFile(
+    path.join(runtimeDir, "state.json"),
+    JSON.stringify({
+      lastHeartbeatAt: "2026-06-01T08:34:37.244Z",
+      queuedActionJobs: [],
+      engagementTotals: { posts: 0, comments: 0, replies: 0, upvotes: 0, follows: 0, total: 0 }
+    }),
+    "utf8"
+  );
+  await writeFile(
+    path.join(runtimeDir, "last-heartbeat.json"),
+    JSON.stringify({
+      phase: "heartbeat",
+      status: "ok",
+      startedAt: "2026-06-01T08:34:37.242Z",
+      finishedAt: "2026-06-01T08:34:37.244Z"
+    }),
+    "utf8"
+  );
+
+  try {
+    const freshAgents = await discoverAgents(tempDir, new Date("2026-06-01T08:40:00.000Z"));
+    assert.equal(freshAgents[0]?.schedulerHealth, "fresh");
+
+    const staleAgents = await discoverAgents(tempDir, new Date("2026-06-01T09:00:00.000Z"));
+    assert.equal(staleAgents[0]?.schedulerHealth, "stale");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -212,6 +260,11 @@ test("discoverAgents prefers sqlite health and counters when present", async () 
     assert.equal(agents[0]?.engagementSummary.total.posts, 2);
     assert.equal(agents[0]?.engagementSummary.total.replies, 1);
     assert.equal(agents[0]?.engagementSummary.total.total, 3);
+    assert.equal(agents[0]?.recentRuns.length, 2);
+    assert.equal(agents[0]?.recentRuns[0]?.runId, "run-failed");
+    assert.equal(agents[0]?.recentRuns[0]?.status, "failed");
+    assert.equal(agents[0]?.recentRuns[1]?.runId, "run-ok");
+    assert.equal(agents[0]?.recentRuns[1]?.runCounts.replies, 1);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

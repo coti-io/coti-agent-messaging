@@ -1,5 +1,5 @@
 [Unit]
-Description=Moltbook outreach heartbeat
+Description=__DESCRIPTION__
 After=network-online.target
 Wants=network-online.target
 
@@ -14,8 +14,10 @@ KillMode=control-group
 Environment=HOME=/home/__REMOTE_USER__
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=MOLTBOOK_AGENT_ID=__AGENT_ID__
-Environment=OUTREACH_AGENT_VENUE=moltbook
-Environment=MOLTBOOK_STATE_PATH=__RUNTIME_DIR__/state.json
+Environment=OUTREACH_AGENT_VENUE=__VENUE__
+Environment=OUTREACH_RUNTIME_DIR=__RUNTIME_DIR__
+Environment=MOLTBOOK_STATE_PATH=__STATE_PATH__
+Environment=MOLTBOOK_HEARTBEAT_REPORT_PATH=__HEARTBEAT_REPORT_PATH__
 EnvironmentFile=__ENV_FILE__
 ExecStartPre=/usr/bin/mkdir -p __RUNTIME_DIR__
-ExecStart=/usr/bin/env bash -lc 'exec 9>"__LOCK_FILE__"; if ! flock -n 9; then echo "Skipping heartbeat because another run is active."; exit 0; fi; exec node dist/src/index.js heartbeat'
+ExecStart=/usr/bin/env bash -lc 'exec 9>"__LOCK_FILE__"; if ! flock -n 9; then echo "Skipping __RUN_LABEL__ because another run is active."; exit 0; fi; exec node dist/src/index.js __COMMAND__'

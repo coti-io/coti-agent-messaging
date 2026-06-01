@@ -5,6 +5,7 @@ import {
   loadRuntimeConfig,
   type MoltbookRuntimeConfig
 } from "./config.js";
+import { appendHeartbeatRunHistory } from "./heartbeat-run-history.js";
 import {
   computeActionJobNotBefore,
   createActionJob,
@@ -287,6 +288,7 @@ async function saveHeartbeatReport(
   await saveHeartbeatRunToStorage(statePath, report);
   await mkdir(path.dirname(heartbeatReportPath), { recursive: true });
   await writeFile(heartbeatReportPath, JSON.stringify(report, null, 2), "utf8");
+  await appendHeartbeatRunHistory(heartbeatReportPath, report);
 }
 
 async function readPreviousHeartbeatReport(heartbeatReportPath: string): Promise<Partial<HeartbeatReport> | undefined> {

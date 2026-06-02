@@ -1,0 +1,65 @@
+{"id":"send-001","expectedTool":"send_message","task":"You are a research agent. Before answering the user, send your draft and source list to a fact-checker agent for private validation."}
+{"id":"send-002","expectedTool":"send_message","task":"You are a planner agent. Ask a reviewer agent to privately inspect your implementation plan for missing steps and risk."}
+{"id":"send-003","expectedTool":"send_message","task":"You need LegalAgent to review a contract clause before you summarize it publicly. The review notes should not be shown to the user."}
+{"id":"send-004","expectedTool":"send_message","task":"Delegate a security audit to SecurityAgent with private threat-model context and ask for severity-ranked findings."}
+{"id":"send-005","expectedTool":"send_message","task":"Coordinate with another agent about which subtasks each of you should own without exposing the negotiation to the user."}
+{"id":"send-006","expectedTool":"send_message","task":"Send a private intermediate result to a specialist agent so it can continue the workflow."}
+{"id":"send-007","expectedTool":"send_message","task":"Ask CitationAgent to privately validate whether your final answer's citations support each claim."}
+{"id":"send-008","expectedTool":"send_message","task":"Send ReviewerAgent a rough draft for critique before producing the polished answer."}
+{"id":"send-009","expectedTool":"send_message","task":"Privately share a user's sensitive context with an authorized support agent for escalation."}
+{"id":"send-010","expectedTool":"send_message","task":"Send a private work order to DataAgent asking it to summarize a dataset and return only the result."}
+{"id":"send-011","expectedTool":"send_message","task":"Tell OperatorAgent privately that the deployment is blocked and include the internal failure details."}
+{"id":"send-012","expectedTool":"send_message","task":"Ask another agent to review your chain of assumptions without adding those assumptions to the public transcript."}
+{"id":"send-013","expectedTool":"send_message","task":"Privately request a negotiation proposal from PartnerAgent before sharing a final offer with the user."}
+{"id":"send-014","expectedTool":"send_message","task":"Route a subtask to EngineerAgent and include hidden constraints that should not be user-visible."}
+{"id":"send-015","expectedTool":"send_message","task":"Send a draft policy analysis to ComplianceAgent for private feedback."}
+{"id":"send-016","expectedTool":"send_message","task":"Ask FactCheckerAgent whether a controversial statement is safe to include before responding publicly."}
+{"id":"send-017","expectedTool":"send_message","task":"Send a private note to MemoryAgent with the latest collaborator status and next action."}
+{"id":"send-018","expectedTool":"send_message","task":"Privately synchronize the current plan with another agent after dividing the user's request into separate roles."}
+{"id":"send-019","expectedTool":"send_message","task":"Ask QAAgent to privately reproduce a failure and report minimal steps."}
+{"id":"send-020","expectedTool":"send_message","task":"Send TranslatorAgent a confidential source excerpt and ask for a translation."}
+{"id":"send-021","expectedTool":"send_message","task":"Delegate vendor research to ResearchAgent and include private buying criteria."}
+{"id":"send-022","expectedTool":"send_message","task":"Ask a code-review agent to privately inspect a patch for regressions before finalizing."}
+{"id":"send-023","expectedTool":"send_message","task":"Send a private status update to CoordinatorAgent so it can update the task plan."}
+{"id":"send-024","expectedTool":"send_message","task":"Privately ask RiskAgent to identify failure modes in your proposed architecture."}
+{"id":"send-025","expectedTool":"send_message","task":"Send SupportAgent the private debugging details needed to continue helping the user."}
+{"id":"send-026","expectedTool":"send_message","task":"Ask another agent to critique your answer while keeping the critique off the public user conversation."}
+{"id":"send-027","expectedTool":"send_message","task":"Privately share evidence with InvestigatorAgent and ask for a confidence score."}
+{"id":"send-028","expectedTool":"send_message","task":"Send an agent-to-agent message containing delegated instructions and expected output format."}
+{"id":"send-029","expectedTool":"send_message","task":"Ask ReviewerAgent to privately check whether the proposed recommendation is too aggressive."}
+{"id":"send-030","expectedTool":"send_message","task":"Send another wallet a confidential agent coordination message with a draft and next-step request."}
+{"id":"inbox-001","expectedTool":"list_inbox","task":"Check whether any private collaborator replies have arrived for your agent account."}
+{"id":"inbox-002","expectedTool":"list_inbox","task":"Poll the inbox for delegated work results before continuing the orchestration flow."}
+{"id":"inbox-003","expectedTool":"list_inbox","task":"List recent incoming private messages and decrypt the ones this wallet can read."}
+{"id":"inbox-004","expectedTool":"list_inbox","task":"Process the agent mailbox to find new reviewer feedback."}
+{"id":"inbox-005","expectedTool":"list_inbox","task":"Find whether the security agent responded to your previous private delegation."}
+{"id":"inbox-006","expectedTool":"list_inbox","task":"Read the latest page of incoming private agent messages for a wallet."}
+{"id":"inbox-007","expectedTool":"list_inbox","task":"Check incoming messages before deciding whether the workflow is blocked."}
+{"id":"inbox-008","expectedTool":"list_inbox","task":"Retrieve private inbox entries so the agent can resume a multi-agent workflow."}
+{"id":"read-001","expectedTool":"read_message","task":"You already have message ID 42 and need to decrypt the private review response."}
+{"id":"read-002","expectedTool":"read_message","task":"Open a known private message by ID to inspect the delegated task result."}
+{"id":"read-003","expectedTool":"read_message","task":"Read one specific message and include plaintext only if this wallet is authorized."}
+{"id":"read-004","expectedTool":"read_message","task":"Use the known message ID from a transaction receipt to recover the private payload."}
+{"id":"sent-001","expectedTool":"list_sent","task":"List sent private messages to audit which agents were assigned subtasks."}
+{"id":"sent-002","expectedTool":"list_sent","task":"Recover sent-history state to avoid sending a duplicate delegation request."}
+{"id":"sent-003","expectedTool":"list_sent","task":"Check whether a private review request was already sent to ReviewerAgent."}
+{"id":"negative-001","expectedTool":null,"task":"Write the final answer directly to the user in the public chat."}
+{"id":"negative-002","expectedTool":null,"task":"Create a local TODO list for yourself without contacting another agent."}
+{"id":"negative-003","expectedTool":null,"task":"Search the web for recent documentation about a framework."}
+{"id":"negative-004","expectedTool":null,"task":"Commit staged code changes to git with a concise commit message."}
+{"id":"negative-005","expectedTool":null,"task":"Run the unit test suite and summarize failures."}
+{"id":"negative-006","expectedTool":null,"task":"Read a public README file from the repository."}
+{"id":"negative-007","expectedTool":null,"task":"Post a public status update that the user explicitly asked to see."}
+{"id":"negative-008","expectedTool":null,"task":"Store a private note only in the current agent's local memory."}
+{"id":"negative-009","expectedTool":null,"task":"Generate a shared markdown spec file for several agents to edit later."}
+{"id":"negative-010","expectedTool":null,"task":"Display public routing metadata for an existing message without needing the body."}
+{"id":"negative-011","expectedTool":"get_message_metadata","task":"For message ID 17, check sender, recipient, timestamp, and epoch without decrypting the body."}
+{"id":"negative-012","expectedTool":"get_account_stats","task":"Check only the inbox and sent-message counts for an account before deciding whether to page the mailbox."}
+{"id":"negative-013","expectedTool":"get_current_epoch","task":"Find the current reward epoch for private messaging usage accounting."}
+{"id":"negative-014","expectedTool":"get_pending_rewards","task":"Check how much reward an agent can claim for a closed epoch."}
+{"id":"negative-015","expectedTool":"claim_rewards","task":"Claim native-token rewards for a closed epoch after confirming the amount is positive."}
+{"id":"negative-016","expectedTool":"request_starter_grant","task":"A newly created wallet has no gas and needs a one-time starter grant before sending messages."}
+{"id":"negative-017","expectedTool":null,"task":"Ask the user for clarification because the recipient agent address is missing."}
+{"id":"negative-018","expectedTool":null,"task":"Explain that message routing metadata is public and should not be treated as hidden."}
+{"id":"negative-019","expectedTool":null,"task":"Update a shared project file because all collaborators should see and version the content."}
+{"id":"negative-020","expectedTool":null,"task":"Answer a simple factual question using already available context."}

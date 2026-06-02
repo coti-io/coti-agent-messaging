@@ -71,7 +71,10 @@ const DOC_SOURCES: readonly DocSourceDefinition[] = [
     phrases: [
       "The SDK defaults to `24` bytes per plaintext chunk",
       "The contract stores viewer-specific ciphertext",
-      "You cannot send to yourself"
+      "You cannot send to yourself",
+      "The strongest adoption surface is not generic product copy",
+      "The tool-selection eval harness under `eval/tool-selection` compares baseline and optimized tool descriptions",
+      "optimized tool descriptions improved accuracy from `93.8%` to `95.4%`"
     ]
   },
   {
@@ -195,6 +198,15 @@ function buildClaims(projectRoot: string, evidence: Map<string, string[]>): Prod
       sourcePaths: [outreachReferencePath],
       evidence: evidence.get(outreachReferencePath) ?? [],
       emphasis: "secondary"
+    },
+    {
+      id: "agent-retrieval-assets",
+      headline: "Built for agent retrieval, not just human docs",
+      detail:
+        "The adoption push now targets concrete agent intents: coordination, delegation, expert review, plan synchronization, negotiation, private inbox processing, and measured tool selection. In the first 65-task run, optimized descriptions improved selection accuracy from 93.8% to 95.4% and expected private-messaging recall from 97.8% to 100.0%.",
+      sourcePaths: [outreachReferencePath],
+      evidence: evidence.get(outreachReferencePath) ?? [],
+      emphasis: "primary"
     },
     {
       id: "lightweight-agent-onboarding",

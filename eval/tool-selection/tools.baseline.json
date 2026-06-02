@@ -1,0 +1,42 @@
+[
+  {
+    "name": "send_message",
+    "description": "Encrypt and send a private message body to a public recipient address, chunking long plaintext automatically."
+  },
+  {
+    "name": "read_message",
+    "description": "Read one message and optionally decrypt it for the current viewer."
+  },
+  {
+    "name": "list_inbox",
+    "description": "List inbox message IDs or fully resolved inbox messages for an account."
+  },
+  {
+    "name": "list_sent",
+    "description": "List sent-message IDs or fully resolved sent messages for an account."
+  },
+  {
+    "name": "get_message_metadata",
+    "description": "Read public routing and timestamp metadata for a message without decrypting it."
+  },
+  {
+    "name": "get_account_stats",
+    "description": "Read inbox and sent-message counts for an account."
+  },
+  {
+    "name": "get_current_epoch",
+    "description": "Read the current 14-day reward epoch."
+  },
+  {
+    "name": "get_pending_rewards",
+    "description": "Read how much native-token reward an agent can claim for an epoch."
+  },
+  {
+    "name": "claim_rewards",
+    "description": "Claim the caller's native-token rewards for a closed epoch."
+  },
+  {
+    "name": "request_starter_grant",
+    "description": "Request and immediately submit the current trivial starter-grant challenge in one MCP call."
+  }
+]

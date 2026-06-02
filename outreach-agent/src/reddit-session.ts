@@ -2,6 +2,12 @@ import { readFile } from "node:fs/promises";
 
 import { getOutreachAgentConfig, getRedditControllerConfig, getRedditOperatingAgentConfig, loadRuntimeConfig } from "./config.js";
 import { appendHeartbeatRunHistory } from "./heartbeat-run-history.js";
+import {
+  checkRedditAccountHealth,
+  isRedditAccountUsable,
+  redditAccountHealthSkipReason,
+  type RedditAccountHealth
+} from "./reddit-account-health.js";
 import { computeActionJobNotBefore, createActionJob, type ActionJob, type ConstrainedActionCandidate, type ActionConstraint } from "./action-planning.js";
 import { draftRedditResponse } from "./reddit-drafting.js";
 import {
@@ -178,24 +184,46 @@ async function runRedditPlannerPhase(input: {
       plannedCandidates: [],
       filterSummary: emptyRedditFilterSummary()
     };
-    return {
-      generatedAt: now.toISOString(),
+    return buildRedditBlockedSessionReport({
+      now,
       dryRun,
       duplicateCheckPolicy,
-      readSource: operating.readController,
-      memoryPath: operating.memoryPath,
-      ingestion: emptyIngestionSummary(),
-      actionCandidates: [],
-      selectedActionBundle: chooseRedditActionBundle([], maxActions),
-      queuedActionJobs: summarizeQueuedRedditJobs(memory),
-      planner: summarizePlanner({
-        skipped: decision.skipped,
-        filterSummary: decision.filterSummary,
-        sessionLimits: [recentKillReason],
-        pipeline: { llmDraft: "not_reached" }
-      }),
-      decision
+      operating,
+      memory,
+      decision,
+      maxActions,
+      sessionLimits: [recentKillReason],
+      pipeline: { llmDraft: "not_reached" }
+    });
+  }
+
+  const accountHealth = await verifyRedditAccountHealth({
+    config,
+    memory,
+    memoryPath: operating.memoryPath,
+    now,
+    fetchImpl: input.fetchImpl
+  });
+  memory = accountHealth.memory;
+  if (accountHealth.blockedReason) {
+    const decision: ReturnType<typeof planRedditAction> = {
+      skipped: [accountHealth.blockedReason],
+      candidates: [],
+      plannedCandidates: [],
+      filterSummary: emptyRedditFilterSummary()
     };
+    return buildRedditBlockedSessionReport({
+      now,
+      dryRun,
+      duplicateCheckPolicy,
+      operating,
+      memory,
+      decision,
+      maxActions,
+      sessionLimits: [accountHealth.blockedReason],
+      pipeline: { llmDraft: "not_reached" },
+      accountHealth: accountHealth.health
+    });
   }
 
   if (!dryRun && options.executeDueJobsFirst) {
@@ -704,7 +732,30 @@ export async function runRedditExecutor(input: {
 
   try {
     const store = await loadRedditMemory(operating.memoryPath);
-    const executed = await executeQueuedRedditJob(store, {
+    const accountHealth = await verifyRedditAccountHealth({
+      config,
+      memory: store,
+      memoryPath: operating.memoryPath,
+      now,
+      fetchImpl: input.fetchImpl
+    });
+    if (accountHealth.blockedReason) {
+      const report = buildExecutorSessionReport({
+        now,
+        dryRun,
+        operating,
+        store: accountHealth.memory,
+        skipped: [accountHealth.blockedReason]
+      });
+      await persistRedditRuntimeSnapshot(config, {
+        phase: "executor",
+        finishedAt: report.generatedAt,
+        status: "ok"
+      });
+      return report;
+    }
+
+    const executed = await executeQueuedRedditJob(accountHealth.memory, {
       config,
       publishAction: input.publishAction,
       now,
@@ -1292,6 +1343,78 @@ function toVenueAction(
       url: source.url,
       reason: planned.reason
     }
+  };
+}
+
+async function verifyRedditAccountHealth(input: {
+  config: MoltbookRuntimeConfig;
+  memory: RedditMemoryStore;
+  memoryPath: string;
+  now: Date;
+  fetchImpl?: typeof fetch;
+}): Promise<{ memory: RedditMemoryStore; blockedReason?: string; health?: RedditAccountHealth }> {
+  const health = await checkRedditAccountHealth(input.config, input.fetchImpl ?? fetch);
+  if (isRedditAccountUsable(health)) {
+    return { memory: input.memory, health };
+  }
+
+  const blockedReason = redditAccountHealthSkipReason(health);
+  const hasRecentBan = input.memory.history.some((entry) => entry.status === "banned");
+  let memory = input.memory;
+  if (!hasRecentBan) {
+    memory = await appendRedditMemory(input.memoryPath, {
+      id: `account-health:${input.now.getTime()}`,
+      subreddit: "account",
+      kind: "comment",
+      action: "skipped",
+      content: health.reason,
+      createdAt: input.now.toISOString(),
+      status: "banned",
+      controller: getRedditControllerConfig(input.config).controller,
+      decisionReason: health.reason
+    });
+  }
+
+  if ((memory.queuedJobs?.length ?? 0) > 0) {
+    memory = {
+      ...memory,
+      queuedJobs: []
+    };
+    await saveRedditMemory(input.memoryPath, memory);
+  }
+
+  return { memory, blockedReason, health };
+}
+
+function buildRedditBlockedSessionReport(input: {
+  now: Date;
+  dryRun: boolean;
+  duplicateCheckPolicy: RedditDuplicateCheckPolicy;
+  operating: ReturnType<typeof getRedditOperatingAgentConfig>;
+  memory: RedditMemoryStore;
+  decision: ReturnType<typeof planRedditAction>;
+  maxActions: number;
+  sessionLimits?: string[];
+  pipeline: { llmDraft: "not_reached" | "failed" | "succeeded" };
+  accountHealth?: RedditAccountHealth;
+}): RedditSessionReport {
+  return {
+    generatedAt: input.now.toISOString(),
+    dryRun: input.dryRun,
+    duplicateCheckPolicy: input.duplicateCheckPolicy,
+    readSource: input.operating.readController,
+    memoryPath: input.operating.memoryPath,
+    ingestion: emptyIngestionSummary(),
+    actionCandidates: [],
+    selectedActionBundle: chooseRedditActionBundle([], input.maxActions),
+    queuedActionJobs: summarizeQueuedRedditJobs(input.memory),
+    planner: summarizePlanner({
+      skipped: input.decision.skipped,
+      filterSummary: input.decision.filterSummary,
+      sessionLimits: input.sessionLimits,
+      pipeline: input.pipeline
+    }),
+    decision: input.decision
   };
 }
 

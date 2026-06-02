@@ -19,17 +19,6 @@
       "remoteEnvFile": "/home/ubuntu/outreach-agent/outreach-agent/.env",
       "serviceName": "moltbook-outreach-heartbeat",
       "walletAddress": "0x0000000000000000000000000000000000000000"
-    },
-    {
-      "agentId": "reddit-unofficial-api",
-      "displayName": "Reddit Outreach",
-      "description": "Grant-hosted Reddit unofficial outreach runtime",
-      "profileUrl": "https://www.reddit.com/user/VLD-C-77",
-      "envFile": "../.env",
-      "runtimeKind": "reddit",
-      "runtimeDir": "/home/ubuntu/coti-agent-messaging/runtime/reddit-unofficial-api",
-      "remoteEnvFile": "/home/ubuntu/coti-agent-messaging/agents/reddit-unofficial-api/.env",
-      "serviceName": "reddit-unofficial-api-heartbeat"
     }
   ]
 }

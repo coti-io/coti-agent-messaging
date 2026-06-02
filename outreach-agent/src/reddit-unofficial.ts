@@ -113,6 +113,12 @@ export function buildUnofficialRedditThreadUrl(
   ).toString();
 }
 
+export interface RedditUnofficialAccountHealth {
+  status: "active" | "suspended" | "session_invalid" | "misconfigured";
+  username?: string;
+  reason: string;
+}
+
 export class RedditUnofficialClient {
   private bearerCache?: Promise<string>;
   private readonly proxyDispatcher?: ProxyAgent;
@@ -131,6 +137,74 @@ export class RedditUnofficialClient {
       this.bearerCache = loadUnofficialRedditBearer(this.config);
     }
     return this.bearerCache;
+  }
+
+  async checkAccountHealth(expectedUsername?: string): Promise<RedditUnofficialAccountHealth> {
+    try {
+      await this.getBearer();
+    } catch (error) {
+      return {
+        status: "session_invalid",
+        reason: error instanceof Error ? error.message : String(error)
+      };
+    }
+
+    try {
+      const url = new URL("/api/v1/me", this.oauthBaseUrl());
+      url.searchParams.set("raw_json", "1");
+      const payload = await this.fetchAuthenticatedJson<Record<string, unknown>>(url);
+      const account = extractMeAccount(payload);
+      const username = stringValue(account?.name);
+      const isSuspended = booleanValue(account?.is_suspended) === true;
+
+      if (isSuspended) {
+        return {
+          status: "suspended",
+          username,
+          reason: username
+            ? `Reddit account u/${username} is suspended.`
+            : "Reddit account is suspended."
+        };
+      }
+
+      if (!username) {
+        return {
+          status: "session_invalid",
+          reason: "Reddit /api/v1/me did not return a username."
+        };
+      }
+
+      if (
+        expectedUsername &&
+        username.toLowerCase() !== expectedUsername.replace(/^u\//i, "").toLowerCase()
+      ) {
+        return {
+          status: "session_invalid",
+          username,
+          reason: `Reddit session is authenticated as u/${username}, expected u/${expectedUsername}.`
+        };
+      }
+
+      return {
+        status: "active",
+        username,
+        reason: `Reddit account u/${username} is active.`
+      };
+    } catch (error) {
+      if (error instanceof RedditUnofficialRequestError) {
+        if (error.status === 401 || error.status === 403) {
+          const suspended = looksLikeSuspendedAccount(error.payload, error.status);
+          return {
+            status: suspended ? "suspended" : "session_invalid",
+            reason: error.message
+          };
+        }
+      }
+      return {
+        status: "session_invalid",
+        reason: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
 
   async searchPosts(
@@ -463,4 +537,19 @@ function numberValue(value: unknown): number | undefined {
 
 function booleanValue(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function extractMeAccount(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (isRecord(payload.data)) {
+    return payload.data;
+  }
+  return isRecord(payload) ? payload : undefined;
+}
+
+function looksLikeSuspendedAccount(payload: unknown, status: number): boolean {
+  if (status === 403) {
+    return true;
+  }
+  const text = JSON.stringify(payload ?? "").toLowerCase();
+  return text.includes("suspended") || text.includes("banned");
 }

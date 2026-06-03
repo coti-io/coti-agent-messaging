@@ -7,16 +7,20 @@ import {
 } from "./config.js";
 import { appendHeartbeatRunHistory } from "./heartbeat-run-history.js";
 import {
-  computeActionJobNotBefore,
   createActionJob,
   type ActionJob,
   type ConstrainedActionCandidate
 } from "./action-planning.js";
 import {
+  pickNextExecutableJob,
+  requeueFailedActionJob,
+  scheduleActionJobNotBefore,
+  type ActionExecutionRecord
+} from "./action-execution.js";
+import {
   enqueueActionJobs as enqueueJobs,
   removeActionJob,
-  summarizeActionJobs,
-  updateActionJob
+  summarizeActionJobs
 } from "./job-queue.js";
 import {
   chooseReplyTargetOrIgnore,
@@ -38,6 +42,7 @@ import {
   canComment,
   createInitialState,
   contentFingerprint,
+  type EngagementEventType,
   getDailyCommentBreakdown,
   getEngagementSummary,
   getCommentReadiness,
@@ -65,7 +70,7 @@ import {
   readPromptRotationDebugSnapshot,
   recordPromptRotationAction
 } from "./prompt-rotation.js";
-import type { VenueOutcome } from "./venue.js";
+import type { VenueAction, VenueOutcome } from "./venue.js";
 import { assertMoltbookVenueProvider, createVenueProvider } from "./venue-factory.js";
 export interface HeartbeatResult {
   summary: string;
@@ -532,11 +537,15 @@ export async function runHeartbeat(
     const followsAttempted = new Set<string>();
     const scheduledActionJobs: ActionJob[] = [];
     let queuedJobOrder = 0;
-    const nextJobNotBefore = (needsContent: boolean): string =>
-      computeActionJobNotBefore({
+    const nextJobNotBefore = (actionType: VenueAction["type"], needsContent: boolean): string =>
+      scheduleActionJobNotBefore({
         now: new Date(startedAt),
+        actionType,
         order: queuedJobOrder++,
-        needsContent
+        needsContent,
+        existingJobs: [...state.queuedActionJobs, ...scheduledActionJobs],
+        records: moltbookExecutionRecords(state),
+        config: config.actionExecution
       });
     const followBudget = Math.max(
       0,
@@ -571,7 +580,7 @@ export async function runHeartbeat(
           },
           candidateId: `candidate:follow:${agentName}`,
           sourceDecisionId: runId,
-          notBefore: nextJobNotBefore(false)
+          notBefore: nextJobNotBefore("follow_account", false)
         })
       );
       performed.push(`Queued follow ${agentName} (${sourceLabel}).`);
@@ -688,7 +697,7 @@ export async function runHeartbeat(
                 },
                 candidateId: `candidate:upvote:${postId}`,
                 sourceDecisionId: runId,
-                notBefore: nextJobNotBefore(false)
+                notBefore: nextJobNotBefore("upvote_post", false)
               })
             );
             performed.push(`Queued upvote "${action.post.title}".`);
@@ -854,7 +863,7 @@ export async function runHeartbeat(
                   },
                   candidateId: candidate.id,
                   sourceDecisionId: runId,
-                  notBefore: nextJobNotBefore(true)
+                  notBefore: nextJobNotBefore("reply_to_comment", true)
                 })
               ]);
               await persistState(state);
@@ -892,7 +901,7 @@ export async function runHeartbeat(
                   },
                   candidateId: candidate.id,
                   sourceDecisionId: runId,
-                  notBefore: nextJobNotBefore(true)
+                  notBefore: nextJobNotBefore("comment_on_post", true)
                 })
               ]);
               await persistState(state);
@@ -924,7 +933,7 @@ export async function runHeartbeat(
                   },
                   candidateId: candidate.id,
                   sourceDecisionId: runId,
-                  notBefore: nextJobNotBefore(true)
+                  notBefore: nextJobNotBefore("create_post", true)
                 })
               ]);
               await persistState(state);
@@ -1309,17 +1318,6 @@ function removeQueuedActionJob(state: OutreachAgentState, jobId: string): Outrea
   });
 }
 
-function updateQueuedActionJob(
-  state: OutreachAgentState,
-  jobId: string,
-  updater: (job: ActionJob) => ActionJob
-): OutreachAgentState {
-  return normalizeState({
-    ...state,
-    queuedActionJobs: updateActionJob(state.queuedActionJobs, jobId, updater)
-  });
-}
-
 function summarizeQueuedActionJobs(state: OutreachAgentState): HeartbeatReport["queuedActionJobs"] {
   return summarizeActionJobs(state.queuedActionJobs);
 }
@@ -1330,6 +1328,47 @@ function getQueuedWriteJobMetadata(job: ActionJob): QueuedWriteJobMetadata | und
     return undefined;
   }
   return raw.kind === "queued_write" ? (raw as QueuedWriteJobMetadata) : undefined;
+}
+
+function moltbookExecutionRecords(state: OutreachAgentState): ActionExecutionRecord[] {
+  const records = state.engagementEvents.map((event) => ({
+    venue: "moltbook" as const,
+    type: moltbookActionTypeFromEngagement(event.type),
+    createdAt: event.createdAt,
+    status: "posted"
+  }));
+  if (state.lastPostAt && !records.some((record) => record.type === "create_post")) {
+    records.push({
+      venue: "moltbook",
+      type: "create_post",
+      createdAt: state.lastPostAt,
+      status: "posted"
+    });
+  }
+  if (state.lastCommentAt && !records.some((record) => record.type === "comment_on_post" || record.type === "reply_to_comment")) {
+    records.push({
+      venue: "moltbook",
+      type: "comment_on_post",
+      createdAt: state.lastCommentAt,
+      status: "posted"
+    });
+  }
+  return records;
+}
+
+function moltbookActionTypeFromEngagement(type: EngagementEventType): VenueAction["type"] {
+  switch (type) {
+    case "post":
+      return "create_post";
+    case "reply":
+      return "reply_to_comment";
+    case "upvote":
+      return "upvote_post";
+    case "follow":
+      return "follow_account";
+    case "comment":
+      return "comment_on_post";
+  }
 }
 
 async function executeDueActionJobs(
@@ -1346,7 +1385,6 @@ async function executeDueActionJobs(
     report.queuedActionJobs = summarizeQueuedActionJobs(state);
     return state;
   }
-  const now = Date.now();
   let nextState = state;
   for (const job of state.queuedActionJobs) {
     const writeMetadata = getQueuedWriteJobMetadata(job);
@@ -1357,78 +1395,116 @@ async function executeDueActionJobs(
       }
       continue;
     }
-    const dueNow = Date.parse(job.notBefore) <= now;
-    if (job.status !== "queued" || !dueNow) {
-      continue;
-    }
-    if (writeMetadata) {
-      const pendingWrite = buildPendingWrite(writeMetadata.candidate, writeMetadata.decision);
-      nextState = addPendingWrite(
-        updateQueuedActionJob(nextState, job.id, (entry) => ({
-          ...entry,
-          status: "running"
-        })),
-        pendingWrite
-      );
-      await persistState(nextState);
-      try {
-        const outcome = await venue.publishAction(job.payload);
-        const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
-        await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
-        await recordMoltbookPromptRotation(
-          config,
-          writeMetadata.candidate.type,
-          publishedWrite,
-          writeMetadata.decision,
-          queuedWriteStatus(writeMetadata.candidate.type),
-          "published"
-        );
-        nextState = removeQueuedActionJob(
-          removePendingWrite(recoverPendingWrite(nextState, publishedWrite), pendingWrite.id),
-          job.id
-        );
-        if (writeMetadata.markNotificationsPostId) {
-          await venue.markNotificationsReadByPost(writeMetadata.markNotificationsPostId);
-        }
-        performed.push(writeMetadata.successMessage);
-      } catch (error) {
-        report.errors.push(toHeartbeatError(`publish:${writeMetadata.failureLabel}`, error));
-        await recordMoltbookPromptRotation(
-          config,
-          writeMetadata.candidate.type,
-          pendingWrite,
-          writeMetadata.decision,
-          "failed",
-          "failed"
-        ).catch(() => undefined);
-        skipped.push(
-          `skipped ${writeMetadata.failureLabel} because Moltbook publish failed: ${formatErrorMessage(error)}`
-        );
-        nextState = removeQueuedActionJob(removePendingWrite(nextState, pendingWrite.id), job.id);
-      }
-      await persistState(nextState);
-      continue;
-    }
-    const actionLabel = describeQueuedActionLabel(job);
-    try {
-      await venue.publishAction(job.payload);
-      if (job.type === "upvote_post" && job.payload.parentId) {
-        nextState = applyActionResult(nextState, { type: "upvote_post", postId: job.payload.parentId });
-        performed.push(actionLabel.replace(/^upvote /, "Upvoted "));
-      } else if (job.type === "follow_account" && job.payload.parentId) {
-        nextState = applyActionResult(nextState, { type: "follow_agent", agentName: job.payload.parentId });
-        performed.push(actionLabel.replace(/^follow /, "Followed "));
-      } else {
-        performed.push(`Executed queued ${actionLabel}.`);
-      }
-      nextState = removeQueuedActionJob(nextState, job.id);
-    } catch (error) {
-      report.errors.push(toHeartbeatError(`publish:${actionLabel}`, error));
-      skipped.push(`skipped ${actionLabel} because Moltbook publish failed: ${formatErrorMessage(error)}`);
-      nextState = removeQueuedActionJob(nextState, job.id);
+  }
+
+  const selection = pickNextExecutableJob({
+    jobs: nextState.queuedActionJobs,
+    records: moltbookExecutionRecords(nextState),
+    now: new Date(),
+    config: config.actionExecution
+  });
+  nextState = normalizeState({
+    ...nextState,
+    queuedActionJobs: selection.jobs
+  });
+  if (!selection.selectedJob) {
+    if (selection.skipped) {
+      skipped.push(selection.skipped);
     }
     await persistState(nextState);
+    report.queuedActionJobs = summarizeQueuedActionJobs(nextState);
+    return nextState;
   }
+
+  const job = selection.selectedJob;
+  const writeMetadata = getQueuedWriteJobMetadata(job);
+  if (writeMetadata) {
+    const pendingWrite = buildPendingWrite(writeMetadata.candidate, writeMetadata.decision);
+    nextState = addPendingWrite(nextState, pendingWrite);
+    await persistState(nextState);
+    try {
+      const outcome = await venue.publishAction(job.payload);
+      const publishedWrite = enrichPendingWriteWithOutcome(pendingWrite, outcome);
+      await persistPublishedOutreachRef(config, publishedWrite.outreachRef);
+      await recordMoltbookPromptRotation(
+        config,
+        writeMetadata.candidate.type,
+        publishedWrite,
+        writeMetadata.decision,
+        queuedWriteStatus(writeMetadata.candidate.type),
+        "published"
+      );
+      nextState = removeQueuedActionJob(
+        removePendingWrite(recoverPendingWrite(nextState, publishedWrite), pendingWrite.id),
+        job.id
+      );
+      if (writeMetadata.markNotificationsPostId) {
+        await venue.markNotificationsReadByPost(writeMetadata.markNotificationsPostId);
+      }
+      performed.push(writeMetadata.successMessage);
+    } catch (error) {
+      report.errors.push(toHeartbeatError(`publish:${writeMetadata.failureLabel}`, error));
+      await recordMoltbookPromptRotation(
+        config,
+        writeMetadata.candidate.type,
+        pendingWrite,
+        writeMetadata.decision,
+        "failed",
+        "failed"
+      ).catch(() => undefined);
+      const requeued = requeueFailedActionJob({
+        jobs: nextState.queuedActionJobs,
+        jobId: job.id,
+        error,
+        now: new Date(),
+        config: config.actionExecution
+      });
+      nextState = removePendingWrite(
+        normalizeState({ ...nextState, queuedActionJobs: requeued.jobs }),
+        pendingWrite.id
+      );
+      skipped.push(
+        requeued.retrying
+          ? `skipped ${writeMetadata.failureLabel} because Moltbook publish failed; retry queued.`
+          : `skipped ${writeMetadata.failureLabel} because Moltbook publish failed: ${formatErrorMessage(error)}`
+      );
+    }
+    await persistState(nextState);
+    report.queuedActionJobs = summarizeQueuedActionJobs(nextState);
+    return nextState;
+  }
+
+  const actionLabel = describeQueuedActionLabel(job);
+  await persistState(nextState);
+  try {
+    await venue.publishAction(job.payload);
+    if (job.type === "upvote_post" && job.payload.parentId) {
+      nextState = applyActionResult(nextState, { type: "upvote_post", postId: job.payload.parentId });
+      performed.push(actionLabel.replace(/^upvote /, "Upvoted "));
+    } else if (job.type === "follow_account" && job.payload.parentId) {
+      nextState = applyActionResult(nextState, { type: "follow_agent", agentName: job.payload.parentId });
+      performed.push(actionLabel.replace(/^follow /, "Followed "));
+    } else {
+      performed.push(`Executed queued ${actionLabel}.`);
+    }
+    nextState = removeQueuedActionJob(nextState, job.id);
+  } catch (error) {
+    report.errors.push(toHeartbeatError(`publish:${actionLabel}`, error));
+    const requeued = requeueFailedActionJob({
+      jobs: nextState.queuedActionJobs,
+      jobId: job.id,
+      error,
+      now: new Date(),
+      config: config.actionExecution
+    });
+    nextState = normalizeState({ ...nextState, queuedActionJobs: requeued.jobs });
+    skipped.push(
+      requeued.retrying
+        ? `skipped ${actionLabel} because Moltbook publish failed; retry queued.`
+        : `skipped ${actionLabel} because Moltbook publish failed: ${formatErrorMessage(error)}`
+    );
+  }
+  await persistState(nextState);
   report.queuedActionJobs = summarizeQueuedActionJobs(nextState);
   return nextState;
 }

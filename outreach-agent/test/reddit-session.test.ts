@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 
-import { appendRedditMemory, loadRedditMemory, pruneDraftedRedditMemory } from "../src/reddit-memory.js";
+import { createActionJob } from "../src/action-planning.js";
+import { appendRedditMemory, loadRedditMemory, pruneDraftedRedditMemory, saveRedditMemory } from "../src/reddit-memory.js";
 import { runRedditExecutor, runRedditSession } from "../src/reddit-session.js";
 import type { MoltbookRuntimeConfig } from "../src/config.js";
 import type { JsonLlmProvider } from "../src/llm-client.js";
@@ -356,6 +357,71 @@ test("reddit session live mode publishes at most one action and records outcome"
   assert.ok(memory.history[0]?.promptVariantId);
   assert.ok(memory.history[0]?.nextEligibleAt);
   assert.equal((memory.queuedJobs?.length ?? 0), 0);
+});
+
+test("reddit executor keeps due job queued while action cooldown is active", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-executor-cooldown-"));
+  const memoryPath = path.join(tempDir, "memory.json");
+  const config = createConfig(memoryPath);
+  await saveRedditMemory(memoryPath, {
+    generatedAt: "2026-06-03T10:00:00.000Z",
+    history: [
+      {
+        id: "posted-reply",
+        decisionId: "comment:AI_Agents:old",
+        subreddit: "AI_Agents",
+        kind: "reply",
+        action: "replied",
+        content: "Earlier reply",
+        createdAt: "2026-06-03T09:50:00.000Z",
+        targetId: "old",
+        status: "posted",
+        nextEligibleAt: "2026-06-03T10:20:00.000Z"
+      }
+    ],
+    queuedJobs: [
+      createActionJob({
+        action: {
+          id: "comment:AI_Agents:comment-1",
+          venue: "reddit",
+          type: "reply_to_comment",
+          surface: "AI_Agents",
+          candidateId: "comment-1",
+          content: VALID_REDDIT_SESSION_DRAFT,
+          raw: { kind: "manual_test" }
+        },
+        candidateId: "comment-1",
+        sourceDecisionId: "comment:AI_Agents:comment-1",
+        notBefore: "2026-06-03T09:59:00.000Z"
+      })
+    ],
+    scanLedger: [],
+    upvotedThingIds: []
+  });
+  const published: VenueAction[] = [];
+
+  const report = await runRedditExecutor({
+    config,
+    dryRun: false,
+    now: new Date("2026-06-03T10:00:00.000Z"),
+    publishAction: async (action) => {
+      published.push(action);
+      return {
+        id: "should-not-run",
+        venue: "reddit",
+        actionId: action.id,
+        candidateId: action.candidateId,
+        type: "replied",
+        occurredAt: "2026-06-03T10:00:00.000Z"
+      };
+    }
+  });
+
+  assert.equal(published.length, 0);
+  assert.ok(report.decision.skipped.some((entry) => entry.includes("reply_to_comment execution cooldown")));
+  const memory = await loadRedditMemory(memoryPath);
+  assert.equal(memory.queuedJobs?.[0]?.status, "queued");
+  assert.equal(memory.queuedJobs?.[0]?.notBefore, "2026-06-03T10:20:00.000Z");
 });
 
 test("reddit session marks a published reply as spam filtered when it is not publicly visible", async () => {

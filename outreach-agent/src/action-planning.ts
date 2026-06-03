@@ -67,6 +67,8 @@ export interface ActionJob {
   notBefore: string;
   attempts: number;
   sourceDecisionId: string;
+  runningAt?: string;
+  lastAttemptAt?: string;
   lastError?: string;
 }
 

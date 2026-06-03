@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
+import { createActionJob } from "../src/action-planning.js";
 import type { MoltbookRuntimeConfig } from "../src/config.js";
 import { runExecutor, runHeartbeat } from "../src/heartbeat.js";
 import { contentFingerprint, createInitialState, type OutreachAgentState } from "../src/policy.js";
@@ -28,6 +29,24 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
       commentLimitNewAgentPerDay: 20,
       commentLimitEstablishedPerDay: 50,
       followFromCommentAuthors: false
+    },
+    actionExecution: {
+      globalMinDelaySeconds: 0,
+      globalMaxDelaySeconds: 0,
+      createPostMinMinutes: 1200,
+      createPostMaxMinutes: 2160,
+      commentMinMinutes: 45,
+      commentMaxMinutes: 120,
+      replyMinMinutes: 20,
+      replyMaxMinutes: 75,
+      upvoteMinDelaySeconds: 90,
+      upvoteMaxDelaySeconds: 360,
+      followMinDelaySeconds: 300,
+      followMaxDelaySeconds: 1200,
+      maxAttempts: 3,
+      retryBaseDelaySeconds: 300,
+      retryMaxDelayMinutes: 120,
+      runningLeaseTimeoutMinutes: 15
     },
     llm: {
       apiKey: "llm-test-key",
@@ -268,9 +287,15 @@ test("heartbeat creates an outreach post, then replies usefully to later questio
 
     await forceQueuedJobsDue(config.statePath);
     const firstExecutor = await runExecutor(config);
-    assert.equal(createdPost?.id, "created-post-1");
-    assert.match(createdPost?.title ?? "", /plaintext|private|inbox|agent/i);
-    assert.match(createdPost?.content ?? "", /encrypted|private/i);
+    const stateAfterPost = await loadStateFromStorage(config.statePath);
+    const publishedPost = stateAfterPost.recentGeneratedArtifacts.find((artifact) => artifact.type === "post");
+    createdPost = {
+      id: "created-post-1",
+      title: publishedPost?.title ?? "",
+      content: publishedPost?.content ?? ""
+    };
+    assert.match(createdPost.title, /plaintext|private|inbox|agent/i);
+    assert.match(createdPost.content, /encrypted|private/i);
     assert.match(firstExecutor.summary, /Posted/i);
 
     const secondHeartbeat = await runHeartbeat(config);
@@ -848,7 +873,7 @@ test("heartbeat records failed upvotes without failing the run", async () => {
     await forceQueuedJobsDue(config.statePath);
     const result = await runExecutor(config);
     assert.match(result.summary, /skipped upvote "Private transport" because Moltbook publish failed/i);
-    assert.match(result.summary, /Upvoted "Private routing"/);
+    assert.match(result.summary, /retry queued/i);
 
     const savedReport = JSON.parse(await readFile(config.heartbeatReportPath, "utf8")) as {
       status?: string;
@@ -861,6 +886,7 @@ test("heartbeat records failed upvotes without failing the run", async () => {
     const savedState = JSON.parse(await readFile(config.statePath, "utf8")) as {
       upvotedPostIds?: string[];
       engagementTotals?: { upvotes?: number };
+      queuedActionJobs?: Array<{ status?: string; type?: string; lastError?: string }>;
     };
     assert.equal(savedReport.status, "ok");
     assert.equal(savedReport.failureStreak, 0);
@@ -868,8 +894,9 @@ test("heartbeat records failed upvotes without failing the run", async () => {
     assert.equal(savedReport.errors?.length ?? 0, 0);
     assert.equal(savedReport.performed?.some((entry) => /Queued upvote "Private routing"/.test(entry)), true);
     assert.equal(savedReport.skipped?.some((entry) => /daily post cap reached/i.test(entry)), true);
-    assert.deepEqual(savedState.upvotedPostIds, ["post-upvotes-ok"]);
-    assert.equal(savedState.engagementTotals?.upvotes, 1);
+    assert.deepEqual(savedState.upvotedPostIds, []);
+    assert.equal(savedState.engagementTotals?.upvotes ?? 0, 0);
+    assert.equal(savedState.queuedActionJobs?.filter((job) => job.type === "upvote_post").length, 2);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(tempDir, { recursive: true, force: true });
@@ -896,6 +923,24 @@ test("heartbeat follows comment authors who make relevant points", async () => {
       followFromCommentAuthors: true,
       followCommentMinScore: 3,
       followMaxPerHeartbeat: 5
+    },
+    actionExecution: {
+      globalMinDelaySeconds: 0,
+      globalMaxDelaySeconds: 0,
+      createPostMinMinutes: 1200,
+      createPostMaxMinutes: 2160,
+      commentMinMinutes: 45,
+      commentMaxMinutes: 120,
+      replyMinMinutes: 20,
+      replyMaxMinutes: 75,
+      upvoteMinDelaySeconds: 90,
+      upvoteMaxDelaySeconds: 360,
+      followMinDelaySeconds: 0,
+      followMaxDelaySeconds: 0,
+      maxAttempts: 3,
+      retryBaseDelaySeconds: 300,
+      retryMaxDelayMinutes: 120,
+      runningLeaseTimeoutMinutes: 15
     },
     llm: {
       apiKey: "llm-test-key",
@@ -1010,6 +1055,8 @@ test("heartbeat follows comment authors who make relevant points", async () => {
     const plannerResult = await runHeartbeat(config);
     assert.match(plannerResult.summary, /Queued follow InsightBot/i);
     assert.match(plannerResult.summary, /Queued follow ThoughtfulBot/i);
+    await forceQueuedJobsDue(config.statePath);
+    await runExecutor(config);
     await forceQueuedJobsDue(config.statePath);
     await runExecutor(config);
 
@@ -1325,6 +1372,66 @@ test("heartbeat skips proof-point validation failures instead of failing the run
       true
     );
     assert.deepEqual(savedReport.errors, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("executor keeps due Moltbook job queued while action cooldown is active", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-executor-cooldown-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    apiKey: "test-api-key",
+    dryRun: false,
+    autoVerify: false
+  };
+  const recentCommentAt = new Date(Date.now() - 60_000).toISOString();
+  const state: OutreachAgentState = {
+    ...createInitialState(),
+    engagementEvents: [
+      {
+        id: "comment:recent",
+        type: "comment",
+        createdAt: recentCommentAt
+      }
+    ],
+    lastCommentAt: recentCommentAt,
+    queuedActionJobs: [
+      createActionJob({
+        action: {
+          id: "comment:post-1",
+          venue: "moltbook",
+          type: "comment_on_post",
+          parentId: "post-1",
+          content: "Useful queued comment.",
+          raw: { kind: "manual_test" }
+        },
+        candidateId: "comment:post-1",
+        sourceDecisionId: "test",
+        notBefore: "2000-01-01T00:00:00.000Z"
+      })
+    ]
+  };
+  await saveStateToStorage(config.statePath, state);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("publish should not be called while cooldown is active");
+  };
+  try {
+    const result = await runExecutor(config);
+    assert.match(result.summary, /comment_on_post execution cooldown/);
+    const saved = await loadStateFromStorage(config.statePath);
+    assert.equal(saved.queuedActionJobs.length, 1);
+    assert.equal(saved.queuedActionJobs[0]?.status, "queued");
+    assert.ok(Date.parse(saved.queuedActionJobs[0]?.notBefore ?? "") > Date.now());
   } finally {
     globalThis.fetch = originalFetch;
     await rm(tempDir, { recursive: true, force: true });

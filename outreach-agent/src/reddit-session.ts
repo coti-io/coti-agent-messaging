@@ -8,7 +8,14 @@ import {
   redditAccountHealthSkipReason,
   type RedditAccountHealth
 } from "./reddit-account-health.js";
-import { computeActionJobNotBefore, createActionJob, type ActionJob, type ConstrainedActionCandidate, type ActionConstraint } from "./action-planning.js";
+import { createActionJob, type ActionJob, type ConstrainedActionCandidate, type ActionConstraint } from "./action-planning.js";
+import {
+  nextActionCooldownAt,
+  pickNextExecutableJob,
+  requeueFailedActionJob,
+  scheduleActionJobNotBefore,
+  type ActionExecutionRecord
+} from "./action-execution.js";
 import { draftRedditResponse } from "./reddit-drafting.js";
 import {
   recordPromptRotationAction,
@@ -25,6 +32,7 @@ import { enqueueActionJobs, removeActionJob, summarizeActionJobs } from "./job-q
 import {
   appendRedditMemory,
   loadRedditMemory,
+  recordRedditUpvote,
   saveRedditMemory,
   writeJsonAtomic,
   type RedditMemoryStore
@@ -236,7 +244,7 @@ async function runRedditPlannerPhase(input: {
       now,
       fetchImpl: input.fetchImpl
     });
-    if (executed) {
+    if (executed?.executed) {
       return {
         generatedAt: now.toISOString(),
         dryRun,
@@ -532,14 +540,18 @@ async function runRedditPlannerPhase(input: {
         },
         candidateId: plannedAction.item.id,
         sourceDecisionId: plannedAction.item.id,
-        notBefore: computeActionJobNotBefore({
+        notBefore: scheduleActionJobNotBefore({
           now,
-          order: 0,
+          actionType: action.type,
+          order: nextQueuedJobs.length,
           needsContent: true,
+          existingJobs: nextQueuedJobs,
+          records: redditExecutionRecords(memory.history),
+          config: config.actionExecution,
           rng: options.rng
         })
       })
-    ]).slice(-1);
+    ]);
     await saveRedditMemory(operating.memoryPath, {
       ...memory,
       queuedJobs: nextQueuedJobs
@@ -552,7 +564,7 @@ async function runRedditPlannerPhase(input: {
         now,
         fetchImpl: input.fetchImpl
       });
-      if (executed) {
+      if (executed?.executed) {
         return {
           generatedAt: now.toISOString(),
           dryRun,
@@ -794,7 +806,7 @@ export async function runRedditExecutor(input: {
       now,
       fetchImpl: input.fetchImpl
     });
-    const nextStore = executed?.store ?? store;
+    const nextStore = executed?.store ?? accountHealth.memory;
     const report = buildExecutorSessionReport({
       now,
       dryRun,
@@ -802,7 +814,9 @@ export async function runRedditExecutor(input: {
       store: nextStore,
       outcome: executed?.outcome,
       recorded: executed?.recorded,
-      skipped: executed ? ["Executed one queued Reddit action."] : ["No queued Reddit actions were due."]
+      skipped: executed?.executed
+        ? ["Executed one queued Reddit action."]
+        : [executed?.skipped ?? "No queued Reddit actions were due."]
     });
     await persistRedditRuntimeSnapshot(config, {
       phase: "executor",
@@ -1194,6 +1208,34 @@ type QueuedRedditWriteMetadata = {
   scopeKey?: "reddit:create_post" | "reddit:comment_on_post" | "reddit:reply_to_activity";
 };
 
+function isQueuedRedditWriteMetadata(input: unknown): input is QueuedRedditWriteMetadata {
+  return Boolean(input && typeof input === "object" && "kind" in input && input.kind === "queued_reddit_write");
+}
+
+function redditExecutionRecords(history: readonly RedditDecisionMemoryEntry[]): ActionExecutionRecord[] {
+  return history.map((entry) => ({
+    venue: "reddit",
+    type: redditActionTypeFromMemoryEntry(entry),
+    createdAt: entry.createdAt,
+    surface: entry.subreddit,
+    status: entry.status ?? entry.action,
+    nextEligibleAt: entry.nextEligibleAt
+  }));
+}
+
+function redditActionTypeFromMemoryEntry(entry: RedditDecisionMemoryEntry): VenueAction["type"] {
+  if (entry.kind === "post" || entry.action === "posted") {
+    return "create_post";
+  }
+  if (entry.kind === "reply" || entry.action === "replied") {
+    return "reply_to_comment";
+  }
+  if (entry.kind === "upvote" || entry.action === "upvoted") {
+    return "upvote_post";
+  }
+  return "comment_on_post";
+}
+
 function buildRedditPromptRotationEntry(
   metadata: QueuedRedditWriteMetadata,
   createdAt: string,
@@ -1274,6 +1316,79 @@ async function recordRedditPromptRotationPublished(
   });
 }
 
+function recordNonWriteRedditExecution(input: {
+  store: RedditMemoryStore;
+  job: ActionJob;
+  outcome: VenueOutcome;
+  now: Date;
+  config: MoltbookRuntimeConfig;
+}): RedditMemoryStore {
+  if (input.job.type === "upvote_post" && input.job.payload.parentId) {
+    return recordRedditUpvote(input.store, {
+      thingId: input.job.payload.parentId,
+      subreddit: input.job.payload.surface ?? "unknown",
+      targetTitle: undefined,
+      targetUrl: input.outcome.remoteContentUrl,
+      createdAt: input.outcome.occurredAt ?? input.now.toISOString(),
+      controller: getRedditControllerConfig(input.config).controller
+    });
+  }
+  const entry: RedditDecisionMemoryEntry = {
+    id: `outcome:${input.job.id}:${input.now.getTime()}`,
+    decisionId: input.job.sourceDecisionId,
+    subreddit: input.job.payload.surface ?? "unknown",
+    kind:
+      input.job.type === "create_post"
+        ? "post"
+        : input.job.type === "reply_to_comment"
+          ? "reply"
+          : input.job.type === "comment_on_post"
+            ? "comment"
+            : "comment",
+    action:
+      input.job.type === "create_post"
+        ? "posted"
+        : input.job.type === "reply_to_comment"
+          ? "replied"
+          : input.job.type === "comment_on_post"
+            ? "commented"
+            : "skipped",
+    content: input.job.payload.content ?? "",
+    createdAt: input.outcome.occurredAt ?? input.now.toISOString(),
+    targetId: input.job.payload.parentId ?? input.job.candidateId,
+    targetTitle: input.job.payload.title,
+    targetUrl: input.outcome.remoteContentUrl,
+    nextEligibleAt: nextActionCooldownAt({
+      actionType: input.job.type,
+      now: input.now,
+      config: input.config.actionExecution
+    }),
+    status: "posted",
+    controller: getRedditControllerConfig(input.config).controller,
+    decisionReason: `Executed queued ${input.job.type}.`
+  };
+  return {
+    ...input.store,
+    history: [...input.store.history, entry].slice(-500)
+  };
+}
+
+type QueuedRedditExecutionResult =
+  | {
+      executed: true;
+      store: RedditMemoryStore;
+      outcome: VenueOutcome;
+      recorded?: RedditDecisionMemoryEntry;
+      skipped?: undefined;
+    }
+  | {
+      executed: false;
+      store: RedditMemoryStore;
+      outcome?: undefined;
+      recorded?: undefined;
+      skipped?: string;
+    };
+
 async function executeQueuedRedditJob(
   store: RedditMemoryStore,
   input: {
@@ -1282,24 +1397,80 @@ async function executeQueuedRedditJob(
     now: Date;
     fetchImpl?: typeof fetch;
   }
-): Promise<{ store: RedditMemoryStore; outcome: VenueOutcome; recorded: RedditDecisionMemoryEntry } | undefined> {
-  const queuedJob = (store.queuedJobs ?? []).find(
-    (job) => job.status === "queued" && Date.parse(job.notBefore) <= input.now.getTime()
-  );
-  if (!queuedJob) {
-    return undefined;
-  }
-  const metadata = queuedJob.payload.raw as QueuedRedditWriteMetadata;
+): Promise<QueuedRedditExecutionResult | undefined> {
   let outcome: VenueOutcome;
+  const operating = getRedditOperatingAgentConfig(input.config);
+  const selection = pickNextExecutableJob({
+    jobs: store.queuedJobs ?? [],
+    records: redditExecutionRecords(store.history),
+    now: input.now,
+    config: input.config.actionExecution
+  });
+  if (!selection.selectedJob) {
+    const nextStore = { ...store, queuedJobs: selection.jobs };
+    if (selection.jobs !== (store.queuedJobs ?? [])) {
+      await saveRedditMemory(operating.memoryPath, nextStore);
+    }
+    return selection.skipped
+      ? { executed: false, store: nextStore, skipped: selection.skipped }
+      : undefined;
+  }
+
+  let currentJobs = selection.jobs;
+  const queuedJob = selection.selectedJob;
+  await saveRedditMemory(operating.memoryPath, { ...store, queuedJobs: currentJobs });
+  const metadata = isQueuedRedditWriteMetadata(queuedJob.payload.raw)
+    ? queuedJob.payload.raw
+    : undefined;
   try {
     outcome = input.publishAction
       ? await input.publishAction(queuedJob.payload)
       : await createVenueProvider(input.config).publishAction(queuedJob.payload);
   } catch (error) {
-    await recordRedditPromptRotationFailure(input.config, metadata, input.now).catch(() => undefined);
+    if (metadata) {
+      await recordRedditPromptRotationFailure(input.config, metadata, input.now).catch(() => undefined);
+    }
+    const requeued = requeueFailedActionJob({
+      jobs: currentJobs,
+      jobId: queuedJob.id,
+      error,
+      now: input.now,
+      config: input.config.actionExecution
+    });
+    const nextStore = { ...store, queuedJobs: requeued.jobs };
+    await saveRedditMemory(operating.memoryPath, nextStore);
+    if (requeued.retrying) {
+      const retryJob = requeued.jobs.find((job) => job.id === queuedJob.id);
+      return {
+        executed: false,
+        store: nextStore,
+        skipped: `Queued Reddit ${queuedJob.type} failed and will retry after ${retryJob?.notBefore ?? "backoff"}.`
+      };
+    }
     throw error;
   }
-  const operating = getRedditOperatingAgentConfig(input.config);
+
+  if (!metadata) {
+    const nextStore = recordNonWriteRedditExecution({
+      store,
+      job: queuedJob,
+      outcome,
+      now: input.now,
+      config: input.config
+    });
+    const savedStore = {
+      ...nextStore,
+      queuedJobs: removeActionJob(currentJobs, queuedJob.id)
+    };
+    await saveRedditMemory(operating.memoryPath, savedStore);
+    return {
+      executed: true,
+      store: savedStore,
+      outcome,
+      recorded: savedStore.history.at(-1)
+    };
+  }
+
   const visibility =
     metadata.plannedAction.type === "comment_on_post" || metadata.plannedAction.type === "reply_to_comment"
       ? await verifyPublicRedditCommentVisibility({
@@ -1324,11 +1495,11 @@ async function executeQueuedRedditJob(
     targetTitle: resolveRedditTargetTitle(metadata.plannedAction.item.source),
     targetUrl: resolveRedditTargetUrl(metadata.plannedAction.item.source),
     targetSummary: metadata.plannedAction.item.source.body ?? metadata.plannedAction.item.source.title,
-    nextEligibleAt: new Date(
-      input.now.getTime() +
-        (operating.minJitterMinutes + Math.max(0, operating.maxJitterMinutes - operating.minJitterMinutes) / 2) *
-          60_000
-    ).toISOString(),
+    nextEligibleAt: nextActionCooldownAt({
+      actionType: queuedJob.type,
+      now: input.now,
+      config: input.config.actionExecution
+    }),
     status: visibility?.visible === false ? "spam_filtered" : "posted",
     firstReply: true,
     productMentioned: false,
@@ -1349,11 +1520,12 @@ async function executeQueuedRedditJob(
   const nextStore: RedditMemoryStore = {
     ...store,
     history: [...store.history, recorded].slice(-500),
-    queuedJobs: removeActionJob(store.queuedJobs ?? [], queuedJob.id)
+    queuedJobs: removeActionJob(currentJobs, queuedJob.id)
   };
   await saveRedditMemory(operating.memoryPath, nextStore);
   await recordRedditPromptRotationPublished(input.config, metadata, recorded, input.now);
   return {
+    executed: true,
     store: nextStore,
     outcome,
     recorded

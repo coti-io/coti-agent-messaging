@@ -3,13 +3,15 @@ import {
   type MoltbookRuntimeConfig,
   type RedditOperatingAgentConfig
 } from "./config.js";
-import { createVenueProvider } from "./venue-factory.js";
+import { createActionJob } from "./action-planning.js";
+import { scheduleActionJobNotBefore, type ActionExecutionRecord } from "./action-execution.js";
+import { enqueueActionJobs } from "./job-queue.js";
 import type { RedditConversationSnapshot } from "./reddit-controller.js";
 import { formatRedditThingId } from "./reddit-unofficial.js";
 import type { RedditPlannedAction } from "./reddit-policy.js";
 import type { RedditIngestionResult } from "./reddit-ingestion.js";
 import { resolveSourceThreadPostId, type RedditSourceItem } from "./reddit-outreach.js";
-import { recordRedditUpvote, type RedditMemoryStore } from "./reddit-memory.js";
+import { saveRedditMemory, type RedditDecisionMemoryEntry, type RedditMemoryStore } from "./reddit-memory.js";
 import type { VenueAction, VenueOutcome } from "./venue.js";
 
 export interface RedditUpvoteAttemptResult {
@@ -112,10 +114,6 @@ export async function tryUpvoteBeforeReply(input: {
   }
 
   const subreddit = input.plannedAction.item.source.subreddit;
-  const targetTitle =
-    input.plannedAction.item.source.parentTitle ??
-    input.plannedAction.item.source.title;
-  const targetUrl = snapshot?.thread.url ?? input.plannedAction.item.source.url;
 
   if (input.dryRun) {
     notes.push(`Would upvote ${target.targetKind} ${target.thingId} on r/${subreddit}.`);
@@ -132,24 +130,44 @@ export async function tryUpvoteBeforeReply(input: {
     raw: { engagement: "upvote", targetKind: target.targetKind }
   };
 
-  try {
-    const outcome = input.publishAction
-      ? await input.publishAction(action)
-      : await createVenueProvider(input.config).publishAction(action);
-    const nextMemory = recordRedditUpvote(input.memory, {
-      thingId: target.thingId,
-      subreddit,
-      targetTitle,
-      targetUrl,
-      createdAt: outcome.occurredAt ?? input.now.toISOString(),
-      controller
-    });
-    notes.push(`Upvoted ${target.targetKind} ${target.thingId} on r/${subreddit}.`);
-    return { memory: nextMemory, attempted: true, succeeded: true, notes, skipped };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    skipped.push(`Upvote failed (non-fatal): ${reason}`);
-    notes.push(`Upvote failed for ${target.thingId}: ${reason}`);
-    return { memory: input.memory, attempted: true, succeeded: false, notes, skipped };
-  }
+  const queuedJobs = enqueueActionJobs(input.memory.queuedJobs ?? [], [
+    createActionJob({
+      action,
+      candidateId: input.plannedAction.item.id,
+      sourceDecisionId: input.plannedAction.item.id,
+      notBefore: scheduleActionJobNotBefore({
+        now: input.now,
+        actionType: action.type,
+        needsContent: false,
+        existingJobs: input.memory.queuedJobs ?? [],
+        records: redditExecutionRecords(input.memory.history),
+        config: input.config.actionExecution
+      })
+    })
+  ]);
+  const nextMemory = {
+    ...input.memory,
+    queuedJobs
+  };
+  await saveRedditMemory(input.operating.memoryPath, nextMemory);
+  notes.push(`Queued upvote ${target.targetKind} ${target.thingId} on r/${subreddit}.`);
+  return { memory: nextMemory, attempted: true, succeeded: false, notes, skipped };
+}
+
+function redditExecutionRecords(history: readonly RedditDecisionMemoryEntry[]): ActionExecutionRecord[] {
+  return history.map((entry) => ({
+    venue: "reddit",
+    type:
+      entry.kind === "upvote" || entry.action === "upvoted"
+        ? "upvote_post"
+        : entry.kind === "reply" || entry.action === "replied"
+          ? "reply_to_comment"
+          : entry.kind === "post" || entry.action === "posted"
+            ? "create_post"
+            : "comment_on_post",
+    createdAt: entry.createdAt,
+    surface: entry.subreddit,
+    status: entry.status ?? entry.action,
+    nextEligibleAt: entry.nextEligibleAt
+  }));
 }

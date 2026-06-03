@@ -9,7 +9,11 @@ import { runRedditBrowserLoginCli } from "./reddit-browser-login.js";
 import { runRedditBrowserWorkerCli, runRedditBrowserWorkerStopCli } from "./reddit-browser-worker.js";
 import { runRedditExecutorCli, runRedditHeartbeatCli, runRedditSessionCli } from "./reddit-session.js";
 import { readAttributionSummaryFromStore, readMessageFunnelSummaryFromStore } from "./attribution-store.js";
-import { getOutreachAgentConfig, getRedditControllerConfig, loadRuntimeConfig, saveStoredCredentials } from "./config.js";
+import { getOutreachAgentConfig, getRedditControllerConfig, getRedditOperatingAgentConfig, loadRuntimeConfig, saveStoredCredentials } from "./config.js";
+import { createActionJob } from "./action-planning.js";
+import { scheduleActionJobNotBefore } from "./action-execution.js";
+import { enqueueActionJobs } from "./job-queue.js";
+import { loadRedditMemory, saveRedditMemory } from "./reddit-memory.js";
 import { mergeFeedPosts, rankDesignPartnerCandidates } from "./design-partners.js";
 import { runExecutor, runHeartbeat } from "./heartbeat.js";
 import { MoltbookApiClient, type MoltbookAgentProfile } from "./moltbook-api.js";
@@ -37,7 +41,6 @@ import {
   type AttributionEvent,
   type OutreachRef
 } from "./outreach-attribution.js";
-import { createVenueProvider } from "./venue-factory.js";
 import type { VenueAction } from "./venue.js";
 
 function getArg(flag: string): string | undefined {
@@ -378,8 +381,49 @@ async function run(): Promise<void> {
       if (action.venue !== "reddit") {
         throw new Error("reddit-publish input must contain a Reddit VenueAction.");
       }
-      const venue = createVenueProvider(config);
-      await emitJson(await venue.publishAction(action));
+      const operating = getRedditOperatingAgentConfig(config);
+      const memory = await loadRedditMemory(operating.memoryPath);
+      const queuedJobs = enqueueActionJobs(memory.queuedJobs ?? [], [
+        createActionJob({
+          action,
+          candidateId: action.candidateId ?? action.parentId ?? action.id,
+          sourceDecisionId: `manual:${Date.now()}`,
+          notBefore: scheduleActionJobNotBefore({
+            now: new Date(),
+            actionType: action.type,
+            needsContent: Boolean(action.content || action.title),
+            existingJobs: memory.queuedJobs ?? [],
+            records: memory.history.map((entry) => ({
+              venue: "reddit",
+              type:
+                entry.kind === "upvote" || entry.action === "upvoted"
+                  ? "upvote_post"
+                  : entry.kind === "reply" || entry.action === "replied"
+                    ? "reply_to_comment"
+                    : entry.kind === "post" || entry.action === "posted"
+                      ? "create_post"
+                      : "comment_on_post",
+              createdAt: entry.createdAt,
+              surface: entry.subreddit,
+              status: entry.status ?? entry.action,
+              nextEligibleAt: entry.nextEligibleAt
+            })),
+            config: config.actionExecution
+          })
+        })
+      ]);
+      const nextMemory = { ...memory, queuedJobs };
+      await saveRedditMemory(operating.memoryPath, nextMemory);
+      await emitJson({
+        queued: true,
+        memoryPath: operating.memoryPath,
+        queuedJobs: queuedJobs.map((job) => ({
+          id: job.id,
+          type: job.type,
+          status: job.status,
+          notBefore: job.notBefore
+        }))
+      });
       return;
     }
     case "reddit-browser-login": {

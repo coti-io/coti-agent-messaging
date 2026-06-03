@@ -129,6 +129,25 @@ export interface RedditOperatingAgentConfig {
   memoryPath: string;
 }
 
+export interface ActionExecutionConfig {
+  globalMinDelaySeconds: number;
+  globalMaxDelaySeconds: number;
+  createPostMinMinutes: number;
+  createPostMaxMinutes: number;
+  commentMinMinutes: number;
+  commentMaxMinutes: number;
+  replyMinMinutes: number;
+  replyMaxMinutes: number;
+  upvoteMinDelaySeconds: number;
+  upvoteMaxDelaySeconds: number;
+  followMinDelaySeconds: number;
+  followMaxDelaySeconds: number;
+  maxAttempts: number;
+  retryBaseDelaySeconds: number;
+  retryMaxDelayMinutes: number;
+  runningLeaseTimeoutMinutes: number;
+}
+
 export interface MoltbookRuntimeConfig extends RuntimePaths {
   agent?: OutreachAgentConfig;
   moltbookBaseUrl: string;
@@ -154,6 +173,7 @@ export interface MoltbookRuntimeConfig extends RuntimePaths {
   verificationLlmProvider?: JsonLlmProvider;
   reddit?: RedditControllerConfig;
   redditOperating?: RedditOperatingAgentConfig;
+  actionExecution?: ActionExecutionConfig;
   coti?: {
     privateKey: string;
     aesKey: string;
@@ -540,6 +560,7 @@ export async function loadRuntimeConfig(
   const verificationLlmBridgeUrl = getOptionalEnv("MOLTBOOK_VERIFY_LLM_BRIDGE_URL") ?? llmBridge?.url;
   const reddit = buildRedditControllerConfig(paths.packageRoot);
   const redditOperating = buildRedditOperatingAgentConfig(paths.packageRoot);
+  const actionExecution = buildActionExecutionConfig(redditOperating);
 
   return {
     ...paths,
@@ -647,6 +668,7 @@ export async function loadRuntimeConfig(
       : undefined,
     reddit,
     redditOperating,
+    actionExecution,
     coti: hasCotiCredentials
       ? {
           privateKey: getRequiredEnv("PRIVATE_KEY"),
@@ -762,6 +784,31 @@ export function getRedditOperatingAgentConfig(
   config: Pick<MoltbookRuntimeConfig, "packageRoot" | "redditOperating">
 ): RedditOperatingAgentConfig {
   return config.redditOperating ?? buildRedditOperatingAgentConfig(config.packageRoot);
+}
+
+export function buildActionExecutionConfig(
+  redditOperating?: Pick<RedditOperatingAgentConfig, "minJitterMinutes" | "maxJitterMinutes">
+): ActionExecutionConfig {
+  const redditMinJitter = redditOperating?.minJitterMinutes ?? 18;
+  const redditMaxJitter = redditOperating?.maxJitterMinutes ?? 67;
+  return {
+    globalMinDelaySeconds: parseNumber(process.env.OUTREACH_ACTION_GLOBAL_MIN_DELAY_SECONDS, 10),
+    globalMaxDelaySeconds: parseNumber(process.env.OUTREACH_ACTION_GLOBAL_MAX_DELAY_SECONDS, 60),
+    createPostMinMinutes: parseNumber(process.env.OUTREACH_ACTION_CREATE_POST_MIN_MINUTES, 20 * 60),
+    createPostMaxMinutes: parseNumber(process.env.OUTREACH_ACTION_CREATE_POST_MAX_MINUTES, 36 * 60),
+    commentMinMinutes: parseNumber(process.env.OUTREACH_ACTION_COMMENT_MIN_MINUTES, Math.max(45, redditMinJitter)),
+    commentMaxMinutes: parseNumber(process.env.OUTREACH_ACTION_COMMENT_MAX_MINUTES, Math.max(120, redditMaxJitter)),
+    replyMinMinutes: parseNumber(process.env.OUTREACH_ACTION_REPLY_MIN_MINUTES, Math.max(20, redditMinJitter)),
+    replyMaxMinutes: parseNumber(process.env.OUTREACH_ACTION_REPLY_MAX_MINUTES, Math.max(75, redditMaxJitter)),
+    upvoteMinDelaySeconds: parseNumber(process.env.OUTREACH_ACTION_UPVOTE_MIN_DELAY_SECONDS, 90),
+    upvoteMaxDelaySeconds: parseNumber(process.env.OUTREACH_ACTION_UPVOTE_MAX_DELAY_SECONDS, 360),
+    followMinDelaySeconds: parseNumber(process.env.OUTREACH_ACTION_FOLLOW_MIN_DELAY_SECONDS, 5 * 60),
+    followMaxDelaySeconds: parseNumber(process.env.OUTREACH_ACTION_FOLLOW_MAX_DELAY_SECONDS, 20 * 60),
+    maxAttempts: parseNumber(process.env.OUTREACH_ACTION_MAX_ATTEMPTS, 3),
+    retryBaseDelaySeconds: parseNumber(process.env.OUTREACH_ACTION_RETRY_BASE_DELAY_SECONDS, 5 * 60),
+    retryMaxDelayMinutes: parseNumber(process.env.OUTREACH_ACTION_RETRY_MAX_DELAY_MINUTES, 120),
+    runningLeaseTimeoutMinutes: parseNumber(process.env.OUTREACH_ACTION_RUNNING_LEASE_TIMEOUT_MINUTES, 15)
+  };
 }
 
 function parseRedditReadController(value: string | undefined): RedditOperatingAgentConfig["readController"] {

@@ -1,4 +1,5 @@
 import type { ActionJob } from "./action-planning.js";
+import { compactActionJobs } from "./action-execution.js";
 
 export interface ActionJobSummary {
   id: string;
@@ -12,7 +13,7 @@ export function enqueueActionJobs(
   existingJobs: readonly ActionJob[],
   jobs: readonly ActionJob[]
 ): ActionJob[] {
-  return [...existingJobs, ...jobs];
+  return compactActionJobs([...existingJobs, ...jobs]);
 }
 
 export function removeActionJob(

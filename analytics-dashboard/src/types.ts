@@ -26,6 +26,21 @@ export interface AgentMetadata {
   walletAddress?: string;
 }
 
+export type AgentAccountState =
+  | "active"
+  | "banned"
+  | "suspended"
+  | "session_invalid"
+  | "misconfigured"
+  | "disabled"
+  | "unknown";
+
+export interface AgentAccountStatus {
+  state: AgentAccountState;
+  label: string;
+  reason?: string;
+}
+
 export interface AgentRuntimePaths {
   agentDir: string;
   runtimeDir: string;
@@ -85,6 +100,7 @@ export interface DiscoveredAgent {
   currentPrompt?: AgentCurrentPrompt;
   recentPublished?: AgentRecentPublished[];
   recentRuns: AgentHeartbeatRun[];
+  accountStatus?: AgentAccountStatus;
 }
 
 export interface AgentRecentPublished {

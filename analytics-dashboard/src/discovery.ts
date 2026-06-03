@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import { resolveAgentAccountStatus } from "./account-status";
 import {
   asOptionalString,
   buildAgentPaths,
@@ -203,6 +204,13 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
     const skipped =
       sqliteSnapshot?.latestSkipped ?? (Array.isArray(report?.skipped) ? report.skipped.length : 0);
     const recentRuns = await loadAgentRecentRuns(normalizedPaths, report, 5);
+    const accountStatus = resolveAgentAccountStatus({
+      agentId: metadata.agentId,
+      serviceName: metadata.serviceName,
+      state,
+      report,
+      recentRuns
+    });
 
     agents.push({
       metadata,
@@ -228,7 +236,8 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       latestSkipped: skipped,
       currentPrompt,
       recentPublished: extractRecentPublishedFromState(state),
-      recentRuns
+      recentRuns,
+      accountStatus
     });
   }
 

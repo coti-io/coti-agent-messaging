@@ -179,7 +179,15 @@ export function buildRedditBlockedSessionReport(input: {
       sessionLimits: input.sessionLimits,
       pipeline: input.pipeline
     }),
-    decision: input.decision
+    decision: input.decision,
+    accountHealth: input.accountHealth
+      ? {
+          status: input.accountHealth.status,
+          username: input.accountHealth.username,
+          reason: input.accountHealth.reason,
+          controller: input.accountHealth.controller
+        }
+      : undefined
   };
 }
 

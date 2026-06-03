@@ -48,7 +48,8 @@ export function buildRedditRuntimeReport(input: {
     ingestion: baseReport?.ingestion ?? emptyIngestionSummary(),
     planner: baseReport?.planner ?? summarizePlanner({ skipped }),
     outcome: baseReport?.outcome,
-    recorded: baseReport?.recorded
+    recorded: baseReport?.recorded,
+    accountHealth: baseReport?.accountHealth
   };
 }
 

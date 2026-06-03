@@ -95,7 +95,12 @@ export async function redditPlannerLoadContext(session: RedditPlannerSession): P
       },
       maxActions,
       sessionLimits: [recentKillReason],
-      pipeline: { llmDraft: "not_reached" }
+      pipeline: { llmDraft: "not_reached" },
+      accountHealth: {
+        status: "banned",
+        reason: recentKillReason,
+        controller: getRedditControllerConfig(config).controller
+      }
     }));
     return;
   }

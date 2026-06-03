@@ -63,6 +63,12 @@ export interface RedditSessionReport {
   };
   outcome?: VenueOutcome;
   recorded?: RedditDecisionMemoryEntry;
+  accountHealth?: {
+    status: string;
+    username?: string;
+    reason: string;
+    controller: string;
+  };
 }
 
 export interface RedditRuntimeReport {
@@ -83,4 +89,5 @@ export interface RedditRuntimeReport {
   planner: RedditSessionReport["planner"];
   outcome?: VenueOutcome;
   recorded?: RedditDecisionMemoryEntry;
+  accountHealth?: RedditSessionReport["accountHealth"];
 }

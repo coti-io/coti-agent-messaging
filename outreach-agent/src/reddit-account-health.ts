@@ -5,7 +5,12 @@ import {
   type RedditUnofficialRuntimeConfig
 } from "./reddit-unofficial.js";
 
-export type RedditAccountHealthStatus = "active" | "suspended" | "session_invalid" | "misconfigured";
+export type RedditAccountHealthStatus =
+  | "active"
+  | "banned"
+  | "suspended"
+  | "session_invalid"
+  | "misconfigured";
 
 export interface RedditAccountHealth {
   status: RedditAccountHealthStatus;

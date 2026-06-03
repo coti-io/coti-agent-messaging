@@ -230,10 +230,33 @@ function bindAgentRowHandlers() {
   });
 }
 
+function accountStatusClass(status) {
+  const state = String(status?.state || "").toLowerCase();
+  if (state === "active") {
+    return "";
+  }
+  if (state === "banned" || state === "session_invalid" || state === "misconfigured") {
+    return "warn";
+  }
+  return "warn";
+}
+
+function renderAccountStatus(agent) {
+  const status = agent.accountStatus;
+  if (!status) {
+    return `<span class="subtle">n/a</span>`;
+  }
+  const reason = status.reason ? `<div class="agent-account-reason subtle">${escapeHtml(status.reason)}</div>` : "";
+  return `
+    <span class="badge ${badgeClass(status.state === "active")} ${accountStatusClass(status)}" title="${escapeHtml(status.reason || status.label)}">${escapeHtml(status.label)}</span>
+    ${reason}
+  `;
+}
+
 function renderAgents(agents) {
   const root = document.getElementById("agents-table");
   if (!agents.length) {
-    root.innerHTML = `<tr><td colspan="9" class="subtle">No agent runtime folders discovered.</td></tr>`;
+    root.innerHTML = `<tr><td colspan="10" class="subtle">No agent runtime folders discovered.</td></tr>`;
     return;
   }
 
@@ -262,6 +285,7 @@ function renderAgents(agents) {
               </div>
             </div>
           </td>
+          <td>${renderAccountStatus(agent)}</td>
           <td><span class="badge ${badgeClass(schedulerFresh)}">${agent.schedulerHealth || "unknown"}</span></td>
           <td><span class="badge ${badgeClass(lastRunOk)}">${agent.latestStatus || "unknown"}</span></td>
           <td>${formatNumber(summary.windows.last2Hours.total)}</td>
@@ -274,7 +298,7 @@ function renderAgents(agents) {
         `,
         `
         <tr class="agent-runs-row" data-agent-id="${escapeHtml(agent.agentId)}" ${expanded ? "" : "hidden"}>
-          <td colspan="9">${renderAgentRunsPanel(agent)}</td>
+          <td colspan="10">${renderAgentRunsPanel(agent)}</td>
         </tr>
         `
       ];

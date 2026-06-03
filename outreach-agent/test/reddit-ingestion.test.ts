@@ -63,6 +63,21 @@ test("reddit operating config allows zero own-thread reads", () => {
   }
 });
 
+test("reddit operating config allows zero upvotes per session", () => {
+  const previous = process.env.OUTREACH_REDDIT_MAX_UPVOTES_PER_SESSION;
+  process.env.OUTREACH_REDDIT_MAX_UPVOTES_PER_SESSION = "0";
+  try {
+    const operating = buildRedditOperatingAgentConfig("/tmp/outreach-agent");
+    assert.equal(operating.maxUpvotesPerSession, 0);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.OUTREACH_REDDIT_MAX_UPVOTES_PER_SESSION;
+    } else {
+      process.env.OUTREACH_REDDIT_MAX_UPVOTES_PER_SESSION = previous;
+    }
+  }
+});
+
 test("reddit operating config enables discovery and search by default", () => {
   const previousDiscovery = process.env.OUTREACH_REDDIT_INGESTION_MAX_DISCOVERY_THREAD_READS;
   const previousSearch = process.env.OUTREACH_REDDIT_INGESTION_MAX_SEARCHES_PER_SUBREDDIT;

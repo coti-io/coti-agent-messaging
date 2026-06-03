@@ -268,6 +268,49 @@ test("unofficial controller posts top-level comments with t3 parent", async () =
   assert.equal(bodies[0]?.get("text"), "Short helpful comment.");
 });
 
+test("unofficial client upvotes post via oauth vote endpoint", async () => {
+  const bodies: URLSearchParams[] = [];
+  const client = new RedditUnofficialClient(
+    {
+      storageStatePath: "/unused",
+      bearerOverride: "test-token-v2",
+      oauthBaseUrl: "https://oauth.reddit.com",
+      userAgent: "test-agent"
+    },
+    async (_input, init) => {
+      bodies.push(new URLSearchParams(String(init?.body)));
+      return jsonResponse({ json: { errors: [] } });
+    }
+  );
+
+  const result = await client.upvotePost("abc123");
+  assert.equal(bodies[0]?.get("id"), "t3_abc123");
+  assert.equal(bodies[0]?.get("dir"), "1");
+  assert.equal(result.remoteContentId, "t3_abc123");
+});
+
+test("unofficial controller upvotes with t1 parent id", async () => {
+  const bodies: URLSearchParams[] = [];
+  const controller = new RedditUnofficialController(createConfig(), async (_input, init) => {
+    bodies.push(new URLSearchParams(String(init?.body)));
+    return jsonResponse({ json: { errors: [] } });
+  });
+
+  await controller.publishAction(
+    {
+      id: "action-upvote",
+      venue: "reddit",
+      type: "upvote_post",
+      surface: "Moltbook",
+      parentId: "t1_comment123"
+    },
+    { mode: "approved_autopost", allowedSurfaces: ["Moltbook"] }
+  );
+
+  assert.equal(bodies[0]?.get("id"), "t1_comment123");
+  assert.equal(bodies[0]?.get("dir"), "1");
+});
+
 test("unofficial controller posts nested replies with t1 parent", async () => {
   const bodies: URLSearchParams[] = [];
   const controller = new RedditUnofficialController(createConfig(), async (_input, init) => {

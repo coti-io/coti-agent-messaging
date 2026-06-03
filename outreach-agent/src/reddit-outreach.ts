@@ -149,7 +149,7 @@ export interface RedditOutboundMemoryEntry {
   /** Matches review item id (`post:sub:id` / `comment:sub:id`) when recorded from a session. */
   decisionId?: string;
   subreddit: string;
-  kind: "post" | "comment" | "reply";
+  kind: "post" | "comment" | "reply" | "upvote";
   content: string;
   createdAt: string;
   targetId?: string;

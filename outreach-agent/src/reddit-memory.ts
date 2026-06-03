@@ -7,7 +7,7 @@ import type { RedditScanLedgerEntry } from "./reddit-scan-ledger.js";
 
 export interface RedditDecisionMemoryEntry extends RedditOutboundMemoryEntry {
   decisionId?: string;
-  action?: "skipped" | "commented" | "replied" | "posted";
+  action?: "skipped" | "commented" | "replied" | "posted" | "upvoted";
   controller?: "manual" | "api" | "browser" | "reddapi" | "unofficial";
   decisionReason?: string;
   relevanceScore?: number;
@@ -22,6 +22,7 @@ export interface RedditMemoryStore {
   history: RedditDecisionMemoryEntry[];
   queuedJobs?: ActionJob[];
   scanLedger?: RedditScanLedgerEntry[];
+  upvotedThingIds?: string[];
 }
 
 export async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
@@ -45,7 +46,8 @@ export async function loadRedditMemory(filePath: string): Promise<RedditMemorySt
       generatedAt: parsed.generatedAt ?? new Date().toISOString(),
       history: Array.isArray(parsed.history) ? parsed.history : [],
       queuedJobs: Array.isArray(parsed.queuedJobs) ? parsed.queuedJobs : [],
-      scanLedger: Array.isArray(parsed.scanLedger) ? parsed.scanLedger : []
+      scanLedger: Array.isArray(parsed.scanLedger) ? parsed.scanLedger : [],
+      upvotedThingIds: Array.isArray(parsed.upvotedThingIds) ? parsed.upvotedThingIds : []
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -53,7 +55,8 @@ export async function loadRedditMemory(filePath: string): Promise<RedditMemorySt
         generatedAt: new Date().toISOString(),
         history: [],
         queuedJobs: [],
-        scanLedger: []
+        scanLedger: [],
+        upvotedThingIds: []
       };
     }
     throw error;
@@ -91,7 +94,7 @@ export async function appendRedditMemory(
 ): Promise<RedditMemoryStore> {
   const store = await loadRedditMemory(filePath);
   const next = {
-    generatedAt: new Date().toISOString(),
+    ...store,
     history: [
       ...store.history.filter((existing) => existing.id !== entry.id),
       entry
@@ -103,4 +106,54 @@ export async function appendRedditMemory(
 
 export function defaultRedditMemoryPath(packageRoot: string): string {
   return path.join(packageRoot, ".data", "reddit-memory.json");
+}
+
+const MAX_UPVOTED_THING_IDS = 250;
+
+export function uniqueRecentThingIds(ids: readonly string[], max: number): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const id of [...ids].reverse()) {
+    const normalized = id.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.unshift(normalized);
+    if (result.length >= max) {
+      break;
+    }
+  }
+  return result;
+}
+
+export function recordRedditUpvote(
+  store: RedditMemoryStore,
+  input: {
+    thingId: string;
+    subreddit: string;
+    targetTitle?: string;
+    targetUrl?: string;
+    createdAt: string;
+    controller?: RedditDecisionMemoryEntry["controller"];
+  }
+): RedditMemoryStore {
+  const entry: RedditDecisionMemoryEntry = {
+    id: `upvote:${input.thingId}:${Date.parse(input.createdAt)}`,
+    subreddit: input.subreddit,
+    kind: "upvote",
+    action: "upvoted",
+    content: "",
+    createdAt: input.createdAt,
+    targetId: input.thingId,
+    targetTitle: input.targetTitle,
+    targetUrl: input.targetUrl,
+    status: "posted",
+    controller: input.controller
+  };
+  return {
+    ...store,
+    upvotedThingIds: uniqueRecentThingIds([...(store.upvotedThingIds ?? []), input.thingId], MAX_UPVOTED_THING_IDS),
+    history: [...store.history, entry].slice(-500)
+  };
 }

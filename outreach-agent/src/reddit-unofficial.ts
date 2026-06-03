@@ -119,6 +119,15 @@ export interface RedditUnofficialAccountHealth {
   reason: string;
 }
 
+export function formatRedditThingId(value: string, prefix: "t1" | "t3"): string {
+  if (!value.trim()) {
+    throw new RedditUnofficialConfigurationError(`Missing Reddit identifier for ${prefix}.`);
+  }
+  return value.startsWith(`${prefix}_`) ? value : `${prefix}_${value}`;
+}
+
+export type RedditVoteDirection = "up" | "down" | "clear";
+
 export class RedditUnofficialClient {
   private bearerCache?: Promise<string>;
   private readonly proxyDispatcher?: ProxyAgent;
@@ -278,38 +287,11 @@ export class RedditUnofficialClient {
   }
 
   async postComment(input: { thingId: string; text: string }): Promise<RedditPublishResult> {
-    const bearer = await this.getBearer();
-    const response = await this.fetchWithProxy(new URL("/api/comment", this.oauthBaseUrl()), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${bearer}`,
-        "User-Agent": this.userAgent(),
-        Accept: "application/json",
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: new URLSearchParams({
-        api_type: "json",
-        thing_id: input.thingId,
-        text: input.text
-      }).toString()
-    });
-    const text = await response.text();
-    const payload = parseJsonResponse(text, response.status);
-    if (!response.ok) {
-      throw new RedditUnofficialRequestError(
-        `Reddit unofficial comment failed with ${response.status}: ${text}`,
-        response.status,
-        payload
-      );
-    }
-    const errors = extractApiErrors(payload);
-    if (errors.length > 0) {
-      throw new RedditUnofficialRequestError(
-        `Reddit unofficial comment rejected: ${errors.join("; ")}`,
-        response.status,
-        payload
-      );
-    }
+    const payload = await this.postOAuthForm("/api/comment", {
+      api_type: "json",
+      thing_id: input.thingId,
+      text: input.text
+    }, "comment");
     const thing = extractRedditThing(payload);
     return {
       remoteContentId: stringValue(thing?.id) ?? stringValue(thing?.name),
@@ -321,6 +303,68 @@ export class RedditUnofficialClient {
       ),
       raw: payload
     };
+  }
+
+  async voteOnThing(input: { thingId: string; direction: RedditVoteDirection }): Promise<RedditPublishResult> {
+    const thingId = normalizeVoteThingId(input.thingId);
+    const dir = input.direction === "up" ? "1" : input.direction === "down" ? "-1" : "0";
+    const payload = await this.postOAuthForm(
+      "/api/vote",
+      {
+        api_type: "json",
+        id: thingId,
+        dir
+      },
+      "vote"
+    );
+    return {
+      remoteContentId: thingId,
+      raw: payload
+    };
+  }
+
+  async upvotePost(postId: string): Promise<RedditPublishResult> {
+    return this.voteOnThing({ thingId: formatRedditThingId(postId, "t3"), direction: "up" });
+  }
+
+  async upvoteComment(commentId: string): Promise<RedditPublishResult> {
+    return this.voteOnThing({ thingId: formatRedditThingId(commentId, "t1"), direction: "up" });
+  }
+
+  private async postOAuthForm(
+    path: string,
+    fields: Record<string, string>,
+    operationLabel: string
+  ): Promise<Record<string, unknown> | unknown[]> {
+    const bearer = await this.getBearer();
+    const response = await this.fetchWithProxy(new URL(path, this.oauthBaseUrl()), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${bearer}`,
+        "User-Agent": this.userAgent(),
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams(fields).toString()
+    });
+    const text = await response.text();
+    const payload = parseJsonResponse(text, response.status);
+    if (!response.ok) {
+      throw new RedditUnofficialRequestError(
+        `Reddit unofficial ${operationLabel} failed with ${response.status}: ${text}`,
+        response.status,
+        payload
+      );
+    }
+    const errors = extractApiErrors(payload);
+    if (errors.length > 0) {
+      throw new RedditUnofficialRequestError(
+        `Reddit unofficial ${operationLabel} rejected: ${errors.join("; ")}`,
+        response.status,
+        payload
+      );
+    }
+    return payload;
   }
 
   private async fetchAuthenticatedJson<T>(url: URL): Promise<T> {
@@ -470,6 +514,16 @@ function extractReplies(value: unknown, depth: number): RedditCommentState[] | u
   const listing = value as RedditListing;
   const replies = (listing.data?.children ?? []).flatMap((child) => commentChildToState(child, depth));
   return replies.length > 0 ? replies : undefined;
+}
+
+function normalizeVoteThingId(value: string): string {
+  const trimmed = value.trim();
+  if (/^t[13]_/.test(trimmed)) {
+    return trimmed;
+  }
+  throw new RedditUnofficialConfigurationError(
+    `Vote target must be a Reddit fullname (t1_ or t3_); got ${value}.`
+  );
 }
 
 function parseJsonResponse(text: string, status: number): Record<string, unknown> | unknown[] {

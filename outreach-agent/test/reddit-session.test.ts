@@ -102,6 +102,9 @@ function createConfig(memoryPath: string): MoltbookRuntimeConfig {
       llmTriageEnabled: false,
       llmTriageMaxItems: 25,
       llmSelectEnabled: false,
+      upvoteEnabled: false,
+      upvoteBeforeReply: false,
+      maxUpvotesPerSession: 1,
       targetSubreddits: ["AI_Agents"],
       searchQueries: ["CRM messy data"],
       ingestionListLimit: 5,
@@ -228,6 +231,59 @@ test("reddit session dry-run emits decision report and records draft without pub
   );
   assert.ok(memory.history[0]?.promptVariantId);
   assert.ok(memory.history[0]?.promptParameters?.messageStyle);
+});
+
+test("reddit session does not upvote when draft generation fails", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "reddit-session-draft-fail-"));
+  const memoryPath = path.join(tempDir, "memory.json");
+  const config = createConfig(memoryPath);
+  config.llmProvider = {
+    label: "mock-reddit-session-failure",
+    async createJsonCompletion() {
+      throw new Error("draft unavailable");
+    }
+  };
+  config.reddit = {
+    ...config.reddit!,
+    controller: "api",
+    api: {
+      accessToken: "test-token",
+      userAgent: "test-agent",
+      baseUrl: "https://oauth.reddit.test"
+    }
+  };
+  config.redditOperating = {
+    ...config.redditOperating!,
+    upvoteEnabled: true,
+    upvoteBeforeReply: true
+  };
+  const published: VenueAction[] = [];
+
+  const report = await runRedditSession({
+    config,
+    ingestion,
+    dryRun: false,
+    publishAction: async (action) => {
+      published.push(action);
+      return {
+        id: "upvote-outcome",
+        venue: "reddit",
+        actionId: action.id,
+        candidateId: action.candidateId,
+        remoteContentId: action.parentId,
+        type: "posted",
+        occurredAt: new Date().toISOString()
+      };
+    }
+  });
+
+  assert.equal(report.draft, undefined);
+  assert.equal(report.planner.pipeline?.llmDraft, "failed");
+  assert.equal(report.planner.pipeline?.upvoteAttempted, false);
+  assert.equal(published.length, 0);
+  const memory = await loadRedditMemory(memoryPath);
+  assert.equal(memory.history.length, 0);
+  assert.deepEqual(memory.upvotedThingIds, []);
 });
 
 test("reddit session live mode publishes at most one action and records outcome", async () => {

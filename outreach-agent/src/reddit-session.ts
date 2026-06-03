@@ -36,6 +36,7 @@ import {
   plannedRedditActionFromCandidate
 } from "./reddit-action-planning.js";
 import { triageRedditSourceItems } from "./reddit-triage.js";
+import { tryUpvoteBeforeReply } from "./reddit-upvote.js";
 import { planRedditAction, emptyRedditFilterSummary, resolveRedditPlannerContext, type RedditPlannerFilterSummary } from "./reddit-policy.js";
 import { type RedditDuplicateCheckPolicy } from "./reddit-outreach.js";
 import { redditMemoryEntryCountsTowardPublishedLimits } from "./reddit-outreach.js";
@@ -70,6 +71,8 @@ export interface RedditSessionReport {
     pipeline?: {
       llmDraft: "not_reached" | "failed" | "succeeded";
       selectionSource?: "llm" | "deterministic_fallback";
+      upvoteAttempted?: boolean;
+      upvoteSucceeded?: boolean;
     };
   };
   actionCandidates: Array<{
@@ -297,7 +300,7 @@ async function runRedditPlannerPhase(input: {
         now
       })
     : undefined;
-  const decision = planRedditAction({
+  let decision = planRedditAction({
     items: ingestion.sourceItems,
     history: memory.history,
     targeting: plannerContext.targeting,
@@ -430,6 +433,11 @@ async function runRedditPlannerPhase(input: {
     fetchImpl: input.fetchImpl
   });
   const adaptiveOverrides = resolveAdaptiveRedditPromptOverrides(memory.history, plannedAction.item.source.subreddit, now);
+  let upvotePipeline = {
+    upvoteAttempted: false,
+    upvoteSucceeded: false
+  };
+  let upvoteNotes: string[] = [];
   let draft;
   try {
     draft = await draftRedditResponse({
@@ -450,7 +458,7 @@ async function runRedditPlannerPhase(input: {
     const draftFailedDecision = {
       ...decision,
       action: undefined,
-      skipped: [`Reddit draft generation failed: ${reason}`, ...decision.skipped]
+      skipped: [...upvoteNotes, `Reddit draft generation failed: ${reason}`, ...decision.skipped]
     };
     return {
       generatedAt: now.toISOString(),
@@ -466,6 +474,7 @@ async function runRedditPlannerPhase(input: {
         skipped: draftFailedDecision.skipped,
         filterSummary: decision.filterSummary,
         pipeline: {
+          ...upvotePipeline,
           llmDraft: "failed",
           selectionSource:
             selectedActionBundle.strategy === "llm" ? "llm" : "deterministic_fallback"
@@ -474,6 +483,28 @@ async function runRedditPlannerPhase(input: {
       decision: draftFailedDecision
     };
   }
+  const upvoteResult = await tryUpvoteBeforeReply({
+    config,
+    operating,
+    plannedAction,
+    memory,
+    ingestion,
+    dryRun,
+    now,
+    publishAction: input.publishAction
+  });
+  memory = upvoteResult.memory;
+  if (upvoteResult.skipped.length > 0) {
+    decision = { ...decision, skipped: [...upvoteResult.skipped, ...decision.skipped] };
+  }
+  if (!dryRun && upvoteResult.succeeded) {
+    await saveRedditMemory(operating.memoryPath, memory);
+  }
+  upvotePipeline = {
+    upvoteAttempted: upvoteResult.attempted,
+    upvoteSucceeded: upvoteResult.succeeded
+  };
+  upvoteNotes = upvoteResult.notes;
   const action = toVenueAction(plannedAction, draft.content);
   let outcome: VenueOutcome | undefined;
   let nextQueuedJobs = memory.queuedJobs ?? [];
@@ -533,9 +564,10 @@ async function runRedditPlannerPhase(input: {
           selectedActionBundle,
           queuedActionJobs: summarizeQueuedRedditJobs(executed.store),
           planner: summarizePlanner({
-            skipped: decision.skipped,
+            skipped: [...upvoteNotes, ...decision.skipped],
             filterSummary: decision.filterSummary,
             pipeline: {
+              ...upvotePipeline,
               llmDraft: "succeeded",
               selectionSource: selectedVariant.selectionSource
             }
@@ -601,9 +633,10 @@ async function runRedditPlannerPhase(input: {
     selectedActionBundle,
     queuedActionJobs: dryRun ? summarizeQueuedRedditJobs(memory) : summarizeQueuedRedditJobs({ ...memory, queuedJobs: nextQueuedJobs }),
     planner: summarizePlanner({
-      skipped: decision.skipped,
+      skipped: [...upvoteNotes, ...decision.skipped],
       filterSummary: decision.filterSummary,
       pipeline: {
+        ...upvotePipeline,
         llmDraft: "succeeded",
         selectionSource:
           selectedActionBundle.strategy === "llm"
@@ -1006,7 +1039,9 @@ function countRedditKinds(history: readonly RedditDecisionMemoryEntry[]) {
     total: 0
   };
   for (const entry of history) {
-    if (entry.kind === "post") {
+    if (entry.kind === "upvote" || entry.action === "upvoted") {
+      counts.upvotes += 1;
+    } else if (entry.kind === "post") {
       counts.posts += 1;
     } else if (entry.kind === "comment") {
       counts.comments += 1;
@@ -1014,7 +1049,7 @@ function countRedditKinds(history: readonly RedditDecisionMemoryEntry[]) {
       counts.replies += 1;
     }
   }
-  counts.total = counts.posts + counts.comments + counts.replies;
+  counts.total = counts.posts + counts.comments + counts.replies + counts.upvotes;
   return counts;
 }
 

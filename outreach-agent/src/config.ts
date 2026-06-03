@@ -119,6 +119,9 @@ export interface RedditOperatingAgentConfig {
   ingestionMaxSearchesPerSubreddit: number;
   maxActionsPerSession: number;
   maxActionsPerDay: number;
+  upvoteEnabled: boolean;
+  upvoteBeforeReply: boolean;
+  maxUpvotesPerSession: number;
   minJitterMinutes: number;
   maxJitterMinutes: number;
   readController: "browser" | "api" | "auto" | "reddapi" | "unofficial";
@@ -744,6 +747,9 @@ export function buildRedditOperatingAgentConfig(packageRoot: string): RedditOper
     ),
     maxActionsPerSession: parseNumber(process.env.OUTREACH_REDDIT_MAX_ACTIONS_PER_SESSION, 1),
     maxActionsPerDay: parseNumber(process.env.OUTREACH_REDDIT_MAX_ACTIONS_PER_DAY, 4),
+    upvoteEnabled: parseBoolean(process.env.OUTREACH_REDDIT_UPVOTE_ENABLED, true),
+    upvoteBeforeReply: parseBoolean(process.env.OUTREACH_REDDIT_UPVOTE_BEFORE_REPLY, true),
+    maxUpvotesPerSession: parseNonNegativeNumber(process.env.OUTREACH_REDDIT_MAX_UPVOTES_PER_SESSION, 1),
     minJitterMinutes: parseNumber(process.env.OUTREACH_REDDIT_MIN_JITTER_MINUTES, 18),
     maxJitterMinutes: parseNumber(process.env.OUTREACH_REDDIT_MAX_JITTER_MINUTES, 67),
     readController: parseRedditReadController(process.env.OUTREACH_REDDIT_READ_CONTROLLER),

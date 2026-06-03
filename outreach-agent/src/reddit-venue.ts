@@ -103,9 +103,13 @@ export class RedditVenueProvider implements VenueProvider {
       remoteContentUrl: result.remoteContentUrl,
       type: action.type === "reply_to_comment" ? "replied" : "posted",
       occurredAt: new Date().toISOString(),
-      raw: result.raw
+      raw: action.type === "upvote_post" ? { engagement: "upvote", ...(isRecord(result.raw) ? result.raw : { raw: result.raw }) } : result.raw
     };
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 const URL_PATTERN = /https?:\/\//i;
@@ -121,6 +125,9 @@ const CTA_PATTERNS = [
 ];
 
 function assertRedditAutopublishContent(action: VenueAction): void {
+  if (action.type === "upvote_post") {
+    return;
+  }
   const content = action.content;
   if (!content) {
     return;

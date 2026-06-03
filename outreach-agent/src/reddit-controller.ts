@@ -11,7 +11,7 @@ const REDDIT_WEB_BASE_URL = "https://www.reddit.com";
 
 export type RedditPublishableActionType = Extract<
   VenueAction["type"],
-  "create_post" | "comment_on_post" | "reply_to_comment"
+  "create_post" | "comment_on_post" | "reply_to_comment" | "upvote_post"
 >;
 export type RedditReadableActionType = "search_subreddit" | "list_subreddit_posts" | "read_thread";
 export type RedditBrowserActionType = RedditPublishableActionType | RedditReadableActionType;
@@ -23,10 +23,15 @@ type RedditReplyToCommentAction = VenueAction & {
   candidateId: string;
   content: string;
 };
+type RedditUpvotePostAction = VenueAction & {
+  type: "upvote_post";
+  parentId: string;
+};
 type RedditPublishableAction =
   | RedditCreatePostAction
   | RedditCommentOnPostAction
-  | RedditReplyToCommentAction;
+  | RedditReplyToCommentAction
+  | RedditUpvotePostAction;
 
 export interface RedditControllerContext {
   mode: OutreachAgentMode;
@@ -322,6 +327,18 @@ export class RedditApiController implements RedditController {
           action: publishableAction,
           thingId: toRedditThingId(publishableAction.candidateId, "t1")
         });
+      case "upvote_post": {
+        const thingId = toRedditThingId(
+          publishableAction.parentId,
+          resolveVoteThingPrefix(publishableAction.parentId)
+        );
+        await this.postForm("/api/vote", {
+          api_type: "json",
+          id: thingId,
+          dir: "1"
+        });
+        return { remoteContentId: thingId };
+      }
     }
   }
 
@@ -436,6 +453,10 @@ export class RedditReddapiController implements RedditController {
         });
         return client.postComment(postUrl, publishableAction.content);
       }
+      case "upvote_post":
+        throw new RedditControllerConfigurationError(
+          "ReddAPI controller does not support upvote_post — use unofficial or official API."
+        );
     }
   }
 
@@ -488,6 +509,11 @@ export class RedditUnofficialController implements RedditController {
         return client.postComment({
           thingId: toRedditThingId(publishableAction.candidateId, "t1"),
           text: publishableAction.content
+        });
+      case "upvote_post":
+        return client.voteOnThing({
+          thingId: toRedditThingId(publishableAction.parentId, resolveVoteThingPrefix(publishableAction.parentId)),
+          direction: "up"
         });
     }
   }
@@ -666,7 +692,8 @@ function assertRedditPublishableAction(
   if (
     action.type !== "create_post" &&
     action.type !== "comment_on_post" &&
-    action.type !== "reply_to_comment"
+    action.type !== "reply_to_comment" &&
+    action.type !== "upvote_post"
   ) {
     throw new RedditUnsupportedActionError(action.type);
   }
@@ -686,12 +713,28 @@ function assertRedditPublishableAction(
     }
     return action as RedditCommentOnPostAction;
   }
+  if (action.type === "upvote_post") {
+    if (!action.parentId) {
+      throw new RedditControllerConfigurationError("Reddit upvote_post requires parentId.");
+    }
+    return action as RedditUpvotePostAction;
+  }
   if (!action.candidateId || !action.content) {
     throw new RedditControllerConfigurationError(
       "Reddit reply_to_comment requires candidateId and content."
     );
   }
   return action as RedditReplyToCommentAction;
+}
+
+function resolveVoteThingPrefix(value: string): "t1" | "t3" {
+  if (value.startsWith("t1_")) {
+    return "t1";
+  }
+  if (value.startsWith("t3_")) {
+    return "t3";
+  }
+  return "t3";
 }
 
 function assertSurfaceAllowed(surface: string, allowedSurfaces: readonly string[]): void {

@@ -35,6 +35,7 @@
     "reddit:reddapi-probe": "node scripts/reddapi-comment-probe.mjs",
     "reddit:reddapi-test": "node scripts/reddapi-natural-test.mjs",
     "reddit:unofficial:read-probe": "node scripts/reddit-unofficial-read-probe.mjs",
+    "reddit:unofficial:vote-probe": "node scripts/reddit-unofficial-vote-probe.mjs",
     "reddit:unofficial:read-live": "OUTREACH_REDDIT_UNOFFICIAL_LIVE=1 node --test dist/test/reddit-unofficial-read-live.test.js",
     "reddit:unofficial:heartbeat": "node scripts/reddit-unofficial-heartbeat.mjs --runs 1",
     "reddit:unofficial:heartbeat:1h": "node scripts/reddit-unofficial-heartbeat.mjs --runs 12 --interval-min 5",

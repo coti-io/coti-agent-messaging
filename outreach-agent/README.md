@@ -332,6 +332,8 @@ By default the agent also runs **one subreddit search per sampled sub** using ag
 
 **LLM triage + selection (Option B, on by default):** before regex gates, the top `OUTREACH_REDDIT_LLM_TRIAGE_MAX_ITEMS` (default 25) source items per active sub get batch-classified (`worthPublicReply`, topical fit, hostility). Survivors feed `planRedditAction`; when multiple write candidates exist, `OUTREACH_REDDIT_LLM_SELECT=true` asks the LLM to pick one instead of score-only ranking. Disable with `OUTREACH_REDDIT_LLM_TRIAGE=false` / `OUTREACH_REDDIT_LLM_SELECT=false`.
 
+**Upvotes (unofficial controller):** when `OUTREACH_REDDIT_UPVOTE_ENABLED=true` (default), the heartbeat upvotes the selected reply target (`t1_` comment or `t3_` post) before drafting. Deduped via `upvotedThingIds` in `reddit-memory.json`. Probe: `npm run reddit:unofficial:vote-probe -- --post-id POST_ID`.
+
 Duplicate safety: drafts are compared to prior outbound text (including dry-runs) and to other comments on the same ingested thread.
 
 Browser worker setup:

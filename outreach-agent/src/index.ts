@@ -7,7 +7,7 @@ import { runBridgeServerCli } from "./bridge-server.js";
 import { stopBridgeServer } from "./bridge-stop.js";
 import { runRedditBrowserLoginCli } from "./reddit-browser-login.js";
 import { runRedditBrowserWorkerCli, runRedditBrowserWorkerStopCli } from "./reddit-browser-worker.js";
-import { runRedditExecutorCli, runRedditHeartbeatCli, runRedditSessionCli } from "./reddit-session.js";
+import { runRedditExecutorCli, runRedditHeartbeatCli, runRedditSessionCli } from "./reddit-session-cli.js";
 import { readAttributionSummaryFromStore, readMessageFunnelSummaryFromStore } from "./attribution-store.js";
 import { getOutreachAgentConfig, getRedditControllerConfig, getRedditOperatingAgentConfig, loadRuntimeConfig, saveStoredCredentials } from "./config.js";
 import { createActionJob } from "./action-planning.js";

@@ -98,7 +98,7 @@ ssh grant 'sudo journalctl -u moltbook-outreach-heartbeat.service -n 100 --no-pa
 
 ## Environment
 
-CLI commands load env from the monorepo root `.env`, then `moltbook-outreach-agent/.env`, then `outreach-agent/.env`, then `process.cwd()/.env` (later files override). That keeps `npm run … -w @coti-agent-messaging/outreach-agent` working when secrets live at the repo root. Set `DOTENV_CONFIG_PATH` to load one file only.
+CLI commands load env from the monorepo root `.env`, then `outreach-agent/.env`, then legacy `moltbook-outreach-agent/.env`, then `process.cwd()/.env` (later files override). That keeps `npm run … -w @coti-agent-messaging/outreach-agent` working when secrets live at the repo root. Set `DOTENV_CONFIG_PATH` to load one file only.
 
 ### Moltbook
 

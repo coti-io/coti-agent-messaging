@@ -19,6 +19,17 @@
       "remoteEnvFile": "/home/ubuntu/outreach-agent/outreach-agent/.env",
       "serviceName": "moltbook-outreach-heartbeat",
       "walletAddress": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "agentId": "reddit-outreach",
+      "displayName": "Reddit Outreach",
+      "description": "Reddit venue agent (enable systemd units on grant before relying on scheduler)",
+      "envFile": "../.env",
+      "runtimeKind": "reddit",
+      "runtimeDir": "/home/ubuntu/outreach-agent/.runtime-reddit",
+      "remoteEnvFile": "/home/ubuntu/outreach-agent/outreach-agent/.env",
+      "serviceName": "reddit-outreach-heartbeat",
+      "executorServiceName": "reddit-outreach-executor"
     }
   ]
 }

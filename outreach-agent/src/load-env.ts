@@ -34,8 +34,8 @@ export function resolveOutreachEnvFilePaths(input?: {
   };
 
   pushUnique(path.join(projectRoot, ".env"));
-  pushUnique(path.join(projectRoot, "moltbook-outreach-agent", ".env"));
   pushUnique(path.join(packageRoot, ".env"));
+  pushUnique(path.join(projectRoot, "moltbook-outreach-agent", ".env"));
   pushUnique(path.join(cwd, ".env"));
 
   return ordered.filter((envPath) => existsSync(envPath));

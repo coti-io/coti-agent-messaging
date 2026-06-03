@@ -3,6 +3,7 @@ import type { StoredHeartbeatRun } from "../storage.js";
 
 export interface RedditRuntimeReportLike {
   runId: string;
+  correlationId?: string;
   phase: "heartbeat" | "executor";
   startedAt: string;
   finishedAt: string;
@@ -17,6 +18,7 @@ export interface RedditRuntimeReportLike {
 export function redditRuntimeReportToStoredRun(report: RedditRuntimeReportLike): StoredHeartbeatRun {
   return {
     runId: report.runId,
+    correlationId: report.correlationId,
     startedAt: report.startedAt,
     finishedAt: report.finishedAt,
     status: report.status === "ok" ? "ok" : "failed",

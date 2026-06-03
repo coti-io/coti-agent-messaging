@@ -3,17 +3,16 @@ import {
   DEFAULT_REDDIT_RULES_REGISTRY,
   DEFAULT_REDDIT_TARGETING,
   type RedditDuplicateCheckPolicy,
-  redditMemoryEntryConsumesTarget,
   type RedditOutboundMemoryEntry,
   type RedditOutreachTargeting,
   type RedditReviewItem,
   type RedditRulesRegistry,
   type RedditSourceItem,
   type RedditSourceTriageResult,
-  mergeRulesRegistries,
-  resolveRulesRegistryForSubreddits,
   resolveSourceThreadPostId
 } from "./reddit-outreach.js";
+import { redditMemoryEntryConsumesTarget } from "./reddit-evaluation.js";
+import { mergeRulesRegistries, resolveRulesRegistryForSubreddits } from "./reddit-rules.js";
 
 export interface RedditPlannerConfig {
   maxActionsPerSession: number;

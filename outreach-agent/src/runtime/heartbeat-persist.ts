@@ -36,6 +36,7 @@ export async function writeMoltbookAnalyticsReadModel(
       promptRotationStatePath: config.promptRotationStatePath,
       latestRun: {
         runId: report.runId,
+        correlationId: report.correlationId,
         status: report.status,
         startedAt: report.startedAt,
         finishedAt: report.finishedAt,

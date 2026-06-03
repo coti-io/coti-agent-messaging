@@ -67,6 +67,7 @@ export interface ActionJob {
   notBefore: string;
   attempts: number;
   sourceDecisionId: string;
+  correlationId?: string;
   runningAt?: string;
   lastAttemptAt?: string;
   lastError?: string;
@@ -81,6 +82,7 @@ export function createActionJob(input: {
   candidateId: string;
   sourceDecisionId: string;
   notBefore: string;
+  correlationId?: string;
 }): ActionJob {
   return {
     id: `${input.action.id}:${input.sourceDecisionId}`,
@@ -93,7 +95,8 @@ export function createActionJob(input: {
     createdAt: new Date().toISOString(),
     notBefore: input.notBefore,
     attempts: 0,
-    sourceDecisionId: input.sourceDecisionId
+    sourceDecisionId: input.sourceDecisionId,
+    correlationId: input.correlationId
   };
 }
 

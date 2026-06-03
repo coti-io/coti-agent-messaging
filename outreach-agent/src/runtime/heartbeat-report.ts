@@ -3,6 +3,7 @@ import type { StoredHeartbeatRun } from "../storage.js";
 
 export interface HeartbeatReportLike {
   runId: string;
+  correlationId?: string;
   agentId?: string;
   startedAt: string;
   finishedAt?: string;
@@ -22,6 +23,7 @@ export interface HeartbeatReportLike {
 export function heartbeatReportToStoredRun(report: HeartbeatReportLike): StoredHeartbeatRun {
   return {
     runId: report.runId,
+    correlationId: report.correlationId,
     agentId: report.agentId,
     startedAt: report.startedAt,
     finishedAt: report.finishedAt,

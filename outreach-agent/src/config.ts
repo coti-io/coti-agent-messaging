@@ -28,10 +28,10 @@ import {
   DEFAULT_REDDIT_DISCOVERY_POOL,
   getDefaultRedditDiscoverySubredditNames
 } from "./reddit-outreach.js";
+import { buildLlmRuntimeConfig } from "./config/llm-runtime.js";
 import {
   defaultAttributionDbPath,
   defaultHeartbeatReportPath,
-  defaultLlmDebugDir,
   defaultPromptRotationStatePath,
   resolveRuntimeDataDir
 } from "./config/runtime-paths.js";
@@ -39,22 +39,32 @@ import {
 export {
   defaultAttributionDbPath,
   defaultHeartbeatReportPath,
-  defaultLlmDebugDir,
   defaultPromptRotationStatePath,
   resolveRuntimeDataDir
 };
+export { defaultLlmDebugDir } from "./config/runtime-paths.js";
 import {
   DEFAULT_SCAN_LEDGER_MAX_ENTRIES,
   DEFAULT_SCAN_LEDGER_TTL_HOURS
 } from "./reddit-scan-ledger.js";
 import type { OutreachAgentConfig, OutreachAgentMode, OutreachVenueId } from "./venue.js";
-
-export interface MoltbookStoredCredentials {
-  apiKey: string;
-  agentName?: string;
-  claimUrl?: string;
-  verificationCode?: string;
-}
+export type { MoltbookOutreachPolicyConfig, MoltbookStoredCredentials } from "./config/moltbook-runtime.js";
+export type {
+  RedditApiRuntimeConfig,
+  RedditBrowserBridgeConfig,
+  RedditControllerConfig,
+  RedditControllerKind,
+  RedditOperatingAgentConfig,
+  RedditReddapiRuntimeConfig,
+  RedditUnofficialRuntimeConfig
+} from "./config/reddit-runtime.js";
+import type { MoltbookStoredCredentials } from "./config/moltbook-runtime.js";
+import type { MoltbookOutreachPolicyConfig } from "./config/moltbook-runtime.js";
+import type {
+  RedditControllerConfig,
+  RedditControllerKind,
+  RedditOperatingAgentConfig
+} from "./config/reddit-runtime.js";
 
 export interface RuntimePaths {
   packageRoot: string;
@@ -63,85 +73,6 @@ export interface RuntimePaths {
   statePath: string;
   heartbeatReportPath: string;
   agentId?: string;
-}
-
-export interface MoltbookOutreachPolicyConfig {
-  commentLimitNewAgentPerDay: number;
-  commentLimitEstablishedPerDay: number;
-  postLimitNewAgentPerDay?: number;
-  postLimitEstablishedPerDay?: number;
-  followMinPostScore?: number;
-  followMaxPerHeartbeat?: number;
-  followFromCommentAuthors?: boolean;
-  followCommentMinScore?: number;
-}
-
-export type RedditControllerKind = "manual" | "browser" | "api" | "reddapi" | "unofficial";
-
-export interface RedditBrowserBridgeConfig {
-  bridgeDir: string;
-  responseTimeoutMs: number;
-  pollIntervalMs: number;
-}
-
-export interface RedditApiRuntimeConfig {
-  accessToken?: string;
-  userAgent?: string;
-  baseUrl: string;
-}
-
-export interface RedditReddapiRuntimeConfig {
-  rapidApiKey?: string;
-  proxy?: string;
-  storageStatePath: string;
-  rapidApiHost: string;
-  bearerOverride?: string;
-}
-
-export interface RedditUnofficialRuntimeConfig {
-  proxy?: string;
-  storageStatePath: string;
-  bearerOverride?: string;
-  publicBaseUrl: string;
-  oauthBaseUrl: string;
-  userAgent: string;
-}
-
-export interface RedditControllerConfig {
-  controller: RedditControllerKind;
-  browserBridge: RedditBrowserBridgeConfig;
-  api: RedditApiRuntimeConfig;
-  reddapi: RedditReddapiRuntimeConfig;
-  unofficial?: RedditUnofficialRuntimeConfig;
-}
-
-export interface RedditOperatingAgentConfig {
-  /** Full subreddit pool for discovery sampling. */
-  discoverySubredditPool: string[];
-  /** How many subs to hit per heartbeat (random sample from pool). */
-  discoverySubsPerRun: number;
-  scanLedgerTtlHours: number;
-  scanLedgerMaxEntries: number;
-  llmTriageEnabled: boolean;
-  llmTriageMaxItems: number;
-  llmSelectEnabled: boolean;
-  targetSubreddits: string[];
-  searchQueries: string[];
-  ingestionListLimit: number;
-  ingestionMaxOwnThreadReads: number;
-  ingestionMaxDiscoveryThreadReads: number;
-  ingestionOwnThreadCommentLimit: number;
-  ingestionMaxSearchesPerSubreddit: number;
-  maxActionsPerSession: number;
-  maxActionsPerDay: number;
-  upvoteEnabled: boolean;
-  upvoteBeforeReply: boolean;
-  maxUpvotesPerSession: number;
-  minJitterMinutes: number;
-  maxJitterMinutes: number;
-  readController: "browser" | "api" | "auto" | "reddapi" | "unofficial";
-  dryRunDefault: boolean;
-  memoryPath: string;
 }
 
 export interface ActionExecutionConfig {
@@ -509,9 +440,9 @@ export async function loadRuntimeConfig(
   const privateKey = getOptionalEnv("PRIVATE_KEY");
   const aesKey = getOptionalEnv("AES_KEY");
   const contractAddress = getOptionalEnv("CONTRACT_ADDRESS");
-  const llmApiKey = getOptionalEnv("MOLTBOOK_LLM_API_KEY") ?? getOptionalEnv("OPENROUTER_API_KEY");
   const hasCotiCredentials = Boolean(privateKey && aesKey && contractAddress);
   const promptProfile = await loadPromptProfile(getOptionalEnv("OUTREACH_PROMPT_PROFILE_PATH"));
+  const llmRuntime = buildLlmRuntimeConfig(paths.statePath, resolveHomePath);
 
   if (requireCoti && !hasCotiCredentials) {
     throw new Error(
@@ -519,33 +450,6 @@ export async function loadRuntimeConfig(
     );
   }
 
-  const llm = llmApiKey
-    ? {
-        apiKey: llmApiKey,
-        baseUrl:
-          process.env.MOLTBOOK_LLM_BASE_URL ??
-          process.env.OPENROUTER_BASE_URL ??
-          "https://openrouter.ai/api/v1",
-        model:
-          process.env.MOLTBOOK_LLM_MODEL ??
-          process.env.OPENROUTER_MODEL ??
-          "openai/gpt-4o-mini",
-        timeoutMs: parseNumber(process.env.MOLTBOOK_LLM_TIMEOUT_MS, 20_000),
-        appName: process.env.MOLTBOOK_LLM_APP_NAME ?? "outreach-agent",
-        siteUrl: process.env.MOLTBOOK_LLM_SITE_URL
-      }
-    : undefined;
-  const llmBridgeUrl = getOptionalEnv("MOLTBOOK_LLM_BRIDGE_URL");
-  const llmBridge = llmBridgeUrl
-    ? {
-        url: llmBridgeUrl,
-        timeoutMs: parseNumber(process.env.MOLTBOOK_LLM_BRIDGE_TIMEOUT_MS, llm?.timeoutMs ?? 20_000),
-        label: process.env.MOLTBOOK_LLM_BRIDGE_LABEL ?? "local-bridge",
-        authToken: getOptionalEnv("MOLTBOOK_LLM_BRIDGE_AUTH_TOKEN")
-      }
-    : undefined;
-  const verificationLlmApiKey = getOptionalEnv("MOLTBOOK_VERIFY_LLM_API_KEY") ?? llm?.apiKey;
-  const verificationLlmBridgeUrl = getOptionalEnv("MOLTBOOK_VERIFY_LLM_BRIDGE_URL") ?? llmBridge?.url;
   const reddit = buildRedditControllerConfig(paths.packageRoot);
   const redditOperating = buildRedditOperatingAgentConfig(paths.packageRoot);
   const actionExecution = buildActionExecutionConfig(redditOperating);
@@ -602,9 +506,7 @@ export async function loadRuntimeConfig(
       getOptionalEnv("OUTREACH_PROMPT_ROTATION_STATE_PATH") ??
         defaultPromptRotationStatePath(paths.statePath)
     ),
-    llmDebugDir: resolveHomePath(
-      getOptionalEnv("MOLTBOOK_LLM_DEBUG_DIR") ?? defaultLlmDebugDir(paths.statePath)
-    ),
+    llmDebugDir: llmRuntime.llmDebugDir,
     attributionCampaignId,
     attributionDbPath: resolveHomePath(
       getOptionalEnv("OUTREACH_ATTRIBUTION_DB_PATH") ?? defaultAttributionDbPath(paths.statePath)
@@ -620,40 +522,10 @@ export async function loadRuntimeConfig(
       );
       return configured.length > 0 ? configured : ["agents.coti.io"];
     })(),
-    llm,
-    llmBridge,
-    verificationLlm: verificationLlmApiKey
-      ? {
-          apiKey: verificationLlmApiKey,
-          baseUrl:
-            process.env.MOLTBOOK_VERIFY_LLM_BASE_URL ??
-            llm?.baseUrl ??
-            "https://openrouter.ai/api/v1",
-          model:
-            process.env.MOLTBOOK_VERIFY_LLM_MODEL ??
-            llm?.model ??
-            "openai/gpt-4o-mini",
-          timeoutMs: parseNumber(
-            process.env.MOLTBOOK_VERIFY_LLM_TIMEOUT_MS,
-            llm?.timeoutMs ?? 10_000
-          )
-        }
-      : undefined,
-    verificationLlmBridge: verificationLlmBridgeUrl
-      ? {
-          url: verificationLlmBridgeUrl,
-          timeoutMs: parseNumber(
-            process.env.MOLTBOOK_VERIFY_LLM_BRIDGE_TIMEOUT_MS,
-            llmBridge?.timeoutMs ?? llm?.timeoutMs ?? 10_000
-          ),
-          label:
-            process.env.MOLTBOOK_VERIFY_LLM_BRIDGE_LABEL ??
-            llmBridge?.label ??
-            "local-bridge",
-          authToken:
-            getOptionalEnv("MOLTBOOK_VERIFY_LLM_BRIDGE_AUTH_TOKEN") ?? llmBridge?.authToken
-        }
-      : undefined,
+    llm: llmRuntime.llm,
+    llmBridge: llmRuntime.llmBridge,
+    verificationLlm: llmRuntime.verificationLlm,
+    verificationLlmBridge: llmRuntime.verificationLlmBridge,
     reddit,
     redditOperating,
     actionExecution,

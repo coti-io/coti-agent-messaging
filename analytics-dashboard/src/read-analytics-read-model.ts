@@ -35,6 +35,7 @@ export interface AnalyticsReadModelSnapshot {
   };
   latestRun?: {
     runId: string;
+    correlationId?: string;
     phase?: string;
     status: string;
     startedAt: string;

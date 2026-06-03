@@ -17,6 +17,7 @@ import { countPendingWork } from "./job-queue.js";
 
 export interface StoredHeartbeatRun {
   runId: string;
+  correlationId?: string;
   agentId?: string;
   startedAt: string;
   finishedAt?: string;

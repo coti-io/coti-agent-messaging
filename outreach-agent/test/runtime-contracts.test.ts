@@ -44,6 +44,63 @@ test("heartbeat and reddit reports map to stored run shape", () => {
   assert.equal(redditStored.plannedActions[0], "heartbeat");
 });
 
+test("saveRedditMemorySynced does not mirror queued jobs into json by default", async () => {
+  const root = path.join(os.tmpdir(), `runtime-json-jobs-${Date.now()}`);
+  await mkdir(root, { recursive: true });
+  const runtimeDir = path.join(root, ".runtime");
+  await mkdir(runtimeDir, { recursive: true });
+  const statePath = path.join(runtimeDir, "state.json");
+  const heartbeatReportPath = path.join(runtimeDir, "last-heartbeat.json");
+  const memoryPath = path.join(root, "reddit-memory.json");
+
+  const job: ActionJob = {
+    id: "job:2:decision",
+    venue: "reddit",
+    actionId: "action-2",
+    candidateId: "candidate-2",
+    type: "comment_on_post",
+    payload: {
+      id: "action-2",
+      venue: "reddit",
+      type: "comment_on_post",
+      content: "reply"
+    },
+    status: "queued",
+    createdAt: new Date().toISOString(),
+    notBefore: new Date().toISOString(),
+    attempts: 0,
+    sourceDecisionId: "decision-2"
+  };
+
+  const config = {
+    statePath,
+    heartbeatReportPath,
+    redditOperating: { memoryPath }
+  } as import("../src/config.js").MoltbookRuntimeConfig;
+
+  const ports = createRuntimePorts(config);
+  await ports.state.saveState(createInitialState());
+
+  const { saveRedditMemorySynced } = await import("../src/runtime/reddit-memory-persist.js");
+  await saveRedditMemorySynced(
+    config,
+    {
+      generatedAt: new Date().toISOString(),
+      history: [],
+      queuedJobs: [job]
+    }
+  );
+
+  const memoryRaw = JSON.parse(await readFile(memoryPath, "utf8")) as { queuedJobs?: unknown[] };
+  assert.equal(memoryRaw.queuedJobs, undefined);
+
+  const loaded = await ports.jobs.loadJobs();
+  assert.equal(loaded.length, 1);
+  assert.equal(loaded[0]?.id, job.id);
+
+  await rm(root, { recursive: true, force: true });
+});
+
 test("sqlite job store syncs reddit json jobs into state", async () => {
   const root = path.join(os.tmpdir(), `runtime-contract-${Date.now()}`);
   await mkdir(root, { recursive: true });
@@ -94,6 +151,10 @@ test("sqlite job store syncs reddit json jobs into state", async () => {
 
   const hydrated = await loadRedditMemoryWithSharedJobs(config);
   assert.equal(hydrated.queuedJobs?.length, 1);
+  const memoryAfterMigrate = JSON.parse(await readFile(memoryPath, "utf8")) as {
+    queuedJobs?: unknown[];
+  };
+  assert.equal(memoryAfterMigrate.queuedJobs, undefined);
 
   await syncRedditQueuedJobsToState(config, {
     ...hydrated,
@@ -101,6 +162,9 @@ test("sqlite job store syncs reddit json jobs into state", async () => {
   });
   const afterClear = await ports.jobs.loadJobs();
   assert.equal(afterClear.length, 0);
+
+  const afterResurrection = await loadRedditMemoryWithSharedJobs(config);
+  assert.equal(afterResurrection.queuedJobs?.length, 0);
 
   await rm(root, { recursive: true, force: true });
 });

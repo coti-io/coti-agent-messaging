@@ -113,7 +113,13 @@ else
 fi
 
 agent_provision_plan="$(mktemp)"
-trap 'rm -f "$agent_provision_plan"' EXIT
+cleanup_deploy_artifacts() {
+  rm -f "$agent_provision_plan"
+  if [[ "${outreach_quiesced:-0}" == 1 ]]; then
+    remote_resume_outreach_timers "$SSH_HOST" "${OUTREACH_UNITS[@]}" || true
+  fi
+}
+trap cleanup_deploy_artifacts EXIT
 MANIFEST_JSON="$MANIFEST_JSON" MANIFEST_DIR="$(dirname "$MANIFEST_PATH")" python3 - <<'PY' >"$agent_provision_plan"
 import json
 import os
@@ -383,7 +389,6 @@ EOF
 
 remote_resume_outreach_timers "$SSH_HOST" "${OUTREACH_UNITS[@]}"
 outreach_quiesced=0
-trap - EXIT
 
 echo
 echo "Outreach analytics stack deployed."

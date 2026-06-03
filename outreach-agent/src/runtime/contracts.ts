@@ -84,6 +84,7 @@ export interface AnalyticsReadModel {
   };
   latestRun?: {
     runId: string;
+    correlationId?: string;
     phase?: string;
     status: string;
     startedAt: string;

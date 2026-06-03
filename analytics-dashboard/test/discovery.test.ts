@@ -7,6 +7,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import sqlite3 from "sqlite3";
 
 import { discoverAgents } from "../src/discovery";
+import { analyticsReadModelPathForState } from "../src/read-analytics-read-model";
+
+async function writeReadModel(
+  statePath: string,
+  model: Record<string, unknown>
+): Promise<void> {
+  await writeFile(analyticsReadModelPathForState(statePath), JSON.stringify(model), "utf8");
+}
 
 async function execSql(databasePath: string, sql: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -58,11 +66,30 @@ test("discoverAgents reads agent metadata, state, and heartbeat report", async (
     }),
     "utf8"
   );
+  const statePath = path.join(runtimeDir, "state.json");
   await writeFile(
     path.join(runtimeDir, "last-heartbeat.json"),
     JSON.stringify({ status: "ok", errors: [], skipped: ["cooldown"] }),
     "utf8"
   );
+  await writeReadModel(statePath, {
+    schemaVersion: 1,
+    generatedAt: "2026-05-04T12:00:00.000Z",
+    venue: "moltbook",
+    runtimeKind: "heartbeat",
+    paths: {
+      statePath,
+      storagePath: path.join(runtimeDir, "state.sqlite"),
+      heartbeatReportPath: path.join(runtimeDir, "last-heartbeat.json")
+    },
+    scheduler: {
+      lastHeartbeatAt: "2026-05-04T12:00:00.000Z",
+      lastSuccessfulRunAt: "2026-05-04T12:00:00.000Z",
+      latestStatus: "ok",
+      health: "fresh"
+    },
+    pendingWork: { pendingWrites: 1, queuedJobs: 1 }
+  });
   await writeFile(
     path.join(promptDataDir, "prompt-rotation.json"),
     JSON.stringify({
@@ -143,6 +170,7 @@ test("discoverAgents derives scheduler health from json heartbeat timestamps wit
     }),
     "utf8"
   );
+  const statePath = path.join(runtimeDir, "state.json");
   await writeFile(
     path.join(runtimeDir, "last-heartbeat.json"),
     JSON.stringify({
@@ -153,11 +181,47 @@ test("discoverAgents derives scheduler health from json heartbeat timestamps wit
     }),
     "utf8"
   );
+  await writeReadModel(statePath, {
+    schemaVersion: 1,
+    generatedAt: "2026-06-01T08:34:37.244Z",
+    venue: "reddit",
+    runtimeKind: "heartbeat",
+    paths: {
+      statePath,
+      storagePath: path.join(runtimeDir, "state.sqlite"),
+      heartbeatReportPath: path.join(runtimeDir, "last-heartbeat.json")
+    },
+    scheduler: {
+      lastHeartbeatAt: "2026-06-01T08:34:37.244Z",
+      lastSuccessfulRunAt: "2026-06-01T08:34:37.244Z",
+      latestStatus: "ok",
+      health: "fresh"
+    },
+    pendingWork: { pendingWrites: 0, queuedJobs: 0 }
+  });
 
   try {
     const freshAgents = await discoverAgents(tempDir, new Date("2026-06-01T08:40:00.000Z"));
     assert.equal(freshAgents[0]?.schedulerHealth, "fresh");
 
+    await writeReadModel(statePath, {
+      schemaVersion: 1,
+      generatedAt: "2026-06-01T08:34:37.244Z",
+      venue: "reddit",
+      runtimeKind: "heartbeat",
+      paths: {
+        statePath,
+        storagePath: path.join(runtimeDir, "state.sqlite"),
+        heartbeatReportPath: path.join(runtimeDir, "last-heartbeat.json")
+      },
+      scheduler: {
+        lastHeartbeatAt: "2026-06-01T08:34:37.244Z",
+        lastSuccessfulRunAt: "2026-06-01T08:34:37.244Z",
+        latestStatus: "ok",
+        health: "stale"
+      },
+      pendingWork: { pendingWrites: 0, queuedJobs: 0 }
+    });
     const staleAgents = await discoverAgents(tempDir, new Date("2026-06-01T09:00:00.000Z"));
     assert.equal(staleAgents[0]?.schedulerHealth, "stale");
   } finally {
@@ -246,6 +310,32 @@ test("discoverAgents prefers sqlite health and counters when present", async () 
         ('current', '{"pendingWrites":[{"id":"pending-1"}],"queuedActionJobs":[{"id":"job-1"}]}', '2026-05-04T12:00:00.000Z');
     `
   );
+  const statePath = path.join(runtimeDir, "state.json");
+  await writeFile(statePath, JSON.stringify({ engagementEvents: [] }), "utf8");
+  await writeReadModel(statePath, {
+    schemaVersion: 1,
+    generatedAt: "2026-05-04T12:00:00.000Z",
+    venue: "moltbook",
+    runtimeKind: "heartbeat",
+    paths: {
+      statePath,
+      storagePath: sqlitePath,
+      heartbeatReportPath: path.join(runtimeDir, "last-heartbeat.json")
+    },
+    scheduler: {
+      lastHeartbeatAt: "2026-05-04T12:00:00.000Z",
+      lastSuccessfulRunAt: "2026-05-04T11:45:00.000Z",
+      latestStatus: "failed",
+      health: "fresh"
+    },
+    pendingWork: { pendingWrites: 1, queuedJobs: 1 },
+    latestRun: {
+      runId: "run-failed",
+      status: "failed",
+      startedAt: "2026-05-04T11:55:00.000Z",
+      finishedAt: "2026-05-04T12:00:00.000Z"
+    }
+  });
 
   try {
     const agents = await discoverAgents(tempDir, new Date("2026-05-04T12:00:00.000Z"));

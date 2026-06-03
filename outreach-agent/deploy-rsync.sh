@@ -10,13 +10,17 @@ source "$PROJECT_ROOT/deploy/lib/systemd-quiesce.sh"
 DEPLOY_PATH="${MOLTBOOK_OUTREACH_DEPLOY_PATH:-${DEPLOY_PATH:-/home/ubuntu/outreach-agent}}"
 SSH_HOST="grant"
 LOCAL_REDDIT_STORAGE_STATE="${MOLTBOOK_OUTREACH_DEPLOY_REDDIT_STORAGE_STATE:-$PROJECT_ROOT/outreach-agent/.browser/reddit-storage-state.json}"
-DEFAULT_AGENT_ENV_FILE="$PROJECT_ROOT/moltbook-outreach-agent/.env"
 if [[ -n "${MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE:-}" ]]; then
   LOCAL_ENV_FILE="$MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE"
-elif [[ -f "$DEFAULT_AGENT_ENV_FILE" ]]; then
-  LOCAL_ENV_FILE="$DEFAULT_AGENT_ENV_FILE"
-else
+elif [[ -f "$PROJECT_ROOT/.env" ]]; then
   LOCAL_ENV_FILE="$PROJECT_ROOT/.env"
+elif [[ -f "$PROJECT_ROOT/outreach-agent/.env" ]]; then
+  LOCAL_ENV_FILE="$PROJECT_ROOT/outreach-agent/.env"
+elif [[ -f "$PROJECT_ROOT/moltbook-outreach-agent/.env" ]]; then
+  LOCAL_ENV_FILE="$PROJECT_ROOT/moltbook-outreach-agent/.env"
+else
+  echo "Missing local outreach env file. Set MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE or create .env at repo root." >&2
+  exit 1
 fi
 RSYNC_DELETE="${MOLTBOOK_OUTREACH_DEPLOY_DELETE:-1}"
 
@@ -29,12 +33,6 @@ SERVICE_UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 TIMER_UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.timer"
 EXECUTOR_SERVICE_UNIT_PATH="/etc/systemd/system/${EXECUTOR_SERVICE_NAME}.service"
 EXECUTOR_TIMER_UNIT_PATH="/etc/systemd/system/${EXECUTOR_SERVICE_NAME}.timer"
-
-if [[ ! -f "$LOCAL_ENV_FILE" ]]; then
-  echo "Missing local outreach env file: '$LOCAL_ENV_FILE'" >&2
-  echo "Set MOLTBOOK_OUTREACH_DEPLOY_ENV_FILE, create moltbook-outreach-agent/.env, or create .env at the repo root." >&2
-  exit 1
-fi
 
 RSYNC_OPTS=(-az --compress --human-readable)
 if [[ "$RSYNC_DELETE" == "1" ]]; then

@@ -23,25 +23,24 @@ test("resolveOutreachEnvFilePaths prefers repo and agent env files over cwd", as
 
   assert.deepEqual(paths, [
     path.join(root, ".env"),
-    path.join(moltbookDir, ".env"),
-    path.join(packageRoot, ".env")
+    path.join(packageRoot, ".env"),
+    path.join(moltbookDir, ".env")
   ]);
 });
 
 test("loadOutreachEnv lets later files override earlier keys", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "outreach-env-load-"));
   const packageRoot = path.join(root, "outreach-agent");
-  const moltbookDir = path.join(root, "moltbook-outreach-agent");
-  await mkdir(moltbookDir, { recursive: true });
+  await mkdir(packageRoot, { recursive: true });
   await writeFile(path.join(root, ".env"), "OPENROUTER_API_KEY=from-root\n", "utf8");
-  await writeFile(path.join(moltbookDir, ".env"), "OPENROUTER_API_KEY=from-moltbook\n", "utf8");
+  await writeFile(path.join(packageRoot, ".env"), "OPENROUTER_API_KEY=from-package\n", "utf8");
 
   const previous = process.env.OPENROUTER_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
 
   try {
     loadOutreachEnv({ packageRoot, cwd: packageRoot });
-    assert.equal(process.env.OPENROUTER_API_KEY, "from-moltbook");
+    assert.equal(process.env.OPENROUTER_API_KEY, "from-package");
   } finally {
     if (previous === undefined) {
       delete process.env.OPENROUTER_API_KEY;

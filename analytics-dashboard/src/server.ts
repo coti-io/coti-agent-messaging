@@ -5,6 +5,7 @@ import path from "node:path";
 import { collectMessageStats, type MessageStatsReport } from "../../contracts/src/message-stats";
 import { loadAnalyticsConfig } from "./config";
 import { discoverAgents, readDeployMetadata } from "./discovery";
+import { readAnalyticsReadModel } from "./read-analytics-read-model";
 import { aggregateEngagementSummaries } from "./engagements";
 import { buildManualOutreachRef, buildTrackedCtaUrl, type ManualRefBuilderInput } from "./manual-cta";
 import { readAttributionSummary } from "./storage";
@@ -258,6 +259,7 @@ function publicAgent(agent: Awaited<ReturnType<typeof discoverAgents>>[number]) 
     profileUrl: agent.metadata.profileUrl,
     walletAddress: agent.metadata.walletAddress,
     statePresent: agent.statePresent,
+    readModelPresent: agent.readModelPresent,
     reportPresent: agent.reportPresent,
     stateError: agent.stateError,
     reportError: agent.reportError,
@@ -336,6 +338,28 @@ async function getCotiStats(configInput: AnalyticsConfig): Promise<CachedCotiSta
   };
 }
 
+async function resolveAttributionDbPath(
+  configInput: AnalyticsConfig,
+  agentId?: string
+): Promise<string | undefined> {
+  if (!agentId?.trim()) {
+    return configInput.attributionDbPath;
+  }
+
+  const agents = await discoverAgents(configInput.agentRoot);
+  const agent = agents.find((entry) => entry.metadata.agentId === agentId.trim());
+  if (!agent) {
+    return configInput.attributionDbPath;
+  }
+
+  const readModel = await readAnalyticsReadModel(agent.paths.statePath);
+  if (readModel?.paths.attributionDbPath) {
+    return readModel.paths.attributionDbPath;
+  }
+
+  return path.join(agent.paths.runtimeDir, "outreach-attribution.sqlite");
+}
+
 async function summaryPayload(configInput: AnalyticsConfig) {
   const agents = await discoverAgents(configInput.agentRoot);
   const publicAgents = agents.map(publicAgent);
@@ -403,7 +427,15 @@ async function handleApi(
   }
 
   if (request.method === "GET" && pathname === "/api/attribution") {
-    jsonResponse(response, 200, await readAttributionSummary(configInput.attributionDbPath));
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const agentId = url.searchParams.get("agentId") ?? undefined;
+    const attributionDbPath = await resolveAttributionDbPath(configInput, agentId);
+    const summary = await readAttributionSummary(attributionDbPath);
+    jsonResponse(response, 200, {
+      ...summary,
+      agentId: agentId ?? null,
+      attributionDbPath: attributionDbPath ?? null
+    });
     return;
   }
 

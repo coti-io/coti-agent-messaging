@@ -38,6 +38,7 @@ export interface AgentRuntimePaths {
 
 export interface AgentHeartbeatRun {
   runId: string;
+  correlationId?: string;
   phase?: "heartbeat" | "executor";
   startedAt: string;
   finishedAt?: string;
@@ -62,6 +63,7 @@ export interface AgentHeartbeatRun {
 export interface DiscoveredAgent {
   metadata: AgentMetadata;
   paths: AgentRuntimePaths;
+  readModelPresent: boolean;
   statePresent: boolean;
   reportPresent: boolean;
   stateError?: string;

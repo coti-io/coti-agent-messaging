@@ -659,6 +659,8 @@ function normalizeReportRun(
   source: AgentHeartbeatRun["source"]
 ): AgentHeartbeatRun | undefined {
   const runId = asOptionalString(report.runId) ?? asOptionalString(report.run_id);
+  const correlationId =
+    asOptionalString(report.correlationId) ?? asOptionalString(report.correlation_id);
   const startedAt = asOptionalString(report.startedAt) ?? asOptionalString(report.started_at);
   if (!runId || !startedAt) {
     return undefined;
@@ -688,6 +690,7 @@ function normalizeReportRun(
     const reddit = extractRedditRunDetails(report);
     return {
       runId,
+      correlationId,
       phase:
         report.phase === "heartbeat" || report.phase === "executor" ? report.phase : undefined,
       startedAt,
@@ -722,6 +725,7 @@ function normalizeReportRun(
 
   return {
     runId,
+    correlationId,
     phase: report.phase === "heartbeat" || report.phase === "executor" ? report.phase : undefined,
     startedAt,
     finishedAt: asOptionalString(report.finishedAt) ?? asOptionalString(report.finished_at),

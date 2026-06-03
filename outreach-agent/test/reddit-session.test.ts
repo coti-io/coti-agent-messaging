@@ -6,6 +6,7 @@ import { mkdtemp } from "node:fs/promises";
 
 import { createActionJob } from "../src/action-planning.js";
 import { appendRedditMemory, loadRedditMemory, pruneDraftedRedditMemory, saveRedditMemory } from "../src/reddit-memory.js";
+import { loadRedditMemoryWithSharedJobs } from "../src/runtime/reddit-job-sync.js";
 import { runRedditExecutor, runRedditSession } from "../src/reddit-session.js";
 import type { MoltbookRuntimeConfig } from "../src/config.js";
 import type { JsonLlmProvider } from "../src/llm-client.js";
@@ -422,7 +423,7 @@ test("reddit executor keeps due job queued while action cooldown is active", asy
 
   assert.equal(published.length, 0);
   assert.ok(report.decision.skipped.some((entry) => entry.includes("reply_to_comment execution cooldown")));
-  const memory = await loadRedditMemory(memoryPath);
+  const memory = await loadRedditMemoryWithSharedJobs(config);
   assert.equal(memory.queuedJobs?.[0]?.status, "queued");
   assert.equal(memory.queuedJobs?.[0]?.notBefore, "2026-06-03T10:20:00.000Z");
 });

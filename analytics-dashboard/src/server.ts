@@ -278,6 +278,7 @@ function publicAgent(agent: Awaited<ReturnType<typeof discoverAgents>>[number]) 
     currentPrompt: agent.currentPrompt,
     recentPublished: agent.recentPublished ?? [],
     recentRuns: agent.recentRuns ?? [],
+    executionQueue: agent.executionQueue,
     accountStatus: agent.accountStatus
   };
 }

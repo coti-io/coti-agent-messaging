@@ -17,6 +17,7 @@ import {
 } from "./agent-snapshot";
 import { extractRecentPublishedFromState } from "./content";
 import { summarizeEngagements } from "./engagements";
+import { loadExecutionQueue } from "./execution-queue";
 import { loadAgentRecentRuns } from "./run-repository";
 import type { AgentCurrentPrompt, AgentMetadata, AgentRuntimePaths, DiscoveredAgent } from "./types";
 
@@ -203,7 +204,10 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       sqliteSnapshot?.latestErrors ?? (Array.isArray(report?.errors) ? report.errors.length : 0);
     const skipped =
       sqliteSnapshot?.latestSkipped ?? (Array.isArray(report?.skipped) ? report.skipped.length : 0);
-    const recentRuns = await loadAgentRecentRuns(normalizedPaths, report, 5);
+    const [recentRuns, executionQueue] = await Promise.all([
+      loadAgentRecentRuns(normalizedPaths, report, 5),
+      loadExecutionQueue({ state, storagePath: normalizedPaths.storagePath })
+    ]);
     const accountStatus = resolveAgentAccountStatus({
       agentId: metadata.agentId,
       serviceName: metadata.serviceName,
@@ -237,6 +241,7 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       currentPrompt,
       recentPublished: extractRecentPublishedFromState(state),
       recentRuns,
+      executionQueue,
       accountStatus
     });
   }

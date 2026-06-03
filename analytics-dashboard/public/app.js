@@ -93,6 +93,94 @@ function runStatusClass(status) {
   return "warn";
 }
 
+function queueStatusClass(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "running") {
+    return "queue-status-running";
+  }
+  if (normalized === "failed") {
+    return "warn";
+  }
+  if (normalized === "cancelled") {
+    return "queue-status-cancelled";
+  }
+  return "";
+}
+
+function queueStatusIsOk(status) {
+  return String(status || "").toLowerCase() === "queued";
+}
+
+function shortenJobId(jobId) {
+  if (!jobId) {
+    return "";
+  }
+  const value = String(jobId);
+  return value.length > 42 ? `${value.slice(0, 39)}...` : value;
+}
+
+function renderExecutionQueue(agent) {
+  const queue = agent.executionQueue ?? { items: [], summary: { queued: 0, running: 0, failed: 0, cancelled: 0, total: 0 } };
+  const items = Array.isArray(queue.items) ? queue.items : [];
+  const summary = queue.summary ?? {};
+
+  if (!items.length) {
+    return `
+      <div class="execution-queue-panel">
+        <div class="agent-runs-heading">Execution queue</div>
+        <div class="execution-queue-empty subtle">No queued, running, or failed actions right now.</div>
+      </div>
+    `;
+  }
+
+  const summaryLine = [
+    `${formatNumber(summary.running ?? 0)} running`,
+    `${formatNumber(summary.queued ?? 0)} queued`,
+    `${formatNumber(summary.failed ?? 0)} failed`
+  ].join(" · ");
+
+  return `
+    <div class="execution-queue-panel">
+      <div class="execution-queue-head">
+        <div class="agent-runs-heading">Execution queue</div>
+        <div class="execution-queue-summary subtle">${escapeHtml(summaryLine)}</div>
+      </div>
+      <div class="execution-queue-list">
+        ${items
+          .map((job) => {
+            const status = job.status || "queued";
+            const venue = job.venue ? `${job.venue} · ` : "";
+            const timing =
+              status === "running"
+                ? `started ${formatTime(job.runningAt ?? job.lastAttemptAt)}`
+                : status === "failed"
+                  ? `last attempt ${formatTime(job.lastAttemptAt ?? job.notBefore)}`
+                  : `due ${formatTime(job.notBefore)}`;
+            const errorLine = job.lastError
+              ? `<div class="execution-queue-error">${escapeHtml(job.lastError)}</div>`
+              : "";
+            return `
+              <article class="execution-queue-row">
+                <div class="execution-queue-main">
+                  <div class="execution-queue-title">
+                    <span class="badge ${badgeClass(queueStatusIsOk(status))} ${queueStatusClass(status)}">${escapeHtml(status)}</span>
+                    <span class="execution-queue-type">${escapeHtml(venue)}${escapeHtml(job.type || "unknown")}</span>
+                  </div>
+                  <div class="execution-queue-meta subtle">
+                    ${escapeHtml(shortenJobId(job.id))} · candidate ${escapeHtml(job.candidateId || "n/a")} · ${formatNumber(job.attempts ?? 0)} attempts
+                  </div>
+                  ${errorLine}
+                </div>
+                <div class="execution-queue-timing subtle">${escapeHtml(timing)}</div>
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderRunCounts(counts, scope = "lifetime") {
   const prefix = scope === "lifetime" ? "Lifetime: " : "This run: ";
   return `${prefix}${formatNumber(counts.posts)} posts · ${formatNumber(counts.comments)} comments · ${formatNumber(counts.replies)} replies`;
@@ -129,11 +217,17 @@ function renderRunErrors(errors) {
 function renderAgentRunsPanel(agent) {
   const runs = Array.isArray(agent.recentRuns) ? agent.recentRuns : [];
   if (!runs.length) {
-    return `<div class="agent-runs-panel subtle">No run history yet. Heartbeat reports will appear after the next successful run.</div>`;
+    return `
+      <div class="agent-runs-panel">
+        ${renderExecutionQueue(agent)}
+        <div class="subtle">No run history yet. Heartbeat reports will appear after the next successful run.</div>
+      </div>
+    `;
   }
 
   return `
     <div class="agent-runs-panel">
+      ${renderExecutionQueue(agent)}
       <div class="agent-runs-heading">Last ${runs.length} run${runs.length === 1 ? "" : "s"}</div>
       <div class="agent-runs-list">
         ${runs
@@ -230,27 +324,26 @@ function bindAgentRowHandlers() {
   });
 }
 
-function accountStatusClass(status) {
-  const state = String(status?.state || "").toLowerCase();
-  if (state === "active") {
-    return "";
+function accountStatusDisplay(agent) {
+  const status = agent.accountStatus;
+  if (!status || status.state === "active") {
+    return { text: "ok", isOk: true, title: status?.reason };
   }
-  if (state === "banned" || state === "session_invalid" || state === "misconfigured") {
-    return "warn";
-  }
-  return "warn";
+  return {
+    text: status.state,
+    isOk: false,
+    title: status.reason || status.label
+  };
+}
+
+function accountStatusClass(isOk) {
+  return isOk ? "" : "warn";
 }
 
 function renderAccountStatus(agent) {
-  const status = agent.accountStatus;
-  if (!status) {
-    return `<span class="subtle">n/a</span>`;
-  }
-  const reason = status.reason ? `<div class="agent-account-reason subtle">${escapeHtml(status.reason)}</div>` : "";
-  return `
-    <span class="badge ${badgeClass(status.state === "active")} ${accountStatusClass(status)}" title="${escapeHtml(status.reason || status.label)}">${escapeHtml(status.label)}</span>
-    ${reason}
-  `;
+  const display = accountStatusDisplay(agent);
+  const title = display.title ? ` title="${escapeHtml(display.title)}"` : "";
+  return `<span class="badge ${badgeClass(display.isOk)} ${accountStatusClass(display.isOk)}"${title}>${escapeHtml(display.text)}</span>`;
 }
 
 function renderAgents(agents) {

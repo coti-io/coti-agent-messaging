@@ -499,6 +499,52 @@ export async function readSqliteAgentSnapshot(
   }
 }
 
+export function parseQueuedActionJobsFromSnapshotJson(snapshotJson: string | undefined): unknown[] {
+  if (!snapshotJson) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(snapshotJson) as { queuedActionJobs?: unknown[] };
+    return Array.isArray(parsed.queuedActionJobs) ? parsed.queuedActionJobs : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function readQueuedActionJobsFromSqlite(databasePath: string): Promise<unknown[]> {
+  let db: SqliteDatabase | undefined;
+  try {
+    db = await SqliteDatabase.open(databasePath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("SQLITE_CANTOPEN")) {
+      return [];
+    }
+    throw error;
+  }
+  try {
+    const tableRow = await db.get<{ count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'state_snapshots'
+    `);
+    if ((Number(tableRow?.count) || 0) === 0) {
+      return [];
+    }
+    const snapshotStateRow = await db.get<SnapshotStateRow>(
+      `
+        SELECT snapshot_json
+        FROM state_snapshots
+        WHERE snapshot_id = 'current'
+        LIMIT 1
+      `
+    );
+    return parseQueuedActionJobsFromSnapshotJson(snapshotStateRow?.snapshot_json);
+  } finally {
+    await db.close();
+  }
+}
+
 function countPendingWork(snapshotJson: string | undefined, fallbackPendingWrites: number): number {
   if (!snapshotJson) {
     return fallbackPendingWrites;

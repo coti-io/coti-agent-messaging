@@ -51,6 +51,37 @@ export interface AgentRuntimePaths {
   reportPath: string;
 }
 
+export type ExecutionJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface AgentExecutionQueueItem {
+  id: string;
+  venue?: string;
+  type: string;
+  status: ExecutionJobStatus;
+  candidateId: string;
+  actionId?: string;
+  createdAt?: string;
+  notBefore: string;
+  attempts: number;
+  runningAt?: string;
+  lastAttemptAt?: string;
+  lastError?: string;
+  correlationId?: string;
+}
+
+export interface AgentExecutionQueueSummary {
+  queued: number;
+  running: number;
+  failed: number;
+  cancelled: number;
+  total: number;
+}
+
+export interface AgentExecutionQueue {
+  items: AgentExecutionQueueItem[];
+  summary: AgentExecutionQueueSummary;
+}
+
 export interface AgentHeartbeatRun {
   runId: string;
   correlationId?: string;
@@ -100,6 +131,7 @@ export interface DiscoveredAgent {
   currentPrompt?: AgentCurrentPrompt;
   recentPublished?: AgentRecentPublished[];
   recentRuns: AgentHeartbeatRun[];
+  executionQueue: AgentExecutionQueue;
   accountStatus?: AgentAccountStatus;
 }
 

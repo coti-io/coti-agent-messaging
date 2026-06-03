@@ -49,7 +49,17 @@ import { planRedditAction, emptyRedditFilterSummary, resolveRedditPlannerContext
 import { type RedditDuplicateCheckPolicy } from "./reddit-outreach.js";
 import { redditMemoryEntryCountsTowardPublishedLimits } from "./reddit-outreach.js";
 import type { RedditDecisionMemoryEntry } from "./reddit-memory.js";
-import { createVenueProvider } from "./venue-factory.js";
+import { assertRedditVenueProvider, createVenueProvider } from "./venue-factory.js";
+import { createRuntimePorts } from "./runtime/create-runtime-ports.js";
+import {
+  buildAnalyticsReadModelFromStorage
+} from "./runtime/analytics-read-model.js";
+import { redditRuntimeReportToStoredRun } from "./runtime/reddit-runtime-report.js";
+import {
+  loadRedditMemoryWithSharedJobs,
+  migrateRedditJsonJobsToState,
+  syncRedditQueuedJobsToState
+} from "./runtime/reddit-job-sync.js";
 import type { VenueAction, VenueOutcome } from "./venue.js";
 import type { MoltbookRuntimeConfig } from "./config.js";
 import type { RedditIngestionDiagnostics, RedditIngestionResult } from "./reddit-ingestion.js";
@@ -185,7 +195,9 @@ async function runRedditPlannerPhase(input: {
   const dryRun = input.dryRun ?? operating.dryRunDefault;
   const duplicateCheckPolicy = resolveRedditSessionDuplicateCheckPolicy(dryRun);
   const maxActions = input.maxActions ?? operating.maxActionsPerSession;
-  let memory = await loadRedditMemory(operating.memoryPath);
+  await migrateRedditJsonJobsToState(config);
+  let memory = await loadRedditMemoryWithSharedJobs(config);
+  const redditVenue = assertRedditVenueProvider(createVenueProvider(config));
   const now = options.now ?? new Date();
   const recentKillReason = findKillSwitch(memory.history);
   if (recentKillReason) {
@@ -290,6 +302,7 @@ async function runRedditPlannerPhase(input: {
     discoverySeed: input.discoverySeed ?? parseDiscoverySeedFromEnv()
   });
   memory = { ...memory, scanLedger: ingestion.scanLedger };
+  redditVenue.applyIngestionResult(ingestion);
   const plannerContext = resolveRedditPlannerContext(
     input.subreddits?.length
       ? input.subreddits
@@ -506,7 +519,7 @@ async function runRedditPlannerPhase(input: {
     decision = { ...decision, skipped: [...upvoteResult.skipped, ...decision.skipped] };
   }
   if (!dryRun && upvoteResult.succeeded) {
-    await saveRedditMemory(operating.memoryPath, memory);
+    await saveRedditMemorySynced(config, memory);
   }
   upvotePipeline = {
     upvoteAttempted: upvoteResult.attempted,
@@ -552,7 +565,7 @@ async function runRedditPlannerPhase(input: {
         })
       })
     ]);
-    await saveRedditMemory(operating.memoryPath, {
+    await saveRedditMemorySynced(config, {
       ...memory,
       queuedJobs: nextQueuedJobs
     });
@@ -835,6 +848,12 @@ export async function runRedditExecutor(input: {
   }
 }
 
+async function saveRedditMemorySynced(config: MoltbookRuntimeConfig, store: RedditMemoryStore): Promise<void> {
+  const operating = getRedditOperatingAgentConfig(config);
+  await saveRedditMemory(operating.memoryPath, store);
+  await syncRedditQueuedJobsToState(config, store);
+}
+
 async function persistRedditHeartbeatReport(
   config: MoltbookRuntimeConfig,
   report: RedditRuntimeReport
@@ -846,8 +865,31 @@ async function persistRedditHeartbeatReport(
     ...report,
     engagementSummary
   };
-  await writeJsonAtomic(config.heartbeatReportPath, enrichedReport);
+  const ports = createRuntimePorts(config);
+  await ports.runs.persistRun(redditRuntimeReportToStoredRun(enrichedReport));
+  await ports.runs.writeLatestReport(enrichedReport);
   await appendHeartbeatRunHistory(config.heartbeatReportPath, enrichedReport);
+  const agent = getOutreachAgentConfig(config);
+  await ports.analytics.write(
+    await buildAnalyticsReadModelFromStorage({
+      statePath: config.statePath,
+      heartbeatReportPath: config.heartbeatReportPath,
+      venue: "reddit",
+      venueAccountId: agent.venueAccountId,
+      agentId: config.agentId,
+      runtimeKind: report.phase === "executor" ? "executor" : "heartbeat",
+      redditMemoryPath: operating.memoryPath,
+      attributionDbPath: config.attributionDbPath,
+      latestRun: {
+        runId: report.runId,
+        phase: report.phase,
+        status: report.status,
+        startedAt: report.startedAt,
+        finishedAt: report.finishedAt,
+        summary: report.summary
+      }
+    })
+  );
 }
 
 async function persistRedditRuntimeSnapshot(
@@ -891,6 +933,7 @@ async function persistRedditRuntimeSnapshot(
     .filter((entry) => isRedditPublishedHistoryEntry(entry) && entry.kind === "post")
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
 
+  await syncRedditQueuedJobsToState(config, store);
   await writeJsonAtomic(config.statePath, {
     ...previousState,
     generatedAt: input.finishedAt,
@@ -1409,7 +1452,7 @@ async function executeQueuedRedditJob(
   if (!selection.selectedJob) {
     const nextStore = { ...store, queuedJobs: selection.jobs };
     if (selection.jobs !== (store.queuedJobs ?? [])) {
-      await saveRedditMemory(operating.memoryPath, nextStore);
+      await saveRedditMemorySynced(input.config, nextStore);
     }
     return selection.skipped
       ? { executed: false, store: nextStore, skipped: selection.skipped }
@@ -1418,7 +1461,7 @@ async function executeQueuedRedditJob(
 
   let currentJobs = selection.jobs;
   const queuedJob = selection.selectedJob;
-  await saveRedditMemory(operating.memoryPath, { ...store, queuedJobs: currentJobs });
+  await saveRedditMemorySynced(input.config, { ...store, queuedJobs: currentJobs });
   const metadata = isQueuedRedditWriteMetadata(queuedJob.payload.raw)
     ? queuedJob.payload.raw
     : undefined;
@@ -1438,7 +1481,7 @@ async function executeQueuedRedditJob(
       config: input.config.actionExecution
     });
     const nextStore = { ...store, queuedJobs: requeued.jobs };
-    await saveRedditMemory(operating.memoryPath, nextStore);
+    await saveRedditMemorySynced(input.config, nextStore);
     if (requeued.retrying) {
       const retryJob = requeued.jobs.find((job) => job.id === queuedJob.id);
       return {
@@ -1462,7 +1505,7 @@ async function executeQueuedRedditJob(
       ...nextStore,
       queuedJobs: removeActionJob(currentJobs, queuedJob.id)
     };
-    await saveRedditMemory(operating.memoryPath, savedStore);
+    await saveRedditMemorySynced(input.config, savedStore);
     return {
       executed: true,
       store: savedStore,
@@ -1522,7 +1565,7 @@ async function executeQueuedRedditJob(
     history: [...store.history, recorded].slice(-500),
     queuedJobs: removeActionJob(currentJobs, queuedJob.id)
   };
-  await saveRedditMemory(operating.memoryPath, nextStore);
+  await saveRedditMemorySynced(input.config, nextStore);
   await recordRedditPromptRotationPublished(input.config, metadata, recorded, input.now);
   return {
     executed: true,
@@ -1588,6 +1631,7 @@ async function verifyRedditAccountHealth(input: {
       queuedJobs: []
     };
     await saveRedditMemory(input.memoryPath, memory);
+    await syncRedditQueuedJobsToState(input.config, memory);
   }
 
   return { memory, blockedReason, health };

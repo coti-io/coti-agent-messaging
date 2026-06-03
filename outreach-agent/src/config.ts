@@ -29,6 +29,21 @@ import {
   getDefaultRedditDiscoverySubredditNames
 } from "./reddit-outreach.js";
 import {
+  defaultAttributionDbPath,
+  defaultHeartbeatReportPath,
+  defaultLlmDebugDir,
+  defaultPromptRotationStatePath,
+  resolveRuntimeDataDir
+} from "./config/runtime-paths.js";
+
+export {
+  defaultAttributionDbPath,
+  defaultHeartbeatReportPath,
+  defaultLlmDebugDir,
+  defaultPromptRotationStatePath,
+  resolveRuntimeDataDir
+};
+import {
   DEFAULT_SCAN_LEDGER_MAX_ENTRIES,
   DEFAULT_SCAN_LEDGER_TTL_HOURS
 } from "./reddit-scan-ledger.js";
@@ -255,22 +270,6 @@ export function resolveRedditBrowserStorageStatePath(rawPath?: string): string {
   return path.resolve(agentRoot, normalized);
 }
 
-function defaultPromptRotationStatePath(statePath: string): string {
-  return path.join(path.dirname(statePath), "prompt-rotation.json");
-}
-
-function defaultLlmDebugDir(statePath: string): string {
-  return path.join(path.dirname(statePath), "llm-debug");
-}
-
-function defaultAttributionDbPath(statePath: string): string {
-  return path.join(path.dirname(statePath), "outreach-attribution.sqlite");
-}
-
-function defaultHeartbeatReportPath(statePath: string): string {
-  return path.join(path.dirname(statePath), "last-heartbeat.json");
-}
-
 function defaultCredentialsPath(statePath: string, packageRoot: string): string {
   const defaultDevStatePath = path.join(packageRoot, ".data", "state.json");
   if (path.resolve(statePath) === path.resolve(defaultDevStatePath)) {
@@ -279,17 +278,6 @@ function defaultCredentialsPath(statePath: string, packageRoot: string): string 
 
   return path.join(path.dirname(statePath), "credentials.json");
 }
-
-export function resolveRuntimeDataDir(statePath: string): string {
-  return path.dirname(statePath);
-}
-
-export {
-  defaultAttributionDbPath,
-  defaultHeartbeatReportPath,
-  defaultLlmDebugDir,
-  defaultPromptRotationStatePath
-};
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) {

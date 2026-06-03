@@ -5,7 +5,6 @@ import {
   loadRuntimeConfig,
   type MoltbookRuntimeConfig
 } from "./config.js";
-import { appendHeartbeatRunHistory } from "./heartbeat-run-history.js";
 import {
   createActionJob,
   type ActionJob,
@@ -60,7 +59,6 @@ import {
 } from "./policy.js";
 import {
   loadStateFromStorage,
-  saveHeartbeatRunToStorage,
   saveStateToStorage
 } from "./storage.js";
 import { saveOutreachRefToAttributionStore, readRefAttributionCounts } from "./attribution-store.js";
@@ -72,6 +70,10 @@ import {
 } from "./prompt-rotation.js";
 import type { VenueAction, VenueOutcome } from "./venue.js";
 import { assertMoltbookVenueProvider, createVenueProvider } from "./venue-factory.js";
+import {
+  persistMoltbookHeartbeatReport,
+  writeMoltbookAnalyticsReadModel
+} from "./runtime/heartbeat-persist.js";
 export interface HeartbeatResult {
   summary: string;
   performed: string[];
@@ -290,10 +292,7 @@ async function saveHeartbeatReport(
   heartbeatReportPath: string,
   report: HeartbeatReport
 ): Promise<void> {
-  await saveHeartbeatRunToStorage(statePath, report);
-  await mkdir(path.dirname(heartbeatReportPath), { recursive: true });
-  await writeFile(heartbeatReportPath, JSON.stringify(report, null, 2), "utf8");
-  await appendHeartbeatRunHistory(heartbeatReportPath, report);
+  await persistMoltbookHeartbeatReport({ statePath, heartbeatReportPath }, report);
 }
 
 async function readPreviousHeartbeatReport(heartbeatReportPath: string): Promise<Partial<HeartbeatReport> | undefined> {
@@ -1013,6 +1012,7 @@ export async function runHeartbeat(
     })).catch(() => undefined);
     report.finishedAt = new Date().toISOString();
     await saveHeartbeatReport(config.statePath, config.heartbeatReportPath, report);
+    await writeMoltbookAnalyticsReadModel(config, report).catch(() => undefined);
   }
 }
 

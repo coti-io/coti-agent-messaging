@@ -4,6 +4,7 @@ import path from "node:path";
 import { extractRecentPublishedFromState } from "./content";
 import { summarizeEngagements } from "./engagements";
 import { loadAgentRecentRuns } from "./runs";
+import { readAnalyticsReadModel } from "./read-analytics-read-model";
 import { readSqliteAgentSnapshot } from "./storage";
 import type { SqliteAgentSnapshot } from "./storage";
 import type { AgentCurrentPrompt, AgentMetadata, AgentRuntimePaths, DiscoveredAgent } from "./types";
@@ -394,6 +395,7 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       metadata = { ...metadata, profileUrl };
     }
     const report = reportJson.value;
+    const readModel = await readAnalyticsReadModel(normalizedPaths.statePath);
     let sqliteSnapshot;
     try {
       sqliteSnapshot = await readSqliteAgentSnapshot(normalizedPaths.storagePath, now);
@@ -402,23 +404,32 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
         throw error;
       }
     }
-    const engagementSummary = sqliteSnapshot?.engagementSummary ?? summarizeEngagements(state, now);
+    const engagementSummary =
+      (readModel?.engagementSummary as DiscoveredAgent["engagementSummary"] | undefined) ??
+      sqliteSnapshot?.engagementSummary ??
+      summarizeEngagements(state, now);
     const jsonPendingWrites =
       (Array.isArray(state?.pendingWrites) ? state.pendingWrites.length : 0) +
       (Array.isArray(state?.queuedActionJobs) ? state.queuedActionJobs.length : 0);
     const pendingWrites =
-      sqliteSnapshot?.pendingWrites === undefined
-        ? jsonPendingWrites
-        : Math.max(sqliteSnapshot.pendingWrites, jsonPendingWrites);
+      readModel?.pendingWork !== undefined
+        ? readModel.pendingWork.pendingWrites + readModel.pendingWork.queuedJobs
+        : sqliteSnapshot?.pendingWrites === undefined
+          ? jsonPendingWrites
+          : Math.max(sqliteSnapshot.pendingWrites, jsonPendingWrites);
     const errors =
       sqliteSnapshot?.latestErrors ?? (Array.isArray(report?.errors) ? report.errors.length : 0);
     const skipped =
       sqliteSnapshot?.latestSkipped ?? (Array.isArray(report?.skipped) ? report.skipped.length : 0);
 
     const recentRuns = await loadAgentRecentRuns(normalizedPaths, report, 5);
-    const lastHeartbeatAt = resolveHeartbeatAt(sqliteSnapshot, state, report);
-    const schedulerHealth =
+    let lastHeartbeatAt = resolveHeartbeatAt(sqliteSnapshot, state, report);
+    let schedulerHealth =
       sqliteSnapshot?.schedulerHealth ?? resolveSchedulerHealth(lastHeartbeatAt, now);
+    if (readModel?.scheduler) {
+      lastHeartbeatAt = readModel.scheduler.lastHeartbeatAt ?? lastHeartbeatAt;
+      schedulerHealth = readModel.scheduler.health;
+    }
 
     agents.push({
       metadata,
@@ -436,11 +447,22 @@ export async function discoverAgents(agentRoot: string, now = new Date()): Promi
       pendingWrites,
       schedulerHealth,
       lastSuccessfulHeartbeatAt:
+        readModel?.scheduler.lastSuccessfulRunAt ??
         sqliteSnapshot?.lastSuccessfulHeartbeatAt ??
         (asOptionalString(report?.status) === "ok" ? asOptionalString(report?.finishedAt) : undefined),
-      latestStartedAt: sqliteSnapshot?.latestStartedAt ?? asOptionalString(report?.startedAt),
-      latestFinishedAt: sqliteSnapshot?.latestFinishedAt ?? asOptionalString(report?.finishedAt),
-      latestStatus: sqliteSnapshot?.latestStatus ?? asOptionalString(report?.status),
+      latestStartedAt:
+        readModel?.latestRun?.startedAt ??
+        sqliteSnapshot?.latestStartedAt ??
+        asOptionalString(report?.startedAt),
+      latestFinishedAt:
+        readModel?.latestRun?.finishedAt ??
+        sqliteSnapshot?.latestFinishedAt ??
+        asOptionalString(report?.finishedAt),
+      latestStatus:
+        readModel?.latestRun?.status ??
+        readModel?.scheduler.latestStatus ??
+        sqliteSnapshot?.latestStatus ??
+        asOptionalString(report?.status),
       latestErrors: errors,
       latestSkipped: skipped,
       currentPrompt,

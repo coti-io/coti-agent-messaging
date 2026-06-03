@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_DIR="$SCRIPT_DIR"
 PROJECT_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
+# shellcheck source=../deploy/lib/systemd-quiesce.sh
+source "$PROJECT_ROOT/deploy/lib/systemd-quiesce.sh"
 
 DEPLOY_PATH="${MOLTBOOK_OUTREACH_DEPLOY_PATH:-${DEPLOY_PATH:-/home/ubuntu/outreach-agent}}"
 SSH_HOST="grant"
@@ -40,7 +42,17 @@ if [[ "$RSYNC_DELETE" == "1" ]]; then
 fi
 
 ssh "$SSH_HOST" "mkdir -p '$DEPLOY_PATH' '$RUNTIME_DIR'"
-ssh "$SSH_HOST" "sudo -n systemctl stop '${SERVICE_NAME}.timer' '${SERVICE_NAME}.service' '${EXECUTOR_SERVICE_NAME}.timer' '${EXECUTOR_SERVICE_NAME}.service' >/dev/null 2>&1 || true"
+
+outreach_quiesced=0
+deploy_cleanup_outreach_units() {
+  if [[ "$outreach_quiesced" == 1 ]]; then
+    remote_resume_outreach_timers "$SSH_HOST" "$SERVICE_NAME" "$EXECUTOR_SERVICE_NAME" || true
+  fi
+}
+trap deploy_cleanup_outreach_units EXIT
+
+remote_quiesce_outreach_units "$SSH_HOST" "$SERVICE_NAME" "$EXECUTOR_SERVICE_NAME"
+outreach_quiesced=1
 
 rsync "${RSYNC_OPTS[@]}" \
   --exclude ".env" \
@@ -246,11 +258,11 @@ install_unit_from_template \
   "$EXECUTOR_SERVICE_NAME"
 
 sudo -n systemctl daemon-reload
-sudo -n systemctl enable --now "${SERVICE_NAME}.timer"
-sudo -n systemctl restart "${SERVICE_NAME}.timer"
-sudo -n systemctl enable --now "${EXECUTOR_SERVICE_NAME}.timer"
-sudo -n systemctl restart "${EXECUTOR_SERVICE_NAME}.timer"
 EOF
+
+remote_resume_outreach_timers "$SSH_HOST" "$SERVICE_NAME" "$EXECUTOR_SERVICE_NAME"
+outreach_quiesced=0
+trap - EXIT
 
 echo
 echo "Moltbook outreach agent deployed."

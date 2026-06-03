@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=deploy/lib/systemd-quiesce.sh
+source "$SCRIPT_DIR/deploy/lib/systemd-quiesce.sh"
 MANIFEST_PATH="${MOLTBOOK_ANALYTICS_DEPLOY_MANIFEST:-$SCRIPT_DIR/deploy/agents.json}"
 
 if [[ ! -f "$MANIFEST_PATH" ]]; then
@@ -76,15 +78,21 @@ ssh "$SSH_HOST" "mkdir -p '$DEPLOY_PATH' '$REMOTE_REPO_DIR' '$AGENTS_ROOT' '$DAS
 
 ssh "$SSH_HOST" "sudo -n systemctl stop '${DASHBOARD_SERVICE_NAME}.service' >/dev/null 2>&1 || true"
 
-MANIFEST_JSON="$MANIFEST_JSON" python3 - <<'PY' | while read -r service_name; do
-import json
-import os
-for agent in json.loads(os.environ["MANIFEST_JSON"]).get("agents", []):
-    print(agent["serviceName"])
-    print(agent["executorServiceName"])
-PY
-  ssh "$SSH_HOST" "sudo -n systemctl stop '${service_name}.timer' '${service_name}.service' >/dev/null 2>&1 || true"
-done
+OUTREACH_UNITS=()
+while IFS= read -r service_name; do
+  OUTREACH_UNITS+=("$service_name")
+done < <(outreach_timer_units_from_manifest)
+
+outreach_quiesced=0
+deploy_cleanup_outreach_units() {
+  if [[ "$outreach_quiesced" == 1 ]]; then
+    remote_resume_outreach_timers "$SSH_HOST" "${OUTREACH_UNITS[@]}" || true
+  fi
+}
+trap deploy_cleanup_outreach_units EXIT
+
+remote_quiesce_outreach_units "$SSH_HOST" "${OUTREACH_UNITS[@]}"
+outreach_quiesced=1
 
 rsync "${RSYNC_OPTS[@]}" \
   --exclude ".env" \
@@ -369,20 +377,13 @@ sudo -n mv "/tmp/${DASHBOARD_SERVICE_NAME}.service" "/etc/systemd/system/${DASHB
 
 sudo -n systemctl daemon-reload
 
-python3 - <<'PY' | while read -r service_name; do
-import json
-import os
-for agent in json.loads(os.environ["MANIFEST_JSON"]).get("agents", []):
-    print(agent["serviceName"])
-    print(agent["executorServiceName"])
-PY
-  sudo -n systemctl enable --now "${service_name}.timer"
-  sudo -n systemctl restart "${service_name}.timer"
-done
-
 sudo -n systemctl enable --now "${DASHBOARD_SERVICE_NAME}.service"
 sudo -n systemctl restart "${DASHBOARD_SERVICE_NAME}.service"
 EOF
+
+remote_resume_outreach_timers "$SSH_HOST" "${OUTREACH_UNITS[@]}"
+outreach_quiesced=0
+trap - EXIT
 
 echo
 echo "Outreach analytics stack deployed."

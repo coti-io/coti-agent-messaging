@@ -36,6 +36,11 @@ export class MoltbookVenueProvider implements VenueProvider {
   readonly id = "moltbook";
   readonly mode: ReturnType<typeof getOutreachAgentConfig>["mode"];
   readonly policy: VenuePolicy;
+  readonly capabilities = {
+    heartbeatSources: true,
+    pendingWriteReconciliation: true,
+    discoveryIngestion: false
+  } as const;
 
   constructor(
     private readonly config: MoltbookRuntimeConfig,

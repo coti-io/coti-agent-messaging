@@ -2,7 +2,11 @@ import { getOutreachAgentConfig, type MoltbookRuntimeConfig } from "./config.js"
 import { createRedditController } from "./reddit-controller.js";
 import { MoltbookVenueProvider } from "./moltbook-venue.js";
 import { RedditVenueProvider } from "./reddit-venue.js";
-import type { VenueProvider } from "./venue.js";
+import {
+  hasVenueCapability,
+  requireVenueCapability,
+  type VenueProvider
+} from "./venue.js";
 
 export function createVenueProvider(config: MoltbookRuntimeConfig): VenueProvider {
   const agent = getOutreachAgentConfig(config);
@@ -17,8 +21,18 @@ export function createVenueProvider(config: MoltbookRuntimeConfig): VenueProvide
 }
 
 export function assertMoltbookVenueProvider(provider: VenueProvider): MoltbookVenueProvider {
+  requireVenueCapability(provider, "heartbeatSources");
   if (!(provider instanceof MoltbookVenueProvider)) {
-    throw new Error(`Heartbeat does not support venue ${provider.id} yet.`);
+    throw new Error(`Expected MoltbookVenueProvider for venue ${provider.id}.`);
   }
   return provider;
 }
+
+export function assertRedditVenueProvider(provider: VenueProvider): RedditVenueProvider {
+  if (!(provider instanceof RedditVenueProvider)) {
+    throw new Error(`Expected RedditVenueProvider for venue ${provider.id}.`);
+  }
+  return provider;
+}
+
+export { hasVenueCapability, requireVenueCapability };

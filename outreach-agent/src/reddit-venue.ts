@@ -7,6 +7,7 @@ import {
   type RedditRulesRegistry,
   type RedditSourceItem
 } from "./reddit-outreach.js";
+import type { RedditIngestionResult } from "./reddit-ingestion.js";
 import { RedditManualController, type RedditController } from "./reddit-controller.js";
 import { resolvePromptProfile, validateDraftAgainstPromptProfile } from "./prompt-profile.js";
 import {
@@ -23,6 +24,13 @@ export class RedditVenueProvider implements VenueProvider {
   readonly id = "reddit";
   readonly mode: OutreachAgentConfig["mode"];
   readonly policy: VenuePolicy;
+  readonly capabilities = {
+    heartbeatSources: false,
+    pendingWriteReconciliation: false,
+    discoveryIngestion: true
+  } as const;
+
+  private discoverySourceItems: readonly RedditSourceItem[] = [];
 
   constructor(
     private readonly config: OutreachAgentConfig,
@@ -41,8 +49,23 @@ export class RedditVenueProvider implements VenueProvider {
     };
   }
 
+  setDiscoverySourceItems(items: readonly RedditSourceItem[]): void {
+    this.discoverySourceItems = items;
+  }
+
+  applyIngestionResult(ingestion: Pick<RedditIngestionResult, "sourceItems">): void {
+    this.discoverySourceItems = ingestion.sourceItems;
+  }
+
   async listCandidates(): Promise<VenueCandidate[]> {
-    return [];
+    if (this.discoverySourceItems.length === 0) {
+      return [];
+    }
+    return this.reviewQueueToCandidates(
+      this.buildReviewQueue({
+        items: this.discoverySourceItems
+      })
+    );
   }
 
   buildReviewQueue(input: {

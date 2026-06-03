@@ -86,6 +86,44 @@ test("legacy Moltbook runtime config resolves to a default venue config", () => 
   assert.deepEqual(agent.allowedSurfaces, ["general"]);
 });
 
+test("venue providers expose capability flags", () => {
+  const moltbook = new MoltbookVenueProvider(createConfig());
+  const reddit = new RedditVenueProvider(
+    {
+      venue: "reddit",
+      allowedSurfaces: ["sales"],
+      mode: "approved_autopost"
+    },
+    { id: "manual", publishAction: async () => ({ remoteContentId: "x" }) } as RedditController
+  );
+
+  assert.equal(moltbook.capabilities.heartbeatSources, true);
+  assert.equal(moltbook.capabilities.discoveryIngestion, false);
+  assert.equal(reddit.capabilities.discoveryIngestion, true);
+  assert.equal(reddit.capabilities.heartbeatSources, false);
+});
+
+test("Reddit venue provider accepts discovery items for candidate listing", async () => {
+  const reddit = new RedditVenueProvider({
+    venue: "reddit",
+    allowedSurfaces: ["sales"],
+    mode: "human_review"
+  });
+  const sourceItem = {
+    id: "post:sales:thread-1",
+    subreddit: "sales",
+    kind: "post" as const,
+    title: "CRM pain",
+    body: "Our handoffs are broken and we need practical workflow automation help",
+    author: "operator",
+    score: 12,
+    commentCount: 4
+  };
+  reddit.setDiscoverySourceItems([sourceItem]);
+  const candidates = await reddit.listCandidates();
+  assert.equal(Array.isArray(candidates), true);
+});
+
 test("Moltbook venue provider maps feed data into neutral candidates", async () => {
   const fakeApi = {
     async getHome() {

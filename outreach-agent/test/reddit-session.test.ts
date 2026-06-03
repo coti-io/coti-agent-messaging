@@ -26,12 +26,15 @@ function createMockLlmProvider(content = VALID_REDDIT_SESSION_DRAFT): JsonLlmPro
 
 function createConfig(memoryPath: string): MoltbookRuntimeConfig {
   const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const runtimeDir = path.dirname(memoryPath);
+  const statePath = path.join(runtimeDir, "state.json");
+  const heartbeatReportPath = path.join(runtimeDir, "last-heartbeat.json");
   return {
     packageRoot,
     projectRoot: path.resolve(packageRoot, ".."),
     credentialsPath: path.join(os.tmpdir(), "outreach-agent-test-credentials.json"),
-    statePath: path.join(os.tmpdir(), "outreach-agent-test-state.json"),
-    heartbeatReportPath: path.join(os.tmpdir(), "outreach-agent-test-heartbeat.json"),
+    statePath,
+    heartbeatReportPath,
     moltbookBaseUrl: "https://www.moltbook.com/api/v1",
     defaultSubmolt: "general",
     dryRun: false,

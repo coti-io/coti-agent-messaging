@@ -78,13 +78,39 @@ export interface VenueOutcome {
   raw?: unknown;
 }
 
+export interface VenueProviderCapabilities {
+  /** Provider can load feed/home sources for heartbeat planning (Moltbook). */
+  heartbeatSources: boolean;
+  /** Provider can reconcile pending writes after partial publish failures (Moltbook). */
+  pendingWriteReconciliation: boolean;
+  /** Provider performs discovery ingestion to produce candidates (Reddit). */
+  discoveryIngestion: boolean;
+}
+
 export interface VenueProvider {
   readonly id: OutreachVenueId;
   readonly mode: OutreachAgentMode;
   readonly policy: VenuePolicy;
+  readonly capabilities: VenueProviderCapabilities;
   listCandidates(): Promise<VenueCandidate[]>;
   publishAction(action: VenueAction): Promise<VenueOutcome>;
   fetchOutcomes?(): Promise<VenueOutcome[]>;
+}
+
+export function hasVenueCapability(
+  provider: VenueProvider,
+  capability: keyof VenueProviderCapabilities
+): boolean {
+  return provider.capabilities[capability];
+}
+
+export function requireVenueCapability(
+  provider: VenueProvider,
+  capability: keyof VenueProviderCapabilities
+): void {
+  if (!hasVenueCapability(provider, capability)) {
+    throw new Error(`Venue ${provider.id} does not support capability: ${capability}.`);
+  }
 }
 
 export function assertCanPublish(provider: Pick<VenueProvider, "mode" | "id">): void {

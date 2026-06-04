@@ -236,14 +236,15 @@ export function actionJobDedupeKey(
   if (stableActionId) {
     return [job.venue, job.type, stableActionId].join(":");
   }
+  const hasStableTarget = Boolean(payload.parentId || payload.candidateId);
   return [
     job.venue,
     job.type,
     payload.surface ?? "",
     payload.parentId ?? "",
-    payload.candidateId ?? job.candidateId,
-    payload.title ?? "",
-    payload.content ? fingerprint(payload.content) : ""
+    payload.candidateId ?? (hasStableTarget ? job.candidateId : ""),
+    hasStableTarget ? "" : (payload.title ?? ""),
+    hasStableTarget ? "" : (payload.content ? fingerprint(payload.content) : "")
   ].join(":");
 }
 

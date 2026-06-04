@@ -10,6 +10,7 @@ import type { ProductFactSheet } from "./product-facts.js";
 import type { OutreachRef } from "./outreach-attribution.js";
 import type { LayoutVariant, PromptParameterSet } from "./prompt-profile.js";
 import type { ActionJob } from "./action-planning.js";
+import { compactActionJobs } from "./action-execution.js";
 
 export interface RecentGeneratedArtifact {
   id: string;
@@ -606,7 +607,7 @@ export function normalizeState(
       reconciliationMisses: pendingWrite.reconciliationMisses ?? 0
     }))
     .slice(-MAX_PENDING_WRITES);
-  normalized.queuedActionJobs = normalized.queuedActionJobs.slice(-MAX_QUEUED_ACTION_JOBS);
+  normalized.queuedActionJobs = compactActionJobs(normalized.queuedActionJobs).slice(-MAX_QUEUED_ACTION_JOBS);
   normalized.engagementEvents = trimEngagementEvents(
     normalized.engagementEvents.map((event) => ({
       ...event,

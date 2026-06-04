@@ -342,15 +342,19 @@ Browser worker setup:
 npm install -w @coti-agent-messaging/outreach-agent
 npx playwright install chromium
 OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=.browser/reddit-storage-state.json
+OUTREACH_REDDIT_BROWSER_PROXY=http://user:pass@proxy.example:3128
 npm run reddit:login -w @coti-agent-messaging/outreach-agent
 OUTREACH_AGENT_VENUE=reddit
 OUTREACH_AGENT_MODE=approved_autopost
 OUTREACH_REDDIT_CONTROLLER=browser
 OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH=.browser/reddit-storage-state.json
+OUTREACH_REDDIT_BROWSER_PROXY=http://user:pass@proxy.example:3128
 npm run reddit:browser-worker -w @coti-agent-messaging/outreach-agent
 ```
 
 `reddit:login` opens a visible Playwright browser, lets you log in manually, checks `/api/me.json` to confirm the session is authenticated, and saves the Playwright storage state to the configured path. Copy that file to the server if you want the browser worker there to reuse the same session.
+
+Set `OUTREACH_REDDIT_BROWSER_PROXY` for both `reddit:login` and `reddit:browser-worker` when you need the saved login and browser actions to originate from the same proxy egress. The value is passed to Playwright as an HTTP/HTTPS/SOCKS proxy URL; credentials in the URL are supported.
 
 `reddit:login:grant` does the same login bootstrap and then immediately syncs the refreshed `reddit-storage-state.json` to `grant`. By default it pushes to both:
 

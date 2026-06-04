@@ -8,7 +8,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { chromium } from "playwright";
 
 import { RedditAntiBotChallengeError, RedditLoginRequiredError } from "./reddit-controller.js";
-import { resolveRedditBrowserWorkerConfig } from "./reddit-browser-worker.js";
+import { parsePlaywrightProxy, resolveRedditBrowserWorkerConfig } from "./reddit-browser-worker.js";
 
 interface RedditBrowserLoginCliOptions {
   storageStatePath?: string;
@@ -57,7 +57,8 @@ export async function runRedditBrowserLoginCli(
     headless,
     executablePath: workerConfig.executablePath,
     channel: workerConfig.channel,
-    slowMo: workerConfig.slowMoMs
+    slowMo: workerConfig.slowMoMs,
+    proxy: parsePlaywrightProxy(workerConfig.proxy)
   });
   const context = await browser.newContext();
   const page = await context.newPage();

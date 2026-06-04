@@ -38,6 +38,7 @@ export interface RedditBrowserWorkerConfig {
   executablePath?: string;
   channel?: string;
   slowMoMs?: number;
+  proxy?: string;
   storageStatePath?: string;
   startupUrl: string;
 }
@@ -134,10 +135,34 @@ export function resolveRedditBrowserWorkerConfig(): RedditBrowserWorkerConfig {
     slowMoMs: Number.isFinite(Number(process.env.OUTREACH_REDDIT_BROWSER_SLOWMO_MS))
       ? Number(process.env.OUTREACH_REDDIT_BROWSER_SLOWMO_MS)
       : undefined,
+    proxy: getOptionalEnv("OUTREACH_REDDIT_BROWSER_PROXY"),
     storageStatePath: resolveRedditBrowserStorageStatePath(
       getOptionalEnv("OUTREACH_REDDIT_BROWSER_STORAGE_STATE_PATH")
     ),
     startupUrl: process.env.OUTREACH_REDDIT_BROWSER_STARTUP_URL ?? DEFAULT_BROWSER_BASE_URL
+  };
+}
+
+export function parsePlaywrightProxy(rawProxy: string | undefined): {
+  server: string;
+  username?: string;
+  password?: string;
+} | undefined {
+  const trimmed = rawProxy?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const parsed = new URL(trimmed);
+  const username = parsed.username ? decodeURIComponent(parsed.username) : undefined;
+  const password = parsed.password ? decodeURIComponent(parsed.password) : undefined;
+  parsed.username = "";
+  parsed.password = "";
+
+  return {
+    server: parsed.toString(),
+    ...(username ? { username } : {}),
+    ...(password ? { password } : {})
   };
 }
 
@@ -511,7 +536,8 @@ class PlaywrightRedditBrowserAutomation implements RedditBrowserAutomation {
         headless: this.config.headless,
         executablePath: this.config.executablePath,
         channel: this.config.channel,
-        slowMo: this.config.slowMoMs
+        slowMo: this.config.slowMoMs,
+        proxy: parsePlaywrightProxy(this.config.proxy)
       });
     }
 
@@ -1362,6 +1388,7 @@ export async function runRedditBrowserWorkerCli(): Promise<void> {
         statusPath: handle.config.statusPath,
         headless: handle.config.headless,
         baseUrl: handle.config.baseUrl,
+        proxyConfigured: Boolean(handle.config.proxy),
         storageStatePath: handle.config.storageStatePath
       },
       null,

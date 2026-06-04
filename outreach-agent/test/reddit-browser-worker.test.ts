@@ -6,6 +6,8 @@ import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/prom
 
 import { RedditLoginRequiredError, type RedditBrowserBridgeRequest } from "../src/reddit-controller.js";
 import {
+  parsePlaywrightProxy,
+  resolveRedditBrowserWorkerConfig,
   startRedditBrowserWorker,
   type RedditBrowserAutomation,
   type RedditBrowserWorkerConfig
@@ -25,6 +27,33 @@ function createConfig(tempDir: string): RedditBrowserWorkerConfig {
     startupUrl: "https://www.reddit.test"
   };
 }
+
+test("reddit browser worker config reads browser proxy env", () => {
+  const previousProxy = process.env.OUTREACH_REDDIT_BROWSER_PROXY;
+  process.env.OUTREACH_REDDIT_BROWSER_PROXY = "http://user:pass@proxy.test:3128";
+
+  try {
+    const config = resolveRedditBrowserWorkerConfig();
+    assert.equal(config.proxy, "http://user:pass@proxy.test:3128");
+  } finally {
+    if (previousProxy === undefined) {
+      delete process.env.OUTREACH_REDDIT_BROWSER_PROXY;
+    } else {
+      process.env.OUTREACH_REDDIT_BROWSER_PROXY = previousProxy;
+    }
+  }
+});
+
+test("playwright proxy parser separates credentials from server", () => {
+  assert.deepEqual(parsePlaywrightProxy("http://user:pass@proxy.test:3128"), {
+    server: "http://proxy.test:3128/",
+    username: "user",
+    password: "pass"
+  });
+  assert.deepEqual(parsePlaywrightProxy("socks5://proxy.test:1080"), {
+    server: "socks5://proxy.test:1080"
+  });
+});
 
 async function waitForSingleFile(directory: string, timeoutMs = 5000): Promise<string> {
   const startedAt = Date.now();

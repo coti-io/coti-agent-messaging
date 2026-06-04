@@ -180,6 +180,27 @@ test("scheduler not-before ignores queued backlog and uses engagement cooldowns"
   assert.equal(upvote, "2026-06-03T10:00:30.000Z");
 });
 
+test("queue compaction keeps different untargeted post drafts", () => {
+  const first = jobFor({
+    id: "create-post:first",
+    type: "create_post",
+    notBefore: "2026-06-03T10:00:00.000Z",
+    title: "First post",
+    content: "First post body."
+  });
+  const second = jobFor({
+    id: "create-post:second",
+    type: "create_post",
+    notBefore: "2026-06-03T10:15:00.000Z",
+    title: "Second post",
+    content: "Second post body."
+  });
+
+  const compacted = compactActionJobs([first, second]);
+
+  assert.equal(compacted.length, 2);
+});
+
 test("scheduler not-before spaces jobs planned in the same heartbeat batch", () => {
   const now = new Date("2026-06-03T10:00:00.000Z");
   const first = scheduleActionJobNotBefore({
@@ -212,6 +233,7 @@ function jobFor(input: {
   id: string;
   type: VenueAction["type"];
   notBefore: string;
+  title?: string;
   content?: string;
 }): ActionJob {
   const defaultContent =
@@ -221,8 +243,9 @@ function jobFor(input: {
       id: input.id,
       venue: "moltbook",
       type: input.type,
-      parentId: "post-1",
-      candidateId: "candidate-1",
+      parentId: input.type === "create_post" ? undefined : "post-1",
+      candidateId: input.type === "create_post" ? undefined : "candidate-1",
+      title: input.title,
       content: input.content ?? defaultContent
     },
     candidateId: "candidate-1",

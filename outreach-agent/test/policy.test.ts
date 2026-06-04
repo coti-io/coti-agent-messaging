@@ -377,7 +377,7 @@ test("custom policy config overrides the default daily comment cap", () => {
   assert.equal(readiness.allowed, true);
 });
 
-test("planning can create a post when replies are present but the daily cap is exhausted", () => {
+test("planning does not auto-plan create_post when comment daily cap is exhausted", () => {
   const now = new Date("2026-03-11T12:10:00.000Z");
   const state: OutreachAgentState = {
     ...createInitialState(),
@@ -408,7 +408,7 @@ test("planning can create a post when replies are present but the daily cap is e
   });
 
   assert.equal(actions.some((action) => action.type === "reply_to_activity"), true);
-  assert.equal(actions.some((action) => action.type === "create_post"), true);
+  assert.equal(actions.some((action) => action.type === "create_post"), false);
 });
 
 test("planning defers posts when external network opportunities exist", () => {
@@ -441,7 +441,7 @@ test("planning defers posts when external network opportunities exist", () => {
   assert.equal(actions.some((action) => action.type === "create_post"), false);
 });
 
-test("planning does not block posts after fifty historical post fingerprints", () => {
+test("planning never auto-plans create_post on quiet heartbeats", () => {
   const actions = planHeartbeatActions({
     home: {
       your_account: { name: "OutreachBot" },
@@ -460,7 +460,7 @@ test("planning does not block posts after fifty historical post fingerprints", (
     now: new Date("2026-03-11T12:10:00.000Z")
   });
 
-  assert.equal(actions.some((action) => action.type === "create_post"), true);
+  assert.equal(actions.some((action) => action.type === "create_post"), false);
 });
 
 test("planning skips create_post when the daily post cap is exhausted", () => {

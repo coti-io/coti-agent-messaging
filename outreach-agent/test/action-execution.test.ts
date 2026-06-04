@@ -124,32 +124,98 @@ test("queue compaction dedupes equivalent queued jobs", () => {
   assert.equal(compacted.length, 1);
 });
 
-test("scheduler-aware not-before respects queued backlog", () => {
+test("queue compaction dedupes same target even when draft content changes", () => {
+  const first = jobFor({
+    id: "reply:post-1:comment-1",
+    type: "reply_to_comment",
+    notBefore: "2026-06-03T10:00:00.000Z",
+    content: "First draft reply."
+  });
+  const second = {
+    ...first,
+    id: "reply:post-1:comment-1:heartbeat-2",
+    notBefore: "2026-06-03T10:05:00.000Z",
+    payload: {
+      ...first.payload,
+      content: "Second draft reply with different wording."
+    }
+  };
+
+  const compacted = compactActionJobs([first, second]);
+
+  assert.equal(compacted.length, 1);
+  assert.equal(compacted[0]?.payload.content, "Second draft reply with different wording.");
+});
+
+test("scheduler not-before ignores queued backlog and uses engagement cooldowns", () => {
   const now = new Date("2026-06-03T10:00:00.000Z");
-  const existing = jobFor({
-    id: "comment:post-1",
-    type: "comment_on_post",
-    notBefore: "2026-06-03T10:30:00.000Z"
+  const existingReply = jobFor({
+    id: "reply:post-1:comment-1",
+    type: "reply_to_comment",
+    notBefore: "2026-06-03T16:30:00.000Z"
   });
 
-  const notBefore = scheduleActionJobNotBefore({
+  const newReply = scheduleActionJobNotBefore({
     now,
     actionType: "reply_to_comment",
     needsContent: true,
-    existingJobs: [existing],
+    existingJobs: [existingReply],
     records: [],
     config,
     rng: () => 0
   });
 
-  assert.equal(notBefore, "2026-06-03T10:30:10.000Z");
+  assert.equal(newReply, "2026-06-03T10:05:00.000Z");
+
+  const upvote = scheduleActionJobNotBefore({
+    now,
+    actionType: "upvote_post",
+    needsContent: false,
+    existingJobs: [existingReply],
+    records: [],
+    config,
+    rng: () => 0
+  });
+
+  assert.equal(upvote, "2026-06-03T10:00:30.000Z");
+});
+
+test("scheduler not-before spaces jobs planned in the same heartbeat batch", () => {
+  const now = new Date("2026-06-03T10:00:00.000Z");
+  const first = scheduleActionJobNotBefore({
+    now,
+    actionType: "upvote_post",
+    order: 0,
+    needsContent: false,
+    existingJobs: [],
+    records: [],
+    config,
+    rng: () => 0
+  });
+
+  const second = scheduleActionJobNotBefore({
+    now,
+    actionType: "upvote_post",
+    order: 1,
+    needsContent: false,
+    existingJobs: [],
+    records: [],
+    config,
+    rng: () => 0
+  });
+
+  assert.equal(first, "2026-06-03T10:00:30.000Z");
+  assert.equal(second, "2026-06-03T10:00:45.000Z");
 });
 
 function jobFor(input: {
   id: string;
   type: VenueAction["type"];
   notBefore: string;
+  content?: string;
 }): ActionJob {
+  const defaultContent =
+    input.type === "upvote_post" || input.type === "follow_account" ? undefined : "Useful content.";
   return createActionJob({
     action: {
       id: input.id,
@@ -157,7 +223,7 @@ function jobFor(input: {
       type: input.type,
       parentId: "post-1",
       candidateId: "candidate-1",
-      content: input.type === "upvote_post" || input.type === "follow_account" ? undefined : "Useful content."
+      content: input.content ?? defaultContent
     },
     candidateId: "candidate-1",
     sourceDecisionId: "decision-1",

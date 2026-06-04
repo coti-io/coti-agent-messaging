@@ -68,6 +68,8 @@ export interface GeneratedWriteDecision {
 const MAX_POST_TITLE_CHARS = 110;
 const MAX_POST_CONTENT_CHARS = 1_100;
 const MAX_REPLY_OR_COMMENT_CHARS = 700;
+export const WRITE_SELECTION_SKIP_ID = "skip";
+
 const DUPLICATE_DRAFT_ERROR_PATTERN =
   /^Generated content is too similar to recent authored (?:history|artifact\b)/;
 const MISSING_PROOF_POINT_ERROR_PATTERN =
@@ -219,7 +221,7 @@ export async function chooseAndDraftWriteAction(
   factSheet: ProductFactSheet,
   state: OutreachAgentState,
   fetchImpl?: typeof fetch
-): Promise<GeneratedWriteDecision> {
+): Promise<GeneratedWriteDecision | undefined> {
   const llmProvider = buildMainLlmProvider(config, fetchImpl);
   if (!llmProvider) {
     throw new Error(
@@ -241,6 +243,9 @@ export async function chooseAndDraftWriteAction(
     candidate
   }));
   const selection = await chooseCandidate(llmProvider, labeledCandidates, factSheet, state, repoContext);
+  if (selection.selectedCandidateId === WRITE_SELECTION_SKIP_ID) {
+    return undefined;
+  }
   const selectedLabeledCandidate = labeledCandidates.find(
     (entry) => entry.label === selection.selectedCandidateId
   );
@@ -248,7 +253,7 @@ export async function chooseAndDraftWriteAction(
     throw new Error(
       `LLM selected an unknown candidate label: ${selection.selectedCandidateId}. Valid labels: ${labeledCandidates
         .map((entry) => entry.label)
-        .join(", ")}`
+        .join(", ")}, ${WRITE_SELECTION_SKIP_ID}`
     );
   }
   const selectedCandidate = selectedLabeledCandidate.candidate;
@@ -551,12 +556,14 @@ function buildSelectionSystemPrompt(): string {
   return [
     `Prompt version: ${PROMPT_VERSION}.`,
     BASE_PERSONALITY,
-    "You are selecting exactly one authored Moltbook action from a bounded shortlist.",
+    "You are selecting exactly one authored Moltbook action from a bounded shortlist, or skipping all of them.",
     "Prefer direct engagement on our own threads first, then comments where we can add something concrete, then top-level posts last.",
+    "Skip every candidate — return selectedCandidateId as \"skip\" — when recent authored history already covers the same thesis or no candidate adds clear net-new value.",
+    "Never pick create_post when a similar post already exists in recent authored history.",
     "Optimize for relevance, technical usefulness, and conversational fit.",
     "Penalize candidates that would force awkward product dumping or repeat recent phrasing.",
     "For comments and replies, prefer candidates where we can leave a natural breadcrumb back to COTI instead of donating a useful point with zero attribution.",
-    "Each candidate has a short label like A, B, or C. Return selectedCandidateId using that label exactly.",
+    "Each candidate has a short label like A, B, or C. Return selectedCandidateId using that label exactly, or \"skip\" to do no authored action.",
     "Return strict JSON with keys: selectedCandidateId, rationale."
   ].join(" ");
 }

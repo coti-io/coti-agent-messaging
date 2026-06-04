@@ -159,7 +159,6 @@ export function scheduleActionJobNotBefore(input: {
   const cooldownAt = nextCooldownEligibleAt({
     actionType: input.actionType,
     records: input.records ?? [],
-    queuedJobs: input.existingJobs ?? [],
     now: input.now,
     config,
     rng
@@ -229,8 +228,14 @@ export function compactActionJobs(jobs: readonly ActionJob[]): ActionJob[] {
   return dedupeActionJobs(jobs).filter((job) => job.status !== "succeeded");
 }
 
-export function actionJobDedupeKey(job: Pick<ActionJob, "venue" | "type" | "payload" | "candidateId">): string {
+export function actionJobDedupeKey(
+  job: Pick<ActionJob, "venue" | "type" | "payload" | "candidateId" | "actionId">
+): string {
   const payload = job.payload;
+  const stableActionId = payload.id ?? job.actionId;
+  if (stableActionId) {
+    return [job.venue, job.type, stableActionId].join(":");
+  }
   return [
     job.venue,
     job.type,
@@ -299,18 +304,12 @@ function findCooldownBlock(
 function nextCooldownEligibleAt(input: {
   actionType: VenueAction["type"];
   records: readonly ActionExecutionRecord[];
-  queuedJobs: readonly ActionJob[];
   now: Date;
   config: ResolvedActionExecutionConfig;
   rng: () => number;
 }): number {
   const recentGlobal = latestRecord(input.records, () => true);
   const recentType = latestRecord(input.records, (record) => record.type === input.actionType);
-  const queuedLatest = input.queuedJobs
-    .filter((job) => job.status === "queued")
-    .map((job) => parseTime(job.notBefore))
-    .filter(Number.isFinite)
-    .sort((left, right) => right - left)[0] ?? 0;
   const globalAt = recentGlobal
     ? Date.parse(recentGlobal.createdAt) + randomBetween(input.config.globalCooldownMs, input.rng)
     : input.now.getTime();
@@ -320,10 +319,7 @@ function nextCooldownEligibleAt(input: {
         Date.parse(recentType.createdAt) + randomBetween(input.config.actionCooldowns[input.actionType], input.rng)
       )
     : input.now.getTime();
-  const queuedAt = queuedLatest > 0
-    ? queuedLatest + randomBetween(input.config.globalCooldownMs, input.rng)
-    : input.now.getTime();
-  return Math.max(input.now.getTime(), globalAt, typeAt, queuedAt);
+  return Math.max(input.now.getTime(), globalAt, typeAt);
 }
 
 function recoverStaleRunningJobs(

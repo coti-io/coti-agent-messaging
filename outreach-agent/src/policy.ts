@@ -1135,33 +1135,6 @@ export function planHeartbeatActions(input: {
     });
   }
 
-  const hasExternalNetworkOpportunity = actions.some(
-    (action) =>
-      action.type === "upvote_post" ||
-      action.type === "follow_agent" ||
-      action.type === "comment_on_post"
-  );
-
-  if (
-    (
-      input.home.activity_on_your_posts.length === 0 ||
-      commentReadiness.reason === "daily_limit"
-    ) &&
-    canCreatePost(state, newAgent, input.policy, now) &&
-    !postedWithinCooldown(state, newAgent, now) &&
-    !hasPendingPost &&
-    !hasExternalNetworkOpportunity
-  ) {
-    actions.push({
-      type: "create_post",
-      reason: commentReadiness.reason === "daily_limit"
-        ? "Reply demand exists, but the daily comment budget is spent, so this heartbeat should keep outreach moving with one substantive post."
-        : commentReadiness.allowed
-        ? "No urgent replies are waiting and we have room for one substantive outreach post."
-        : "No urgent replies are waiting and we have room for one substantive outreach post."
-    });
-  }
-
   if (actions.length === 0) {
     return [
       {

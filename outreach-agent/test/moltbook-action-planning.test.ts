@@ -114,6 +114,17 @@ function createSources(): MoltbookHeartbeatSources {
   };
 }
 
+test("deterministic bundle fallback skips cold-start create_post", () => {
+  const decision = chooseMoltbookActionBundleFallback([
+    candidate({ id: "candidate:post:1", type: "create_post", source: "cold_start", score: 30, needsContent: true }),
+    candidate({ id: "candidate:upvote:1", type: "upvote_post", score: 40 })
+  ]);
+
+  assert.equal(decision.selectedWriteCandidateId, undefined);
+  assert.deepEqual(decision.selectedNoContentCandidateIds, ["candidate:upvote:1"]);
+  assert.match(decision.rationale, /Skipped cold-start posting/i);
+});
+
 test("deterministic bundle fallback prioritizes replies and caps side actions", () => {
   const decision = chooseMoltbookActionBundleFallback([
     candidate({
@@ -271,5 +282,32 @@ test("llm bundle selection prompt includes hot threads, action history, and own-
   assert.match(userPayload, /"hotThreads"/);
   assert.match(userPayload, /"recentActionHistory"/);
   assert.match(userPayload, /"recentActivityOnOurThreads"/);
+  assert.match(userPayload, /"recentOwnPostsOnMoltbook"/);
   assert.match(userPayload, /Does the recipient still need an addressable inbox/i);
+});
+
+test("llm bundle selection can defer all actions", async () => {
+  const config = createConfig({
+    llmProvider: {
+      label: "test-llm",
+      async createJsonCompletion<T>() {
+        return {
+          selectedCandidateIds: [],
+          rationale: "Feeds already cover this thesis; wait for a better thread."
+        } as T;
+      }
+    }
+  });
+
+  const decision = await chooseMoltbookActionBundle({
+    candidates: [
+      candidate({ id: "candidate:post:1", type: "create_post", source: "cold_start", score: 20, needsContent: true }),
+      candidate({ id: "candidate:upvote:1", type: "upvote_post", score: 40 })
+    ],
+    config
+  });
+
+  assert.deepEqual(decision.selectedCandidateIds, []);
+  assert.equal(decision.selectedWriteCandidateId, undefined);
+  assert.equal(decision.strategy, "llm");
 });

@@ -142,12 +142,14 @@ export function buildMoltbookActionCandidates(
       source: "cold_start",
       score: 12,
       needsContent: true,
-      reason: "Cold-start posting remains a legal fallback when no better thread deserves the write slot.",
+      reason:
+        "Optional cold-start post only when the bundle LLM judges it net-new versus recent Moltbook posts and our authored history.",
       constraints,
       allowed: constraints.every((constraint) => constraint.passed || constraint.severity !== "block"),
       raw: {
         type: "create_post",
-        reason: "Cold-start posting remains a legal fallback when no better thread deserves the write slot."
+        reason:
+          "Optional cold-start post only when the bundle LLM judges it net-new versus recent Moltbook posts and our authored history."
       } satisfies PlannedAction
     });
   }
@@ -243,7 +245,9 @@ export function chooseMoltbookActionBundleFallback(
     }
   }
 
-  const selectedWrite = [...writes].sort(compareWriteCandidates)[0];
+  const selectedWrite = [...writes]
+    .sort(compareWriteCandidates)
+    .find((candidate) => candidate.type !== "create_post");
   const selectedCandidateIds = [...selectedNoContent, ...(selectedWrite ? [selectedWrite.id] : [])];
   const deferredCandidateIds = allowed
     .map((candidate) => candidate.id)
@@ -258,7 +262,7 @@ export function chooseMoltbookActionBundleFallback(
     rationale: selectedWrite
       ? `Selected ${selectedWrite.type} from ${selectedWrite.source} as the write slot and kept safe no-content actions alongside it.`
       : selectedNoContent.length > 0
-        ? "No write candidate won the slot, so only safe no-content actions were selected."
+        ? "Skipped cold-start posting; only safe no-content actions were selected."
         : "No legal action bundle beat doing nothing."
   };
 }
@@ -273,11 +277,13 @@ function buildBundleSelectionMessages(input: {
       role: "system",
       content: [
         "You are selecting a safe Moltbook action bundle for one heartbeat.",
+        "Every candidate is optional — doing nothing is valid when no action clearly helps.",
         "You must choose only from the provided candidate ids.",
-        "At most one write candidate may be selected.",
+        "At most one write candidate may be selected, or omit all write candidates.",
         "Write candidates are create_post, comment_on_post, and reply_to_activity.",
         "No-content actions can accompany the write slot, but stay conservative.",
-        "Prefer direct replies on our active threads first, then hot-thread comments, then cold-start posting.",
+        "Prefer direct replies on our active threads first, then hot-thread comments, then cold-start posting last.",
+        "Skip create_post when recentOwnPostsOnMoltbook, recentAuthoredHistory, or hot/explore feeds already cover the same thesis.",
         "Use the action history, hot-thread summary, and recent activity on our own threads to avoid blind or repetitive choices.",
         "Do not invent ids. Do not select blocked candidates.",
         "Return one JSON object only.",
@@ -312,6 +318,7 @@ function buildBundleSelectionPayload(input: {
     },
     recentActionHistory: summarizeRecentActionHistory(state),
     recentAuthoredHistory: summarizeRecentGeneratedHistory(state),
+    recentOwnPostsOnMoltbook: summarizeRecentOwnPostsOnMoltbook(sources),
     recentActivityOnOurThreads: summarizeOwnThreadActivity(sources),
     hotThreads: summarizeFeedPosts(sources?.hotFeed.posts ?? [], 5),
     followingFeed: summarizeFeedPosts(sources?.followingFeed.posts ?? [], 3),
@@ -389,6 +396,14 @@ function sanitizeBundleSelection(
   }
   const finalSelectedIds = [...selectedNoContent, ...(requestedWrite ? [requestedWrite] : [])];
   if (finalSelectedIds.length === 0) {
+    if (Array.isArray(response.selectedCandidateIds) && response.selectedCandidateIds.length === 0) {
+      return {
+        selectedCandidateIds: [],
+        selectedNoContentCandidateIds: [],
+        deferredCandidateIds: allowedCandidates.map((candidate) => candidate.id),
+        rationale: response.rationale?.trim() || "LLM deferred all actions this heartbeat."
+      };
+    }
     return undefined;
   }
   return {
@@ -428,6 +443,19 @@ function summarizeRecentActionHistory(state: OutreachAgentState | undefined) {
       createdAt: job.createdAt
     }))
   };
+}
+
+function summarizeRecentOwnPostsOnMoltbook(sources: MoltbookHeartbeatSources | undefined) {
+  if (!sources) {
+    return [];
+  }
+  return (sources.me.recentPosts ?? []).slice(0, 8).map((post) => ({
+    postId: post.post_id ?? post.id,
+    title: post.title,
+    submolt: post.submolt_name,
+    preview: trimText(post.content_preview ?? post.content, 220),
+    createdAt: post.created_at
+  }));
 }
 
 function summarizeRecentGeneratedHistory(state: OutreachAgentState | undefined) {

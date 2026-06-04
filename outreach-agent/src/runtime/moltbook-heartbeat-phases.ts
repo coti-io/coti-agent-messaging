@@ -581,6 +581,7 @@ export async function moltbookHeartbeatDraftContent(session: MoltbookHeartbeatSe
   }
 
   if (!decision) {
+    skipped.push("skipped authored write because the LLM declined all write candidates for this heartbeat.");
     return;
   }
 

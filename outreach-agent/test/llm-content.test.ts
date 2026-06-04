@@ -8,6 +8,7 @@ import type { MoltbookRuntimeConfig } from "../src/config.js";
 import {
   chooseAndDraftWriteAction,
   chooseReplyTargetOrIgnore,
+  WRITE_SELECTION_SKIP_ID,
   type WriteCandidate
 } from "../src/llm-content.js";
 import type { ChatMessage } from "../src/llm-client.js";
@@ -102,11 +103,59 @@ test("comment drafts strip inline backticks instead of crashing validation", asy
       factSheet,
       createInitialState()
     );
+    assert.ok(decision);
 
     assert.equal(decision.selectedCandidateId, "comment:post-1");
     assert.equal(llmCallCount, 2);
     assert.equal(decision.content.includes("`"), false);
     assert.match(decision.content, /from and to queryable/i);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("write selection can skip all candidates when nothing is net-new", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "moltbook-llm-skip-"));
+  const packageRoot = path.resolve(import.meta.dirname, "..", "..");
+  const config: MoltbookRuntimeConfig = {
+    packageRoot,
+    projectRoot: path.resolve(packageRoot, ".."),
+    credentialsPath: path.join(tempDir, "credentials.json"),
+    statePath: path.join(tempDir, "state.json"),
+    heartbeatReportPath: path.join(tempDir, "last-heartbeat.json"),
+    promptRotationStatePath: path.join(tempDir, "prompt-rotation.json"),
+    moltbookBaseUrl: "https://www.moltbook.com/api/v1",
+    defaultSubmolt: "general",
+    dryRun: false,
+    autoVerify: false,
+    llmProvider: {
+      label: "self-test",
+      async createJsonCompletion<T>() {
+        return {
+          selectedCandidateId: WRITE_SELECTION_SKIP_ID,
+          rationale: "Recent posts already covered private inbox routing."
+        } as T;
+      }
+    }
+  };
+  const candidates: WriteCandidate[] = [
+    {
+      id: "post:cold",
+      type: "create_post",
+      reason: "Optional cold-start post."
+    }
+  ];
+  const factSheet: ProductFactSheet = { claims: [], liveSnapshot: {} };
+
+  try {
+    await seedPromptRotationState(config.promptRotationStatePath!);
+    const decision = await chooseAndDraftWriteAction(
+      config,
+      candidates,
+      factSheet,
+      createInitialState()
+    );
+    assert.equal(decision, undefined);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -182,6 +231,7 @@ test("comment and reply prompts require a natural COTI attribution anchor", asyn
       factSheet,
       createInitialState()
     );
+    assert.ok(decision);
 
     assert.match(decision.content, /coti/i);
     assert.equal(capturedMessages.length, 2);
@@ -328,6 +378,8 @@ test("injected and HTTP providers receive identical prompt messages", async () =
         );
       }
     );
+    assert.ok(injectedDecision);
+    assert.ok(httpDecision);
 
     assert.equal(injectedDecision.content, httpDecision.content);
     assert.equal(injectedMessages.length, 2);
@@ -490,6 +542,7 @@ test("Moltbook CTA profile injects style layout and tracked URL into drafts", as
       factSheet,
       createInitialState()
     );
+    assert.ok(decision);
 
     assert.equal(decision.promptProfileId, "aggressive-structured");
     assert.equal(decision.promptParameters?.messageStyle, "aggressive");
@@ -577,6 +630,7 @@ test("Moltbook comments do not get a CTA unless the target explicitly asks for a
   try {
     await seedPromptRotationState(config.promptRotationStatePath!);
     const decision = await chooseAndDraftWriteAction(config, candidates, factSheet, createInitialState());
+    assert.ok(decision);
 
     assert.equal(decision.ctaUrl, undefined);
     assert.doesNotMatch(decision.content, /https?:\/\//i);
@@ -655,6 +709,7 @@ test("Moltbook replies can include a tracked CTA when the target explicitly asks
   try {
     await seedPromptRotationState(config.promptRotationStatePath!);
     const decision = await chooseAndDraftWriteAction(config, candidates, factSheet, createInitialState());
+    assert.ok(decision);
 
     assert.match(decision.ctaUrl ?? "", /utm_source=moltbook/);
     assert.match(decision.content, /https:\/\/example\.com\/agent-messaging/);
@@ -740,6 +795,7 @@ test("create_post drafts trim overlong title and content without dropping tracke
       factSheet,
       createInitialState()
     );
+    assert.ok(decision);
 
     assert.ok(decision.title);
     assert.equal(decision.title.length <= 110, true);
@@ -897,6 +953,7 @@ test("create_post drafts retry once to add a missing concrete proof point", asyn
   try {
     await seedPromptRotationState(config.promptRotationStatePath!);
     const decision = await chooseAndDraftWriteAction(config, candidates, factSheet, createInitialState());
+    assert.ok(decision);
     assert.match(decision.content, /quickstart/i);
     assert.equal(llmCallCount, 3);
   } finally {
@@ -983,6 +1040,7 @@ test("reply drafts can revisit the same thesis across different threads", async 
   try {
     await seedPromptRotationState(config.promptRotationStatePath!);
     const decision = await chooseAndDraftWriteAction(config, candidates, factSheet, state);
+    assert.ok(decision);
     assert.match(decision.content, /privacy versus authorization/i);
   } finally {
     await rm(tempDir, { recursive: true, force: true });

@@ -981,6 +981,17 @@ export function selectFollowCandidatesFromComments(input: {
   }
 
   const queued = new Set(input.alreadyQueued ?? []);
+  for (const job of input.state.queuedActionJobs) {
+    if (job.status !== "queued" && job.status !== "running") {
+      continue;
+    }
+    if (job.type === "follow_account") {
+      const agentName = job.payload.parentId ?? job.actionId?.replace(/^follow:/, "");
+      if (agentName) {
+        queued.add(agentName);
+      }
+    }
+  }
   const seen = new Set<string>();
   const results: Array<{ agentName: string; reason: string }> = [];
 
@@ -1224,6 +1235,18 @@ export function listReplyTargets(input: {
       .filter((entry) => entry.type === "reply" && entry.targetCommentId)
       .map((entry) => entry.targetCommentId!)
   );
+  const queuedReplyCommentIds = new Set<string>();
+  for (const job of input.state.queuedActionJobs) {
+    if (job.status !== "queued" && job.status !== "running") {
+      continue;
+    }
+    if (job.type !== "reply_to_comment") {
+      continue;
+    }
+    if (job.payload.candidateId) {
+      queuedReplyCommentIds.add(job.payload.candidateId);
+    }
+  }
   return flattenComments(input.comments)
     .filter((comment) => {
       const author = commentAuthorName(comment);
@@ -1234,6 +1257,7 @@ export function listReplyTargets(input: {
       return (
         !hasHandledReplyParent(input.state.repliedCommentIds, comment.id) &&
         !pendingReplyTargetIds.has(comment.id) &&
+        !queuedReplyCommentIds.has(comment.id) &&
         isReplyWorthyComment(comment, input.postTitle)
       );
     })

@@ -248,6 +248,28 @@ export function actionJobDedupeKey(
   ].join(":");
 }
 
+export function isActiveQueuedJob(job: Pick<ActionJob, "status">): boolean {
+  return job.status === "queued" || job.status === "running";
+}
+
+export function activeQueuedActionIds(jobs: readonly ActionJob[]): Set<string> {
+  const ids = new Set<string>();
+  for (const job of jobs) {
+    if (!isActiveQueuedJob(job)) {
+      continue;
+    }
+    const actionId = job.payload.id ?? job.actionId;
+    if (actionId) {
+      ids.add(actionId);
+    }
+  }
+  return ids;
+}
+
+export function hasActiveQueuedActionId(jobs: readonly ActionJob[], actionId: string): boolean {
+  return activeQueuedActionIds(jobs).has(actionId);
+}
+
 export function isRetryablePublishError(error: unknown): boolean {
   const message = errorMessage(error).toLowerCase();
   return ![

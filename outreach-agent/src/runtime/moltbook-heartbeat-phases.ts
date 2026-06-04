@@ -1,6 +1,6 @@
 import type { MoltbookRuntimeConfig } from "../config.js";
 import { createActionJob, type ActionJob } from "../action-planning.js";
-import { scheduleActionJobNotBefore } from "../action-execution.js";
+import { hasActiveQueuedActionId, scheduleActionJobNotBefore } from "../action-execution.js";
 import {
   buildMoltbookActionCandidates,
   chooseMoltbookActionBundle,
@@ -301,7 +301,12 @@ export async function moltbookHeartbeatEnqueueJobs(session: MoltbookHeartbeatSes
   let commentFollowBudget = Math.max(0, followBudget - plannedFollowCount);
 
   const tryFollowAgent = (agentName: string, reason: string, sourceLabel: string): boolean => {
-    if (!agentName || followsAttempted.has(agentName) || session.state.followedAgentNames.includes(agentName)) {
+    if (
+      !agentName ||
+      followsAttempted.has(agentName) ||
+      session.state.followedAgentNames.includes(agentName) ||
+      hasActiveQueuedActionId(session.state.queuedActionJobs, `follow:${agentName}`)
+    ) {
       return false;
     }
 
@@ -375,7 +380,17 @@ export async function moltbookHeartbeatEnqueueJobs(session: MoltbookHeartbeatSes
           }
 
           if (replyTargets.length === 0) {
-            skipped.push(`no reply-worthy comment found on "${action.activity.post_title}".`);
+            const hasQueuedReplyOnPost = session.state.queuedActionJobs.some(
+              (job) =>
+                (job.status === "queued" || job.status === "running") &&
+                job.type === "reply_to_comment" &&
+                job.payload.parentId === action.activity.post_id
+            );
+            skipped.push(
+              hasQueuedReplyOnPost
+                ? `reply on "${action.activity.post_title}" is already queued; skipped duplicate planning.`
+                : `no reply-worthy comment found on "${action.activity.post_title}".`
+            );
             if (!config.dryRun) {
               await venue.markNotificationsReadByPost(action.activity.post_id);
             }
@@ -418,6 +433,11 @@ export async function moltbookHeartbeatEnqueueJobs(session: MoltbookHeartbeatSes
           const postId = action.post.post_id ?? action.post.id;
           if (!postId) {
             skipped.push("skipped an upvote because the post id was missing.");
+            break;
+          }
+
+          if (hasActiveQueuedActionId(session.state.queuedActionJobs, `upvote:${postId}`)) {
+            skipped.push(`upvote on "${action.post.title}" is already queued.`);
             break;
           }
 
@@ -592,7 +612,14 @@ export async function moltbookHeartbeatDraftContent(session: MoltbookHeartbeatSe
   }
 
   switch (candidate.type) {
-    case "reply_to_activity":
+    case "reply_to_activity": {
+      const replyActionId = `reply:${candidate.postId}:${candidate.target.commentId}`;
+      if (hasActiveQueuedActionId(session.state.queuedActionJobs, replyActionId)) {
+        skipped.push(
+          `reply to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}" is already queued.`
+        );
+        break;
+      }
       if (config.dryRun) {
         performed.push(
           `Would reply to ${candidate.target.authorName ?? "a commenter"} on "${candidate.postTitle}".`
@@ -601,7 +628,7 @@ export async function moltbookHeartbeatDraftContent(session: MoltbookHeartbeatSe
         session.state = enqueueMoltbookActionJobs(session.state, [
           createActionJob({
             action: {
-              id: `reply:${candidate.postId}:${candidate.target.commentId}`,
+              id: replyActionId,
               venue: "moltbook",
               type: "reply_to_comment",
               parentId: candidate.postId,
@@ -629,8 +656,13 @@ export async function moltbookHeartbeatDraftContent(session: MoltbookHeartbeatSe
         );
       }
       break;
+    }
     case "comment_on_post": {
       const postId = candidate.post.post_id ?? candidate.post.id;
+      if (postId && hasActiveQueuedActionId(session.state.queuedActionJobs, `comment:${postId}`)) {
+        skipped.push(`comment on "${candidate.post.title}" is already queued.`);
+        break;
+      }
       if (!postId) {
         skipped.push(`could not comment on "${candidate.post.title}" because the post id was missing.`);
         break;
@@ -668,6 +700,10 @@ export async function moltbookHeartbeatDraftContent(session: MoltbookHeartbeatSe
       break;
     }
     case "create_post":
+      if (hasActiveQueuedActionId(session.state.queuedActionJobs, "create-post")) {
+        skipped.push("create_post is already queued.");
+        break;
+      }
       if (config.dryRun) {
         performed.push(`Would post "${decision.title ?? "Untitled post"}".`);
       } else {

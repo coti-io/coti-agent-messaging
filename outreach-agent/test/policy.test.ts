@@ -9,6 +9,7 @@ import {
   commentMinimumIntervalMs,
   chooseReplyTarget,
   createInitialState,
+  listReplyTargets,
   getDailyCommentBreakdown,
   getEngagementSummary,
   getCommentReadiness,
@@ -659,6 +660,98 @@ test("selectFollowCandidatesFromComments picks high-signal authors and respects 
 
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0]?.agentName, "ThoughtfulBot");
+});
+
+test("listReplyTargets excludes comments with a queued reply job", () => {
+  const state: OutreachAgentState = {
+    ...createInitialState(),
+    queuedActionJobs: [
+      {
+        id: "reply:post-1:comment-queued:run-1",
+        venue: "moltbook",
+        actionId: "reply:post-1:comment-queued",
+        candidateId: "candidate-1",
+        type: "reply_to_comment",
+        payload: {
+          id: "reply:post-1:comment-queued",
+          venue: "moltbook",
+          type: "reply_to_comment",
+          parentId: "post-1",
+          candidateId: "comment-queued",
+          content: "Draft reply"
+        },
+        status: "queued",
+        createdAt: "2026-06-04T09:30:00.000Z",
+        notBefore: "2026-06-04T10:00:00.000Z",
+        attempts: 0,
+        sourceDecisionId: "run-1"
+      }
+    ]
+  };
+
+  const targets = listReplyTargets({
+    postId: "post-1",
+    postTitle: "Thread title",
+    comments: [
+      {
+        id: "comment-queued",
+        content: "How do agents route private payloads?",
+        author_name: "BuilderBot",
+        created_at: "2026-06-04T09:00:00.000Z"
+      },
+      {
+        id: "comment-open",
+        content: "What is the inbox model for encrypted agent messaging?",
+        author_name: "CuriousBot",
+        created_at: "2026-06-04T09:05:00.000Z"
+      }
+    ],
+    state,
+    agentName: "OutreachBot"
+  });
+
+  assert.equal(targets.some((target) => target.commentId === "comment-queued"), false);
+  assert.equal(targets.some((target) => target.commentId === "comment-open"), true);
+});
+
+test("selectFollowCandidatesFromComments skips authors with a queued follow job", () => {
+  const candidates = selectFollowCandidatesFromComments({
+    comments: [
+      {
+        id: "comment-1",
+        content: "Private routing metadata can stay public while bodies stay encrypted.",
+        author_name: "vina",
+        created_at: "2026-06-04T09:00:00.000Z"
+      }
+    ],
+    state: {
+      ...createInitialState(),
+      queuedActionJobs: [
+        {
+          id: "follow:vina:run-1",
+          venue: "moltbook",
+          actionId: "follow:vina",
+          candidateId: "candidate:follow:vina",
+          type: "follow_account",
+          payload: {
+            id: "follow:vina",
+            venue: "moltbook",
+            type: "follow_account",
+            parentId: "vina"
+          },
+          status: "queued",
+          createdAt: "2026-06-04T09:30:00.000Z",
+          notBefore: "2026-06-04T10:00:00.000Z",
+          attempts: 0,
+          sourceDecisionId: "run-1"
+        }
+      ]
+    },
+    agentName: "OutreachBot",
+    policy: { followFromCommentAuthors: true, followCommentMinScore: 1 }
+  });
+
+  assert.equal(candidates.length, 0);
 });
 
 test("selectFollowCandidatesFromComments returns nothing when disabled", () => {

@@ -9,6 +9,7 @@ import {
   type ActionCandidateSource,
   type ConstrainedActionCandidate
 } from "./action-planning.js";
+import { activeQueuedActionIds } from "./action-execution.js";
 import {
   canCreatePost,
   isNewAgent,
@@ -47,6 +48,7 @@ export function buildMoltbookActionCandidates(
 ): ConstrainedActionCandidate[] {
   const now = input.now ?? new Date();
   const { sources, state } = input;
+  const queuedActionIds = activeQueuedActionIds(state.queuedActionJobs);
   const planned = planHeartbeatActions({
     home: sources.home,
     followingFeed: sources.followingFeed,
@@ -57,7 +59,7 @@ export function buildMoltbookActionCandidates(
     factSheet: sources.factSheet,
     profileCreatedAt: sources.me.agent?.created_at,
     now
-  });
+  }).filter((action) => !plannedActionAlreadyQueued(action, queuedActionIds));
   const followingIds = new Set((sources.followingFeed.posts ?? []).map((post) => post.post_id ?? post.id).filter(Boolean));
   const hotIds = new Set((sources.hotFeed.posts ?? []).map((post) => post.post_id ?? post.id).filter(Boolean));
   const exploreIds = new Set((sources.exploreFeed.posts ?? []).map((post) => post.post_id ?? post.id).filter(Boolean));
@@ -284,6 +286,7 @@ function buildBundleSelectionMessages(input: {
         "No-content actions can accompany the write slot, but stay conservative.",
         "Prefer direct replies on our active threads first, then hot-thread comments, then cold-start posting last.",
         "Skip create_post when recentOwnPostsOnMoltbook, recentAuthoredHistory, or hot/explore feeds already cover the same thesis.",
+        "Do not re-select candidates that already appear in queuedActionJobs with status queued or running.",
         "Use the action history, hot-thread summary, and recent activity on our own threads to avoid blind or repetitive choices.",
         "Do not invent ids. Do not select blocked candidates.",
         "Return one JSON object only.",
@@ -435,8 +438,9 @@ function summarizeRecentActionHistory(state: OutreachAgentState | undefined) {
       targetSummary: entry.targetSummary,
       createdAt: entry.createdAt
     })),
-    queuedActionJobs: state.queuedActionJobs.slice(-8).map((job) => ({
+    queuedActionJobs: state.queuedActionJobs.slice(-12).map((job) => ({
       type: job.type,
+      actionId: job.payload.id ?? job.actionId,
       candidateId: job.candidateId,
       status: job.status,
       notBefore: job.notBefore,
@@ -566,6 +570,27 @@ function trimText(value: string | undefined, limit: number): string | undefined 
     return trimmed;
   }
   return `${trimmed.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
+}
+
+function plannedActionAlreadyQueued(action: PlannedAction, queuedActionIds: ReadonlySet<string>): boolean {
+  switch (action.type) {
+    case "follow_agent":
+      return queuedActionIds.has(`follow:${action.agentName}`);
+    case "upvote_post": {
+      const postId = action.post.post_id ?? action.post.id;
+      return Boolean(postId && queuedActionIds.has(`upvote:${postId}`));
+    }
+    case "comment_on_post": {
+      const postId = action.post.post_id ?? action.post.id;
+      return Boolean(postId && queuedActionIds.has(`comment:${postId}`));
+    }
+    case "create_post":
+      return queuedActionIds.has("create-post");
+    case "reply_to_activity":
+    case "inspect_dms":
+    case "noop":
+      return false;
+  }
 }
 
 function countSources(candidates: readonly ConstrainedActionCandidate[]) {

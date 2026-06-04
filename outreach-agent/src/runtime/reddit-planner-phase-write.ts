@@ -1,6 +1,6 @@
 import { getOutreachAgentConfig, getRedditControllerConfig, getRedditOperatingAgentConfig, type MoltbookRuntimeConfig } from "../config.js";
 import { createActionJob } from "../action-planning.js";
-import { scheduleActionJobNotBefore } from "../action-execution.js";
+import { hasActiveQueuedActionId, scheduleActionJobNotBefore } from "../action-execution.js";
 import { draftRedditResponse } from "../reddit-drafting.js";
 import { ingestRedditState, resolveRedditTargetTitle, resolveRedditTargetUrl } from "../reddit-ingestion.js";
 import { enqueueActionJobs } from "../job-queue.js";
@@ -161,6 +161,14 @@ export async function redditPlannerEnqueueJobs(session: RedditPlannerSession): P
   }
 
   let nextQueuedJobs = memory.queuedJobs ?? [];
+  const queuedActionId = action.id;
+  if (!dryRun && queuedActionId && hasActiveQueuedActionId(nextQueuedJobs, queuedActionId)) {
+    ws.decision = {
+      ...decision,
+      skipped: [`Reddit action ${queuedActionId} is already queued.`, ...decision.skipped]
+    };
+    return;
+  }
   if (!dryRun) {
     nextQueuedJobs = enqueueActionJobs(nextQueuedJobs, [
       createActionJob({

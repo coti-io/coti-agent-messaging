@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createActionJob, type ActionJob } from "../src/action-planning.js";
 import {
   compactActionJobs,
+  hasActiveQueuedActionId,
   pickNextExecutableJob,
   requeueFailedActionJob,
   scheduleActionJobNotBefore
@@ -105,6 +106,25 @@ test("scheduler requeues retryable failures with backoff", () => {
   assert.equal(result.retrying, true);
   assert.equal(result.jobs[0]?.status, "queued");
   assert.equal(result.jobs[0]?.notBefore, "2026-06-03T10:01:00.000Z");
+});
+
+test("hasActiveQueuedActionId detects queued and running jobs only", () => {
+  const alice = jobFor({
+    id: "follow:alice",
+    type: "follow_account",
+    notBefore: "2026-06-03T10:00:00.000Z"
+  });
+  alice.payload = { ...alice.payload, id: "follow:alice", parentId: "alice" };
+  const bob = jobFor({
+    id: "follow:bob",
+    type: "follow_account",
+    notBefore: "2026-06-03T10:05:00.000Z"
+  });
+  bob.payload = { ...bob.payload, id: "follow:bob", parentId: "bob" };
+  bob.status = "succeeded";
+
+  assert.equal(hasActiveQueuedActionId([alice, bob], "follow:alice"), true);
+  assert.equal(hasActiveQueuedActionId([alice, bob], "follow:bob"), false);
 });
 
 test("queue compaction dedupes equivalent queued jobs", () => {
